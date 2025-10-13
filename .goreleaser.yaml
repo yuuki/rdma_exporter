@@ -1,0 +1,34 @@
+# GoReleaser configuration for rdma_exporter.
+# See https://goreleaser.com/ for documentation.
+project_name: rdma_exporter
+builds:
+  - id: rdma_exporter
+    main: .
+    binary: rdma_exporter
+    env:
+      - CGO_ENABLED=0
+    goos:
+      - linux
+    goarch:
+      - amd64
+      - arm64
+    flags:
+      - -trimpath
+    ldflags:
+      - -s -w
+
+archives:
+  - id: tgz
+    format: tar.gz
+    builds:
+      - rdma_exporter
+    files:
+      - LICENSE
+      - README.md
+
+checksum:
+  name_template: "{{ .ProjectName }}_checksums.txt"
+
+changelog:
+  sort: desc
+  use: git
