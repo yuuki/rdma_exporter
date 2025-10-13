@@ -2,7 +2,6 @@ GO ?= go
 BIN_DIR ?= bin
 PKG := ./...
 BINARY := $(BIN_DIR)/rdma_exporter
-MAIN := ./cmd/rdma_exporter
 
 .PHONY: all build test lint fmt clean
 
@@ -12,7 +11,7 @@ build: $(BINARY)
 
 $(BINARY):
 	mkdir -p $(BIN_DIR)
-	$(GO) build -o $@ $(MAIN)
+	$(GO) build -o $@ .
 
 test:
 	$(GO) test $(PKG)

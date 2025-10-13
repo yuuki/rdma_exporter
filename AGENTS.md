@@ -1,7 +1,7 @@
 # Repository Guidelines
 
 ## Project Structure & Module Organization
-- `cmd/rdma_exporter/`: CLI entry point that wires configuration, logging, and the HTTP server.
+- `main.go`: CLI entry point that wires configuration, logging, and the HTTP server.
 - `internal/`: exporter implementation broken into `collector`, `config`, `rdma`, and `server` packages. Each has matching unit tests under the same directory.
 - `docs/`: design documentation and future architectural notes.
 - `internal/rdma/testdata/`: synthetic sysfs trees used for tests; update or add fixtures when modelling new hardware.
