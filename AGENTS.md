@@ -1,41 +1,34 @@
 # Repository Guidelines
 
 ## Project Structure & Module Organization
-- `main.go`: CLI entry point that wires configuration, logging, and the HTTP server.
-- `internal/`: exporter implementation broken into `collector`, `config`, `rdma`, and `server` packages. Each has matching unit tests under the same directory.
-- `docs/`: design documentation and future architectural notes.
-- `internal/rdma/testdata/`: synthetic sysfs trees used for tests; update or add fixtures when modelling new hardware.
+- `main.go` is the CLI entry point; it wires configuration, structured logging, and the HTTP server that exposes `/metrics` and `/healthz`.
+- `internal/collector`, `internal/config`, `internal/rdma`, and `internal/server` separate exporter logic by concern, each with co-located unit tests under the same directory.
+- Architectural and roadmap notes live in `docs/`. Synthetic RDMA fixtures reside under `internal/rdma/testdata/<scenario>/`; extend or refresh them whenever you model new hardware or kernel behaviour.
 
 ## Build, Test, and Development Commands
-- `make build`: compiles the binary to `bin/rdma_exporter`.
-- `make test` or `go test ./...`: runs all unit tests, including fixtures-based checks.
-- `make lint`: executes `go vet` across modules; run before submitting changes.
-- `make fmt`: applies `gofmt` to every Go file; required prior to commits.
+- `GOCACHE=$(pwd)/.gocache GOMODCACHE=$(pwd)/.gomodcache make build` compiles the exporter into `bin/rdma_exporter`, suitable for local runs or packaging.
+- `GOCACHE=$(pwd)/.gocache GOMODCACHE=$(pwd)/.gomodcache make test` or `GOCACHE=$(pwd)/.gocache GOMODCACHE=$(pwd)/.gomodcache go test ./...` executes every unit test plus fixture-driven checks to catch regressions early.
+- `GOCACHE=$(pwd)/.gocache GOMODCACHE=$(pwd)/.gomodcache make lint` runs `go vet ./...` to surface static-analysis warnings before code review.
+- `GOCACHE=$(pwd)/.gocache GOMODCACHE=$(pwd)/.gomodcache make fmt` applies `gofmt` across all Go sources so diffs stay minimal and consistent.
 
 ## Coding Style & Naming Conventions
-- Go formatting must follow `gofmt`; avoid manual tweaks.
-- Use Go module layout with package-local types/functions following lowerCamelCase names; exported items use PascalCase.
-- Logging relies on `log/slog`; include structured keys (`device`, `port`, `duration`) where relevant.
-- Keep comments concise and only where additional context is needed.
+- Always rely on `gofmt`; do not hand-tune indentation or spacing.
+- Prefer lowerCamelCase for unexported identifiers and PascalCase for exported APIs; keep packages focused and cohesive.
+- When using `log/slog`, attach contextual keys such as `device`, `port`, and `duration` to aid observability.
+- Limit comments to intent, invariants, or non-obvious decisions—avoid restating what the code already communicates.
 
 ## Testing Guidelines
-- Prefer table-driven tests and the standard library `testing` package; leverage `prometheus/testutil` for metric assertions.
-- Store representative sysfs fixtures under `internal/rdma/testdata/<scenario>/` and reference them via relative paths.
-- Test names should follow `Test<Component>_<Scenario>` to clarify intent.
-- Run `go test ./...` before opening a pull request; target zero flakes.
+- Use table-driven tests with the standard `testing` package; leverage `prometheus/testutil` to assert metric output.
+- Reference fixtures under `internal/rdma/testdata/` via relative paths so tests remain hermetic.
+- Name test functions `Test<Component>_<Scenario>` to make failing cases self-explanatory.
+- Run `GOCACHE=$(pwd)/.gocache GOMODCACHE=$(pwd)/.gomodcache go test ./...` before every pull request to keep the suite green and flake-free.
 
 ## Commit & Pull Request Guidelines
-- Commit messages follow `{type}({scope}): {subject}` (see `git log` for examples such as `feat(exporter): ...` or `docs(design): ...`). Subject must be imperative and ≤60 characters.
-- Body should state motivation and behaviour change; include `TESTING:` footer summarizing validation steps.
-- Pull requests should include a summary, testing evidence, and links to relevant issues. Attach screenshots or log excerpts when exposing new metrics or endpoints.
+- Write commits as `type(scope): subject`, imperative; detail motivation and behavioural change in the body.
+- Accepted types include `feat`, `fix`, `docs`, `style`, `refactor`, `test`, `chore`, `init`, `rearrange`, and `update`; choose a scope that pinpoints the touched package or feature.
+- Pull requests should include a concise summary, test evidence (logs, screenshots, or metric samples), and links to relevant issues. When introducing new metrics, paste a sample `/metrics` snippet for reviewers.
 
-### Git Commit Style Guide
-- Keep commit lines under 80 characters. Reserve the subject for ≤60 characters, written in imperative present tense, starting with a lowercase letter, and without trailing punctuation.
-- Structure messages as `type(scope): subject` followed by a blank line, an optional body, another blank line, and an optional footer. Describe motivation and contrast to previous behaviour in the body using imperative, present-tense sentences.
-- Types are limited to `feat`, `fix`, `docs`, `style`, `refactor`, `test`, `chore`, `init`, `rearrange`, and `update`. Choose a scope that pinpoints the component or package touched.
-- Use the footer to note `TESTING:` steps, declare `BREAKING CHANGE:`, and reference tracking IDs such as `closes #123` or GitHub issues.
-
-## Security & Configuration Tips
-- Default scrape timeout is 5s; adjust via `--scrape-timeout` for slow hardware.
-- Run the exporter as an unprivileged user with read access to `/sys/class/infiniband`; avoid granting write permissions.
-- When packaging, expose only `/metrics` and `/healthz`; terminate TLS upstream (sidecar or ingress) if internet-facing.
+## Security & Operational Tips
+- The default scrape timeout is five seconds; adjust with `--scrape-timeout` for slower fabrics.
+- Run the exporter as an unprivileged user with read-only access to `/sys/class/infiniband`; never grant write permissions.
+- In internet-facing deployments, expose only `/metrics` and `/healthz` and terminate TLS upstream (sidecar or ingress) to minimize attack surface.
