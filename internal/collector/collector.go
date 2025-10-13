@@ -52,6 +52,25 @@ type metricEntry struct {
 	docName    string
 }
 
+var metricHelpText = map[string]string{
+	"port_rcv_data":               "Total data double-words received on the port (PortRcvData).",
+	"port_rcv_packets":            "Total packets received on the port, including errored packets (PortRcvPkts).",
+	"port_xmit_data":              "Total data double-words transmitted from the port (PortXmitData).",
+	"port_xmit_packets":           "Total packets transmitted from the port, including errored packets (PortXmitPkts).",
+	"port_xmit_wait":              "Scheduler ticks where the port had traffic to send but remained idle (PortXmitWait).",
+	"port_unicast_rcv_packets":    "Total unicast packets received on the port.",
+	"port_unicast_xmit_packets":   "Total unicast packets transmitted from the port.",
+	"port_multicast_rcv_packets":  "Total multicast packets received on the port.",
+	"port_multicast_xmit_packets": "Total multicast packets transmitted from the port.",
+	"port_symbol_errors":          "Physical coding symbol errors detected on the port.",
+	"port_duplicate_request":      "Duplicate RDMA requests observed on the port.",
+	"port_out_of_sequence":        "Requests received out of sequence on the port.",
+	"port_rnr_nak_retry_err":      "RNR NAK retries exhausted on the port.",
+	"port_packet_seq_err":         "Packet sequence errors detected on the port.",
+	"port_implied_nak_seq_err":    "Implied NAK sequence errors detected on the port.",
+	"port_local_ack_timeout_err":  "Local ACK timeout errors observed on the port.",
+}
+
 func (c *RdmaCollector) hwMetricDesc(stat string) *prometheus.Desc {
 	docName := canonicalDocName(stat)
 	return c.metricDesc(stat, docName, "RDMA port hardware counter sourced from sysfs hw_counters.", c.portHwMetrics, c.portHwStatLookup)
@@ -62,7 +81,7 @@ func (c *RdmaCollector) statMetricDesc(stat string) *prometheus.Desc {
 	return c.metricDesc(stat, docName, "RDMA port counter sourced from sysfs counters.", c.portStatMetrics, c.portStatLookup)
 }
 
-func (c *RdmaCollector) metricDesc(stat, docName, help string, entries map[string]metricEntry, lookup map[string]string) *prometheus.Desc {
+func (c *RdmaCollector) metricDesc(stat, docName, fallback string, entries map[string]metricEntry, lookup map[string]string) *prometheus.Desc {
 	if metricName, ok := lookup[stat]; ok {
 		if entry, exists := entries[metricName]; exists {
 			return entry.desc
@@ -70,6 +89,7 @@ func (c *RdmaCollector) metricDesc(stat, docName, help string, entries map[strin
 	}
 
 	metricName := buildMetricName(docName, entries)
+	help := metricDocHelp(docName, fallback)
 	desc := prometheus.NewDesc(
 		metricName,
 		help,
@@ -86,6 +106,13 @@ func (c *RdmaCollector) metricDesc(stat, docName, help string, entries map[strin
 	lookup[stat] = metricName
 
 	return desc
+}
+
+func metricDocHelp(docName, fallback string) string {
+	if desc, ok := metricHelpText[docName]; ok {
+		return desc
+	}
+	return fallback
 }
 
 func buildMetricName(docName string, existing map[string]metricEntry) string {
