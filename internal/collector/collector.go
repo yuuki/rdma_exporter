@@ -49,24 +49,26 @@ type metricEntry struct {
 	desc       *prometheus.Desc
 	metricName string
 	stat       string
+	docName    string
 }
 
 func (c *RdmaCollector) hwMetricDesc(stat string) *prometheus.Desc {
-	return c.metricDesc(stat, "rdma_port_hw_", "RDMA port hardware counter sourced from sysfs hw_counters.", c.portHwMetrics, c.portHwStatLookup)
+	docName := normalizeHwStatName(stat)
+	return c.metricDesc(stat, docName, "RDMA port hardware counter sourced from sysfs hw_counters.", c.portHwMetrics, c.portHwStatLookup)
 }
 
 func (c *RdmaCollector) statMetricDesc(stat string) *prometheus.Desc {
-	return c.metricDesc(stat, "rdma_port_", "RDMA port counter sourced from sysfs counters.", c.portStatMetrics, c.portStatLookup)
+	return c.metricDesc(stat, stat, "RDMA port counter sourced from sysfs counters.", c.portStatMetrics, c.portStatLookup)
 }
 
-func (c *RdmaCollector) metricDesc(stat, prefix, help string, entries map[string]metricEntry, lookup map[string]string) *prometheus.Desc {
+func (c *RdmaCollector) metricDesc(stat, docName, help string, entries map[string]metricEntry, lookup map[string]string) *prometheus.Desc {
 	if metricName, ok := lookup[stat]; ok {
 		if entry, exists := entries[metricName]; exists {
 			return entry.desc
 		}
 	}
 
-	metricName := buildMetricName(prefix, stat, entries)
+	metricName := buildMetricName(docName, entries)
 	desc := prometheus.NewDesc(
 		metricName,
 		help,
@@ -78,18 +80,19 @@ func (c *RdmaCollector) metricDesc(stat, prefix, help string, entries map[string
 		desc:       desc,
 		metricName: metricName,
 		stat:       stat,
+		docName:    docName,
 	}
 	lookup[stat] = metricName
 
 	return desc
 }
 
-func buildMetricName(prefix, stat string, existing map[string]metricEntry) string {
-	base := sanitizeStatName(stat)
-	metricName := fmt.Sprintf("%s%s_total", prefix, base)
+func buildMetricName(docName string, existing map[string]metricEntry) string {
+	base := sanitizeStatName(docName)
+	metricName := fmt.Sprintf("rdma_%s_total", base)
 
-	if entry, ok := existing[metricName]; ok && entry.stat != stat {
-		metricName = fmt.Sprintf("%s%s_%x_total", prefix, base, fnv32(stat))
+	if entry, ok := existing[metricName]; ok && entry.docName != docName {
+		metricName = fmt.Sprintf("rdma_%s_%x_total", base, fnv32(docName))
 	}
 
 	return metricName
@@ -135,6 +138,13 @@ func fnv32(s string) uint32 {
 	h := fnv.New32a()
 	_, _ = h.Write([]byte(s))
 	return h.Sum32()
+}
+
+func normalizeHwStatName(stat string) string {
+	if strings.HasPrefix(stat, "hw_") {
+		return stat
+	}
+	return "hw_" + stat
 }
 
 // New creates a new RDMA collector with the provided provider and logger.

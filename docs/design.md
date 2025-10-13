@@ -13,8 +13,8 @@ High-performance computing clusters and low-latency trading platforms increasing
   - [`github.com/Mellanox/rdmamap`](https://pkg.go.dev/github.com/Mellanox/rdmamap) for sysfs discovery and statistics.
   - [`github.com/prometheus/client_golang`](https://pkg.go.dev/github.com/prometheus/client_golang) for instrumentation and HTTP handlers.
 - **Metrics**:
-  - Port-level counters (`rdma_port_<stat>_total`) for standard sysfs statistics (e.g. `rdma_port_port_xmit_data_total`).
-  - Hardware counters (`rdma_port_hw_<stat>_total`) for vendor-specific counters exposed by `rdmamap` (e.g. `rdma_port_hw_symbol_errors_total`).
+  - Port-level counters (`rdma_<stat>_total`) for standard sysfs statistics (e.g. `rdma_port_xmit_data_total`).
+  - Hardware counters (`rdma_<hw_stat>_total`) for vendor-specific counters exposed by `rdmamap` (e.g. `rdma_hw_symbol_errors_total`).
   - Port metadata (`rdma_port_info`) with value `1` and descriptive labels.
   - Exporter health metrics (Go/process collectors, HTTP instrumentation).
 - **Service Interface**:
@@ -67,7 +67,7 @@ The `cmd/rdma_exporter` package wires configuration, logging, and the HTTP serve
    - Host Channel Adapter (HCA) inventory.
    - Per-port standard stats.
    - Per-port hardware stats (if available).
-4. The collector transforms each counter into const metrics. Standard counters become stat-specific metric names (e.g. `rdma_port_port_xmit_data_total`) with labels `device` and `port`, while hardware counters follow the same pattern with the `rdma_port_hw_` prefix (e.g. `rdma_port_hw_symbol_errors_total`). Metadata metrics add labels like `link_layer`, `state`, `phys_state`, `link_width`, and `link_speed`.
+4. The collector transforms each counter into const metrics. Standard counters become stat-specific metric names (e.g. `rdma_port_xmit_data_total`) with labels `device` and `port`, while hardware counters follow the same pattern using the doc-aligned name (e.g. `rdma_hw_symbol_errors_total`). Metadata metrics add labels like `link_layer`, `state`, `phys_state`, `link_width`, and `link_speed`.
 5. Prometheus receives the serialized metrics response.
 
 ## 5. Error Handling and Resilience

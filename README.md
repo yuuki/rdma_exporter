@@ -5,8 +5,8 @@
 `rdma_exporter` collects RDMA (InfiniBand/RoCE) NIC statistics from Linux hosts and exposes them as Prometheus metrics. It uses [`github.com/Mellanox/rdmamap`](https://pkg.go.dev/github.com/Mellanox/rdmamap) to traverse the sysfs tree and [`github.com/prometheus/client_golang`](https://pkg.go.dev/github.com/prometheus/client_golang) to publish metrics.
 
 ## Features
-- Publishes port-level counters from `/sys/class/infiniband/<dev>/<port>/counters` as `rdma_port_<stat>_total` metrics (e.g. `rdma_port_port_rcv_data_total`).
-- Publishes hardware counters from `/sys/class/infiniband/<dev>/<port>/hw_counters` as `rdma_port_hw_<stat>_total` metrics (e.g. `rdma_port_hw_duplicate_request_total`).
+- Publishes port-level counters from `/sys/class/infiniband/<dev>/<port>/counters` as `rdma_<stat>_total` metrics (e.g. `rdma_port_rcv_data_total`).
+- Publishes hardware counters from `/sys/class/infiniband/<dev>/<port>/hw_counters` as `rdma_<hw_stat>_total` metrics (e.g. `rdma_hw_duplicate_request_total`).
 - Exposes port metadata (link layer, state, width, speed, etc.) through `rdma_port_info`.
 - Tracks scrape failures with `rdma_scrape_errors_total`.
 - Ships with an HTTP server that serves `/metrics` and `/healthz`.
@@ -42,8 +42,8 @@ Every CLI flag has an equivalent environment variable. Environment values provid
 | `--scrape-timeout` | `RDMA_EXPORTER_SCRAPE_TIMEOUT` | `5s` | Upper bound for metric gathering per scrape |
 
 ## Metrics
-- `rdma_port_<stat>_total{device,port}` – Standard counters (e.g. `rdma_port_port_rcv_data_total`).
-- `rdma_port_hw_<stat>_total{device,port}` – Hardware counters from `hw_counters` (e.g. `rdma_port_hw_symbol_errors_total`).
+- `rdma_<stat>_total{device,port}` – Standard counters (e.g. `rdma_port_rcv_data_total`).
+- `rdma_<hw_stat>_total{device,port}` – Hardware counters from `hw_counters` (e.g. `rdma_hw_symbol_errors_total`).
 - `rdma_port_info{device,port,link_layer,state,phys_state,link_width,link_speed}` – Gauge set to `1` with descriptive labels.
 - `rdma_scrape_errors_total` – Counter incremented when sysfs collection fails.
 
