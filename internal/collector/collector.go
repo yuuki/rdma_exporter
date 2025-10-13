@@ -31,7 +31,11 @@ type RdmaCollector struct {
 	scrapeErrors prometheus.Counter
 
 	collectMu sync.Mutex
-	ctxValue  atomic.Value // context.Context
+	ctxValue  atomic.Value // stores contextHolder
+}
+
+type contextHolder struct {
+	ctx context.Context
 }
 
 // New creates a new RDMA collector with the provided provider and logger.
@@ -66,7 +70,7 @@ func New(provider Provider, logger *slog.Logger) *RdmaCollector {
 			Help: "Total number of errors encountered while scraping RDMA sysfs.",
 		}),
 	}
-	c.ctxValue.Store(context.Background())
+	c.ctxValue.Store(contextHolder{ctx: context.Background()})
 
 	return c
 }
@@ -76,12 +80,12 @@ func (c *RdmaCollector) SetContext(ctx context.Context) {
 	if ctx == nil {
 		ctx = context.Background()
 	}
-	c.ctxValue.Store(ctx)
+	c.ctxValue.Store(contextHolder{ctx: ctx})
 }
 
 // ResetContext resets the collector back to the background context.
 func (c *RdmaCollector) ResetContext() {
-	c.ctxValue.Store(context.Background())
+	c.ctxValue.Store(contextHolder{ctx: context.Background()})
 }
 
 // Describe implements prometheus.Collector.
@@ -97,7 +101,8 @@ func (c *RdmaCollector) Collect(ch chan<- prometheus.Metric) {
 	c.collectMu.Lock()
 	defer c.collectMu.Unlock()
 
-	ctx, _ := c.ctxValue.Load().(context.Context)
+	holder, _ := c.ctxValue.Load().(contextHolder)
+	ctx := holder.ctx
 	if ctx == nil {
 		ctx = context.Background()
 	}
