@@ -13,8 +13,7 @@ High-performance computing clusters and low-latency trading platforms increasing
   - [`github.com/Mellanox/rdmamap`](https://pkg.go.dev/github.com/Mellanox/rdmamap) for sysfs discovery and statistics.
   - [`github.com/prometheus/client_golang`](https://pkg.go.dev/github.com/prometheus/client_golang) for instrumentation and HTTP handlers.
 - **Metrics**:
-  - Port-level counters (`rdma_port_stat_total`) for standard sysfs statistics.
-  - Hardware counters (`rdma_port_hw_stat_total`) for vendor-specific counters exposed by `rdmamap`.
+  - Port-level and hardware counters (`rdma_<counter>_total`) aligned with NVIDIA documentation (e.g. `rdma_port_xmit_data_total`, `rdma_symbol_error_total`, `rdma_duplicate_request_total`).
   - Port metadata (`rdma_port_info`) with value `1` and descriptive labels.
   - Exporter health metrics (Go/process collectors, HTTP instrumentation).
 - **Service Interface**:
@@ -67,7 +66,7 @@ The `cmd/rdma_exporter` package wires configuration, logging, and the HTTP serve
    - Host Channel Adapter (HCA) inventory.
    - Per-port standard stats.
    - Per-port hardware stats (if available).
-4. The collector transforms each counter into const metrics, adding labels `device`, `port`, and `stat`. Metadata metrics add labels like `link_layer`, `state`, `phys_state`, `link_width`, and `link_speed`.
+4. The collector transforms each counter into const metrics. Every counter is published as `rdma_<counter>_total` using the exact counter names from the NVIDIA guide (e.g. `rdma_port_xmit_data_total`, `rdma_symbol_error_total`, `rdma_duplicate_request_total`) with labels `device` and `port`. Metadata metrics add labels like `link_layer`, `state`, `phys_state`, `link_width`, and `link_speed`.
 5. Prometheus receives the serialized metrics response.
 
 ## 5. Error Handling and Resilience
