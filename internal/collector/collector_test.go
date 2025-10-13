@@ -75,14 +75,16 @@ rdma_port_hw_symbol_errors_total{device="mlx5_0",port="1"} 1
 # HELP rdma_port_info RDMA port metadata exported as labels.
 # TYPE rdma_port_info gauge
 rdma_port_info{device="mlx5_0",link_layer="InfiniBand",link_speed="100 Gb/sec",link_width="4X",phys_state="LinkUp",port="1",state="ACTIVE"} 1
-# HELP rdma_port_stat_total RDMA port counter sourced from sysfs counters.
-# TYPE rdma_port_stat_total counter
-rdma_port_stat_total{device="mlx5_0",port="1",stat="port_rcv_data"} 5
-rdma_port_stat_total{device="mlx5_0",port="1",stat="port_xmit_data"} 10
+# HELP rdma_port_port_rcv_data_total RDMA port counter sourced from sysfs counters.
+# TYPE rdma_port_port_rcv_data_total counter
+rdma_port_port_rcv_data_total{device="mlx5_0",port="1"} 5
+# HELP rdma_port_port_xmit_data_total RDMA port counter sourced from sysfs counters.
+# TYPE rdma_port_port_xmit_data_total counter
+rdma_port_port_xmit_data_total{device="mlx5_0",port="1"} 10
 `
 
 	if err := testutil.GatherAndCompare(reg, strings.NewReader(expected),
-		"rdma_port_stat_total", "rdma_port_hw_symbol_errors_total", "rdma_port_info"); err != nil {
+		"rdma_port_port_rcv_data_total", "rdma_port_port_xmit_data_total", "rdma_port_hw_symbol_errors_total", "rdma_port_info"); err != nil {
 		t.Fatalf("unexpected metrics output: %v", err)
 	}
 }

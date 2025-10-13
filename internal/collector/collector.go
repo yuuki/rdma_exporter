@@ -28,10 +28,11 @@ type RdmaCollector struct {
 	provider Provider
 	logger   *slog.Logger
 
-	portStatDesc *prometheus.Desc
 	portInfoDesc *prometheus.Desc
 
-	portHwMetrics    map[string]hwMetricEntry
+	portStatMetrics  map[string]metricEntry
+	portStatLookup   map[string]string
+	portHwMetrics    map[string]metricEntry
 	portHwStatLookup map[string]string
 
 	scrapeErrors prometheus.Counter
@@ -44,43 +45,51 @@ type contextHolder struct {
 	ctx context.Context
 }
 
-type hwMetricEntry struct {
+type metricEntry struct {
 	desc       *prometheus.Desc
 	metricName string
 	stat       string
 }
 
 func (c *RdmaCollector) hwMetricDesc(stat string) *prometheus.Desc {
-	if metricName, ok := c.portHwStatLookup[stat]; ok {
-		if entry, exists := c.portHwMetrics[metricName]; exists {
+	return c.metricDesc(stat, "rdma_port_hw_", "RDMA port hardware counter sourced from sysfs hw_counters.", c.portHwMetrics, c.portHwStatLookup)
+}
+
+func (c *RdmaCollector) statMetricDesc(stat string) *prometheus.Desc {
+	return c.metricDesc(stat, "rdma_port_", "RDMA port counter sourced from sysfs counters.", c.portStatMetrics, c.portStatLookup)
+}
+
+func (c *RdmaCollector) metricDesc(stat, prefix, help string, entries map[string]metricEntry, lookup map[string]string) *prometheus.Desc {
+	if metricName, ok := lookup[stat]; ok {
+		if entry, exists := entries[metricName]; exists {
 			return entry.desc
 		}
 	}
 
-	metricName := buildHwMetricName(stat, c.portHwMetrics)
+	metricName := buildMetricName(prefix, stat, entries)
 	desc := prometheus.NewDesc(
 		metricName,
-		"RDMA port hardware counter sourced from sysfs hw_counters.",
+		help,
 		[]string{"device", "port"},
 		nil,
 	)
 
-	c.portHwMetrics[metricName] = hwMetricEntry{
+	entries[metricName] = metricEntry{
 		desc:       desc,
 		metricName: metricName,
 		stat:       stat,
 	}
-	c.portHwStatLookup[stat] = metricName
+	lookup[stat] = metricName
 
 	return desc
 }
 
-func buildHwMetricName(stat string, existing map[string]hwMetricEntry) string {
+func buildMetricName(prefix, stat string, existing map[string]metricEntry) string {
 	base := sanitizeStatName(stat)
-	metricName := fmt.Sprintf("rdma_port_hw_%s_total", base)
+	metricName := fmt.Sprintf("%s%s_total", prefix, base)
 
 	if entry, ok := existing[metricName]; ok && entry.stat != stat {
-		metricName = fmt.Sprintf("rdma_port_hw_%s_%x_total", base, fnv32(stat))
+		metricName = fmt.Sprintf("%s%s_%x_total", prefix, base, fnv32(stat))
 	}
 
 	return metricName
@@ -137,12 +146,6 @@ func New(provider Provider, logger *slog.Logger) *RdmaCollector {
 	c := &RdmaCollector{
 		provider: provider,
 		logger:   logger,
-		portStatDesc: prometheus.NewDesc(
-			"rdma_port_stat_total",
-			"RDMA port counter sourced from sysfs counters.",
-			[]string{"device", "port", "stat"},
-			nil,
-		),
 		portInfoDesc: prometheus.NewDesc(
 			"rdma_port_info",
 			"RDMA port metadata exported as labels.",
@@ -153,7 +156,9 @@ func New(provider Provider, logger *slog.Logger) *RdmaCollector {
 			Name: "rdma_scrape_errors_total",
 			Help: "Total number of errors encountered while scraping RDMA sysfs.",
 		}),
-		portHwMetrics:    make(map[string]hwMetricEntry),
+		portStatMetrics:  make(map[string]metricEntry),
+		portStatLookup:   make(map[string]string),
+		portHwMetrics:    make(map[string]metricEntry),
 		portHwStatLookup: make(map[string]string),
 	}
 	c.ctxValue.Store(contextHolder{ctx: context.Background()})
@@ -176,17 +181,23 @@ func (c *RdmaCollector) ResetContext() {
 
 // Describe implements prometheus.Collector.
 func (c *RdmaCollector) Describe(ch chan<- *prometheus.Desc) {
-	ch <- c.portStatDesc
 	ch <- c.portInfoDesc
 	c.scrapeErrors.Describe(ch)
 
 	c.collectMu.Lock()
+	statDescs := make([]*prometheus.Desc, 0, len(c.portStatMetrics))
+	for _, entry := range c.portStatMetrics {
+		statDescs = append(statDescs, entry.desc)
+	}
 	hwDescs := make([]*prometheus.Desc, 0, len(c.portHwMetrics))
 	for _, entry := range c.portHwMetrics {
 		hwDescs = append(hwDescs, entry.desc)
 	}
 	c.collectMu.Unlock()
 
+	for _, desc := range statDescs {
+		ch <- desc
+	}
 	for _, desc := range hwDescs {
 		ch <- desc
 	}
@@ -226,13 +237,13 @@ func (c *RdmaCollector) Collect(ch chan<- prometheus.Metric) {
 				names := sortedKeys(port.Stats)
 				for _, name := range names {
 					value := float64(port.Stats[name])
+					desc := c.statMetricDesc(name)
 					ch <- prometheus.MustNewConstMetric(
-						c.portStatDesc,
+						desc,
 						prometheus.CounterValue,
 						value,
 						device.Name,
 						portID,
-						name,
 					)
 				}
 			}
