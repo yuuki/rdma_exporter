@@ -2,6 +2,7 @@
 # See https://goreleaser.com/ for documentation.
 version: 2
 project_name: rdma_exporter
+
 builds:
   - id: rdma_exporter
     main: .
@@ -17,11 +18,15 @@ builds:
       - -trimpath
     ldflags:
       - -s -w
-      - -X main.version={{.Version}}
-      - -X main.commit={{.FullCommit}}
+      - -X main.version={{ .Version }}
+      - -X main.commit={{ .FullCommit }}
 
 archives:
   - id: tgz
+    ids:
+      - rdma_exporter
+    formats:
+      - tar.gz
     files:
       - LICENSE
       - README.md

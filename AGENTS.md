@@ -32,3 +32,9 @@
 - The default scrape timeout is five seconds; adjust with `--scrape-timeout` for slower fabrics.
 - Run the exporter as an unprivileged user with read-only access to `/sys/class/infiniband`; never grant write permissions.
 - In internet-facing deployments, expose only `/metrics` and `/healthz` and terminate TLS upstream (sidecar or ingress) to minimize attack surface.
+
+## Release Flow
+- Update the `version` variable in `main.go`, refresh any release documentation, and ensure `go test ./...` passes.
+- Commit the changes and create an annotated tag using `git tag -a vX.Y.Z -m "Release X.Y.Z"`.
+- Push the branch and tag with `git push origin main --tags`.
+- The `release` GitHub Actions workflow (using `goreleaser/goreleaser-action@v6` with `version: \"~> v2\"`) triggers GoReleaser, which builds Linux (amd64/arm64) binaries, archives, and checksum files and publishes them to GitHub Releases.
