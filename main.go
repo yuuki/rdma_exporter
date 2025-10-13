@@ -8,6 +8,7 @@ import (
 	"log/slog"
 	"os"
 	"os/signal"
+	"runtime"
 	"syscall"
 	"time"
 
@@ -19,7 +20,10 @@ import (
 	"github.com/yuuki/rdma_exporter/internal/server"
 )
 
-var version = "0.1.0"
+var (
+	version = "0.1.0"
+	commit  = "unknown"
+)
 
 func main() {
 	cfg, err := config.Parse(os.Args[1:])
@@ -32,7 +36,7 @@ func main() {
 	}
 
 	if cfg.ShowVersion {
-		fmt.Println(version)
+		fmt.Printf("rdma_exporter v%s\ncommit: %s\nbuilt with: %s\n", version, commit, runtime.Version())
 		os.Exit(0)
 	}
 
