@@ -1,4 +1,4 @@
-module github.com/yuuki/prometheus-rdma-exporter
+module github.com/yuuki/rdma_exporter
 
 go 1.25.1
 
