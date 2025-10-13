@@ -58,6 +58,7 @@ type metricSpec struct {
 }
 
 var (
+	// ref. "Understanding mlx5 Linux Counters and Status Parameters", https://enterprise-support.nvidia.com/s/article/understanding-mlx5-linux-counters-and-status-parameters
 	metricSpecs = map[string]metricSpec{
 		"port_rcv_data": {
 			DocName: "port_rcv_data",
@@ -67,17 +68,9 @@ var (
 			DocName: "port_rcv_packets",
 			Help:    "Total number of packets (may include packets containing errors).",
 		},
-		"multicast_rcv_packets": {
-			DocName: "port_multicast_rcv_packets",
-			Help:    "Total number of multicast packets, including multicast packets containing errors.",
-		},
 		"port_multicast_rcv_packets": {
 			DocName: "port_multicast_rcv_packets",
 			Help:    "Total number of multicast packets, including multicast packets containing errors.",
-		},
-		"unicast_rcv_packets": {
-			DocName: "port_unicast_rcv_packets",
-			Help:    "Total number of unicast packets, including unicast packets containing errors.",
 		},
 		"port_unicast_rcv_packets": {
 			DocName: "port_unicast_rcv_packets",
@@ -91,17 +84,9 @@ var (
 			DocName: "port_xmit_packets",
 			Help:    "Total number of packets transmitted on all VLs from this port (may include packets with errors).",
 		},
-		"multicast_xmit_packets": {
-			DocName: "port_multicast_xmit_packets",
-			Help:    "Total number of multicast packets transmitted on all VLs from the port (may include multicast packets with errors).",
-		},
 		"port_multicast_xmit_packets": {
 			DocName: "port_multicast_xmit_packets",
 			Help:    "Total number of multicast packets transmitted on all VLs from the port (may include multicast packets with errors).",
-		},
-		"unicast_xmit_packets": {
-			DocName: "port_unicast_xmit_packets",
-			Help:    "Total number of unicast packets transmitted on all VLs from the port (may include unicast packets with errors).",
 		},
 		"port_unicast_xmit_packets": {
 			DocName: "port_unicast_xmit_packets",
@@ -143,14 +128,6 @@ var (
 			DocName: "symbol_error",
 			Help:    "Total number of minor link errors detected on one or more physical lanes.",
 		},
-		"symbol_errors": {
-			DocName: "symbol_error",
-			Help:    "Total number of minor link errors detected on one or more physical lanes.",
-		},
-		"vl15_dropped": {
-			DocName: "VL15_dropped",
-			Help:    "Number of incoming VL15 packets dropped due to resource limitations.",
-		},
 		"VL15_dropped": {
 			DocName: "VL15_dropped",
 			Help:    "Number of incoming VL15 packets dropped due to resource limitations.",
@@ -165,119 +142,123 @@ var (
 		},
 		"duplicate_request": {
 			DocName: "duplicate_request",
-			Help:    "The number of received packets where the request had already been executed.",
+			Help:    "Number of received packets. A duplicate request is a request that had been previously executed.",
 		},
 		"implied_nak_seq_err": {
 			DocName: "implied_nak_seq_err",
-			Help:    "Number of implied NAK sequence errors detected.",
+			Help:    "Number of times the requester decided an ACK with a PSN larger than the expected PSN for an RDMA read or response.",
+		},
+		"lifespan": {
+			DocName: "lifespan",
+			Help:    "The maximum period in ms which defines the aging of the counter reads. Two consecutive reads within this period might return the same values.",
 		},
 		"local_ack_timeout_err": {
 			DocName: "local_ack_timeout_err",
-			Help:    "Number of local ACK timeout errors observed.",
+			Help:    "The number of times QP's ack timer expired for RC, XRC, DCT QPs at the sender side. The QP retry limit was not exceeded, therefore it is still a recoverable error.",
 		},
 		"np_cnp_sent": {
 			DocName: "np_cnp_sent",
-			Help:    "Number of notification point congestion notification packets transmitted.",
+			Help:    "The number of CNP packets sent by the Notification Point when it noticed congestion experienced in the RoCEv2 IP header (ECN bits). The counter was added in MLNX_OFED 4.1.",
 		},
 		"np_ecn_marked_roce_packets": {
 			DocName: "np_ecn_marked_roce_packets",
-			Help:    "Number of RoCE packets transmitted with ECN marking by the NP.",
+			Help:    "The number of RoCEv2 packets received by the notification point which were marked for experiencing congestion (ECN bits were ‘11’ on the ingress RoCE traffic). The counter was added in MLNX_OFED 4.1.",
 		},
 		"out_of_buffer": {
 			DocName: "out_of_buffer",
-			Help:    "Count of requests dropped because the responder ran out of receive buffers.",
+			Help:    "The number of drops that occurred due to lack of WQE for the associated QPs.",
 		},
 		"out_of_sequence": {
 			DocName: "out_of_sequence",
-			Help:    "Requests received out of sequence on the port.",
+			Help:    "The number of out-of-sequence packets received.",
 		},
 		"packet_seq_err": {
 			DocName: "packet_seq_err",
-			Help:    "Packet sequence errors detected on the port.",
+			Help:    "The number of received NAK sequence error packets. The QP retry limit was not exceeded.",
 		},
 		"req_cqe_error": {
 			DocName: "req_cqe_error",
-			Help:    "Completion queue entries with error for requester operations.",
+			Help:    "The number of times requester detected CQEs completed with errors. Added in MLNX_OFED 4.1.",
 		},
 		"req_cqe_flush_error": {
 			DocName: "req_cqe_flush_error",
-			Help:    "Requester completion queue entries flushed due to QP error.",
+			Help:    "The number of times requester detected CQEs completed with flushed errors. Added in MLNX_OFED 4.1.",
 		},
 		"req_remote_access_errors": {
 			DocName: "req_remote_access_errors",
-			Help:    "Remote access errors reported for requester operations.",
+			Help:    "The number of times requester detected remote access errors. Added in MLNX_OFED 4.1.",
 		},
 		"req_remote_invalid_request": {
 			DocName: "req_remote_invalid_request",
-			Help:    "Remote invalid request errors reported for requester operations.",
+			Help:    "The number of times requester detected remote invalid request errors. Added in MLNX_OFED 4.1.",
 		},
 		"resp_cqe_error": {
 			DocName: "resp_cqe_error",
-			Help:    "Completion queue entries with error for responder operations.",
+			Help:    "The number of times responder detected CQEs completed with errors. Added in MLNX_OFED 4.1.",
 		},
 		"resp_cqe_flush_error": {
 			DocName: "resp_cqe_flush_error",
-			Help:    "Responder completion queue entries flushed due to QP error.",
+			Help:    "The number of times responder detected CQEs completed with flushed errors. Added in MLNX_OFED 4.1.",
 		},
 		"resp_local_length_error": {
 			DocName: "resp_local_length_error",
-			Help:    "Local length errors reported for responder operations.",
+			Help:    "The number of times responder detected local length errors. Added in MLNX_OFED 4.1.",
 		},
 		"resp_remote_access_errors": {
 			DocName: "resp_remote_access_errors",
-			Help:    "Remote access errors reported for responder operations.",
+			Help:    "The number of times responder detected remote access errors. Added in MLNX_OFED 4.1.",
 		},
 		"rnr_nak_retry_err": {
 			DocName: "rnr_nak_retry_err",
-			Help:    "Count of times RNR NAK retries were exhausted.",
+			Help:    "The number of received RNR NAK packets. The QP retry limit was not exceeded.",
 		},
 		"roce_adp_retrans": {
 			DocName: "roce_adp_retrans",
-			Help:    "Number of adaptive retransmissions observed for RoCE.",
+			Help:    "Counts the number of adaptive retransmissions for RoCE traffic. Added in MLNX_OFED rev 5.0-1.0.0.0 and kernel v5.6.0.",
 		},
 		"roce_adp_retrans_to": {
 			DocName: "roce_adp_retrans_to",
-			Help:    "Adaptive retransmissions triggered by timeout for RoCE.",
+			Help:    "Counts the number of times RoCE traffic reached timeout due to adaptive retransmission. Added in MLNX_OFED rev 5.0-1.0.0.0 and kernel v5.6.0.",
 		},
 		"roce_slow_restart": {
 			DocName: "roce_slow_restart",
-			Help:    "Count of RoCE slow restart events.",
+			Help:    "Counts the number of times RoCE slow restart was used. Added in MLNX_OFED rev 5.0-1.0.0.0 and kernel v5.6.0.",
 		},
 		"roce_slow_restart_cnps": {
 			DocName: "roce_slow_restart_cnps",
-			Help:    "Number of CNPs that triggered RoCE slow restart.",
+			Help:    "Counts the number of times RoCE slow restart generated CNP packets. Added in MLNX_OFED rev 5.0-1.0.0.0 and kernel v5.6.0.",
 		},
 		"roce_slow_restart_trans": {
 			DocName: "roce_slow_restart_trans",
-			Help:    "Number of retransmissions during RoCE slow restart.",
+			Help:    "Counts the number of times RoCE slow restart changed state to slow restart. Added in MLNX_OFED rev 5.0-1.0.0.0 and kernel v5.6.0.",
 		},
 		"rp_cnp_handled": {
 			DocName: "rp_cnp_handled",
-			Help:    "Number of congestion notification packets handled by the responder.",
+			Help:    "The number of CNP packets handled by the Reaction Point HCA to throttle the transmission rate. Added in MLNX_OFED 4.1.",
 		},
 		"rp_cnp_ignored": {
 			DocName: "rp_cnp_ignored",
-			Help:    "Number of congestion notification packets ignored by the responder.",
+			Help:    "The number of CNP packets received and ignored by the Reaction Point HCA. This counter should not raise if RoCE Congestion Control was enabled in the network. If this counter rises, verify that ECN was enabled on the adapter. Added in MLNX_OFED 4.1.",
 		},
 		"rx_atomic_requests": {
 			DocName: "rx_atomic_requests",
-			Help:    "Number of incoming Atomic requests processed.",
+			Help:    "The number of received ATOMIC requests for the associated QPs.",
 		},
 		"rx_dct_connect": {
 			DocName: "rx_dct_connect",
-			Help:    "Number of DCT connections established.",
+			Help:    "The number of received connection requests for the associated DCTs.",
 		},
 		"rx_icrc_encapsulated": {
 			DocName: "rx_icrc_encapsulated",
-			Help:    "Packets received with ICRC encapsulation.",
+			Help:    "The number of RoCE packets with ICRC errors. This counter was added in MLNX_OFED 4.4 and kernel 4.19.",
 		},
 		"rx_read_requests": {
 			DocName: "rx_read_requests",
-			Help:    "Number of incoming RDMA read requests processed.",
+			Help:    "The number of received READ requests for the associated QPs.",
 		},
 		"rx_write_requests": {
 			DocName: "rx_write_requests",
-			Help:    "Number of incoming RDMA write requests processed.",
+			Help:    "The number of received WRITE requests for the associated QPs.",
 		},
 	}
 
