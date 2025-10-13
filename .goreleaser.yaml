@@ -1,5 +1,6 @@
 # GoReleaser configuration for rdma_exporter.
 # See https://goreleaser.com/ for documentation.
+version: 2
 project_name: rdma_exporter
 builds:
   - id: rdma_exporter
@@ -21,9 +22,6 @@ builds:
 
 archives:
   - id: tgz
-    format: tar.gz
-    builds:
-      - rdma_exporter
     files:
       - LICENSE
       - README.md
