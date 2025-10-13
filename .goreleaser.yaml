@@ -30,6 +30,7 @@ archives:
     files:
       - LICENSE
       - README.md
+      - deploy/systemd/rdma_exporter.service
 
 checksum:
   name_template: "{{ .ProjectName }}_checksums.txt"
