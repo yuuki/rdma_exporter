@@ -72,7 +72,7 @@ The `cmd/rdma_exporter` package wires configuration, logging, and the HTTP serve
 
 ## 5. Error Handling and Resilience
 - **Partial Failures**: When an HCA or port fails to respond, the collector logs a warning and continues with remaining ports. Metrics for failed ports are omitted in that scrape to avoid publishing stale data.
-- **Timeouts**: Scrape requests inherit the HTTP request context. If computation exceeds the deadline, the handler aborts and records an error counter via `promhttp`.
+- **Timeouts**: Scrape requests reuse the HTTP request context but `prometheus.Collector` does not accept cancellation. The exporter wraps collection in a goroutine, aggregates results via channels, and respects the context deadline before writing the response. When the deadline is exceeded, it aborts the response and increments an error counter.
 - **Initialization**: Startup fails fast on configuration errors (e.g., invalid flags). When no RDMA devices exist, the exporter serves zero port metrics but keeps running.
 - **Graceful Shutdown**: The HTTP server listens for SIGINT/SIGTERM, stops accepting new connections, and waits for in-flight scrapes to finish.
 
@@ -88,8 +88,8 @@ The `cmd/rdma_exporter` package wires configuration, logging, and the HTTP serve
   - `--health-path="/healthz"`
   - `--log-level="info"` (`debug`, `warn`, `error` supported)
   - `--sysfs-root="/sys"`
-  - `--scrape-timeout="5s"` (upper bound applied to `Collect`)
-- **Environment Variables**: `RDMA_EXPORTER_LISTEN_ADDRESS`, etc., map one-to-one with flags and take precedence when set.
+  - `--scrape-timeout="5s"` (upper bound applied to scrape processing via context and goroutine)
+- **Environment Variables**: `RDMA_EXPORTER_LISTEN_ADDRESS`, etc., map one-to-one with flags and provide defaults when flags are unset. CLI flags override environment values to match typical Go flag semantics.
 - **Future Config**: A YAML file can be introduced under `config/` for static deployments (e.g., selecting devices).
 
 ## 8. Security Considerations
@@ -124,4 +124,3 @@ The `cmd/rdma_exporter` package wires configuration, logging, and the HTTP serve
 - Support event-driven metrics (e.g., link-up changes) using optional polling loops.
 - Add `/readyz` endpoint integrating pending configuration validation (e.g., device allow lists).
 - Implement on-demand profiling through a dedicated debug build.
-
