@@ -29,6 +29,12 @@
 - Body should state motivation and behaviour change; include `TESTING:` footer summarizing validation steps.
 - Pull requests should include a summary, testing evidence, and links to relevant issues. Attach screenshots or log excerpts when exposing new metrics or endpoints.
 
+### Git Commit Style Guide
+- Keep commit lines under 80 characters. Reserve the subject for ≤60 characters, written in imperative present tense, starting with a lowercase letter, and without trailing punctuation.
+- Structure messages as `type(scope): subject` followed by a blank line, an optional body, another blank line, and an optional footer. Describe motivation and contrast to previous behaviour in the body using imperative, present-tense sentences.
+- Types are limited to `feat`, `fix`, `docs`, `style`, `refactor`, `test`, `chore`, `init`, `rearrange`, and `update`. Choose a scope that pinpoints the component or package touched.
+- Use the footer to note `TESTING:` steps, declare `BREAKING CHANGE:`, and reference tracking IDs such as `closes #123` or GitHub issues.
+
 ## Security & Configuration Tips
 - Default scrape timeout is 5s; adjust via `--scrape-timeout` for slow hardware.
 - Run the exporter as an unprivileged user with read access to `/sys/class/infiniband`; avoid granting write permissions.
