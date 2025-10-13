@@ -84,7 +84,7 @@
         {
           "datasource": "$ds",
           "editorMode": "code",
-          "expr": "count(rdma_port_info{job=\"$job\", instance=\"$instance\", device=\"$device\", state!=\"ACTIVE\"})",
+          "expr": "count(rdma_port_info{job=\"$job\", instance=\"$instance\", device=\"$device\", port=\"$port\", state!=\"ACTIVE\"})",
           "legendFormat": "Non-ACTIVE ports",
           "refId": "A"
         }
@@ -124,7 +124,7 @@
         {
           "datasource": "$ds",
           "editorMode": "code",
-          "expr": "rdma_port_info{job=\"$job\", instance=\"$instance\", device=\"$device\"}",
+          "expr": "rdma_port_info{job=\"$job\", instance=\"$instance\", device=\"$device\", port=\"$port\"}",
           "format": "table",
           "instant": true,
           "legendFormat": "",
@@ -193,7 +193,7 @@
         {
           "datasource": "$ds",
           "editorMode": "code",
-          "expr": "sum(rate(rdma_link_downed_total{job=\"$job\", instance=\"$instance\", device=\"$device\"}[$interval])) + sum(rate(rdma_link_error_recovery_total{job=\"$job\", instance=\"$instance\", device=\"$device\"}[$interval]))",
+          "expr": "sum(rate(rdma_link_downed_total{job=\"$job\", instance=\"$instance\", device=\"$device\", port=\"$port\"}[$interval])) + sum(rate(rdma_link_error_recovery_total{job=\"$job\", instance=\"$instance\", device=\"$device\", port=\"$port\"}[$interval]))",
           "legendFormat": "Link events/s",
           "refId": "A"
         }
@@ -258,7 +258,7 @@
         {
           "datasource": "$ds",
           "editorMode": "code",
-          "expr": "topk($topn, 4 * rate(rdma_port_rcv_data_total{job=\"$job\", instance=\"$instance\", device=\"$device\"}[$interval]))",
+          "expr": "topk($topn, 4 * rate(rdma_port_rcv_data_total{job=\"$job\", instance=\"$instance\", device=\"$device\", port=\"$port\"}[$interval]))",
           "legendFormat": "{{device}}:{{port}}",
           "range": true,
           "refId": "A"
@@ -324,7 +324,7 @@
         {
           "datasource": "$ds",
           "editorMode": "code",
-          "expr": "topk($topn, 4 * rate(rdma_port_xmit_data_total{job=\"$job\", instance=\"$instance\", device=\"$device\"}[$interval]))",
+          "expr": "topk($topn, 4 * rate(rdma_port_xmit_data_total{job=\"$job\", instance=\"$instance\", device=\"$device\", port=\"$port\"}[$interval]))",
           "legendFormat": "{{device}}:{{port}}",
           "range": true,
           "refId": "A"
@@ -676,7 +676,7 @@
         {
           "datasource": "$ds",
           "editorMode": "code",
-          "expr": "rate(rdma_port_rcv_errors_total{job=\"$job\", instance=\"$instance\", device=\"$device\"}[$interval])",
+          "expr": "rate(rdma_port_rcv_errors_total{job=\"$job\", instance=\"$instance\", device=\"$device\", port=\"$port\"}[$interval])",
           "legendFormat": "rcv_errors",
           "range": true,
           "refId": "A"
@@ -684,7 +684,7 @@
         {
           "datasource": "$ds",
           "editorMode": "code",
-          "expr": "rate(rdma_port_xmit_discards_total{job=\"$job\", instance=\"$instance\", device=\"$device\"}[$interval])",
+          "expr": "rate(rdma_port_xmit_discards_total{job=\"$job\", instance=\"$instance\", device=\"$device\", port=\"$port\"}[$interval])",
           "legendFormat": "xmit_discards",
           "range": true,
           "refId": "B"
@@ -692,7 +692,7 @@
         {
           "datasource": "$ds",
           "editorMode": "code",
-          "expr": "rate(rdma_port_rcv_remote_physical_errors_total{job=\"$job\", instance=\"$instance\", device=\"$device\"}[$interval])",
+          "expr": "rate(rdma_port_rcv_remote_physical_errors_total{job=\"$job\", instance=\"$instance\", device=\"$device\", port=\"$port\"}[$interval])",
           "legendFormat": "rcv_remote_physical",
           "range": true,
           "refId": "C"
@@ -700,7 +700,7 @@
         {
           "datasource": "$ds",
           "editorMode": "code",
-          "expr": "rate(rdma_symbol_error_total{job=\"$job\", instance=\"$instance\", device=\"$device\"}[$interval])",
+          "expr": "rate(rdma_symbol_error_total{job=\"$job\", instance=\"$instance\", device=\"$device\", port=\"$port\"}[$interval])",
           "legendFormat": "symbol_error",
           "range": true,
           "refId": "D"
@@ -708,7 +708,7 @@
         {
           "datasource": "$ds",
           "editorMode": "code",
-          "expr": "rate(rdma_port_rcv_switch_relay_errors_total{job=\"$job\", instance=\"$instance\", device=\"$device\"}[$interval])",
+          "expr": "rate(rdma_port_rcv_switch_relay_errors_total{job=\"$job\", instance=\"$instance\", device=\"$device\", port=\"$port\"}[$interval])",
           "legendFormat": "switch_relay_errors",
           "range": true,
           "refId": "E"
@@ -716,7 +716,7 @@
         {
           "datasource": "$ds",
           "editorMode": "code",
-          "expr": "rate(rdma_port_rcv_constraint_errors_total{job=\"$job\", instance=\"$instance\", device=\"$device\"}[$interval])",
+          "expr": "rate(rdma_port_rcv_constraint_errors_total{job=\"$job\", instance=\"$instance\", device=\"$device\", port=\"$port\"}[$interval])",
           "legendFormat": "rcv_constraint_errors",
           "range": true,
           "refId": "F"
@@ -724,7 +724,7 @@
         {
           "datasource": "$ds",
           "editorMode": "code",
-          "expr": "rate(rdma_port_xmit_constraint_errors_total{job=\"$job\", instance=\"$instance\", device=\"$device\"}[$interval])",
+          "expr": "rate(rdma_port_xmit_constraint_errors_total{job=\"$job\", instance=\"$instance\", device=\"$device\", port=\"$port\"}[$interval])",
           "legendFormat": "xmit_constraint_errors",
           "range": true,
           "refId": "G"
