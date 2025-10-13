@@ -46,7 +46,7 @@ func TestCollectorExportsMetrics(t *testing.T) {
 							"port_rcv_data":  5,
 						},
 						HwStats: map[string]uint64{
-							"symbol_errors": 1,
+							"symbol_error": 1,
 						},
 						Attributes: rdma.PortAttributes{
 							LinkLayer: "InfiniBand",
@@ -69,22 +69,22 @@ func TestCollectorExportsMetrics(t *testing.T) {
 	defer c.ResetContext()
 
 	expected := `
-# HELP rdma_port_symbol_errors_total Physical coding symbol errors detected on the port.
-# TYPE rdma_port_symbol_errors_total counter
-rdma_port_symbol_errors_total{device="mlx5_0",port="1"} 1
 # HELP rdma_port_info RDMA port metadata exported as labels.
 # TYPE rdma_port_info gauge
 rdma_port_info{device="mlx5_0",link_layer="InfiniBand",link_speed="100 Gb/sec",link_width="4X",phys_state="LinkUp",port="1",state="ACTIVE"} 1
-# HELP rdma_port_rcv_data_total Total data double-words received on the port (PortRcvData).
+# HELP rdma_port_rcv_data_total The total number of data octets, divided by 4 (counting in double words, 32 bits), received on all VLs from the port.
 # TYPE rdma_port_rcv_data_total counter
 rdma_port_rcv_data_total{device="mlx5_0",port="1"} 5
-# HELP rdma_port_xmit_data_total Total data double-words transmitted from the port (PortXmitData).
+# HELP rdma_port_xmit_data_total The total number of data octets, divided by 4, transmitted on all VLs from the port.
 # TYPE rdma_port_xmit_data_total counter
 rdma_port_xmit_data_total{device="mlx5_0",port="1"} 10
+# HELP rdma_symbol_error_total Total number of minor link errors detected on one or more physical lanes.
+# TYPE rdma_symbol_error_total counter
+rdma_symbol_error_total{device="mlx5_0",port="1"} 1
 `
 
 	if err := testutil.GatherAndCompare(reg, strings.NewReader(expected),
-		"rdma_port_rcv_data_total", "rdma_port_xmit_data_total", "rdma_port_symbol_errors_total", "rdma_port_info"); err != nil {
+		"rdma_port_rcv_data_total", "rdma_port_xmit_data_total", "rdma_symbol_error_total", "rdma_port_info"); err != nil {
 		t.Fatalf("unexpected metrics output: %v", err)
 	}
 }

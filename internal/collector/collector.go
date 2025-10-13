@@ -52,23 +52,247 @@ type metricEntry struct {
 	docName    string
 }
 
-var metricHelpText = map[string]string{
-	"port_rcv_data":               "Total data double-words received on the port (PortRcvData).",
-	"port_rcv_packets":            "Total packets received on the port, including errored packets (PortRcvPkts).",
-	"port_xmit_data":              "Total data double-words transmitted from the port (PortXmitData).",
-	"port_xmit_packets":           "Total packets transmitted from the port, including errored packets (PortXmitPkts).",
-	"port_xmit_wait":              "Scheduler ticks where the port had traffic to send but remained idle (PortXmitWait).",
-	"port_unicast_rcv_packets":    "Total unicast packets received on the port.",
-	"port_unicast_xmit_packets":   "Total unicast packets transmitted from the port.",
-	"port_multicast_rcv_packets":  "Total multicast packets received on the port.",
-	"port_multicast_xmit_packets": "Total multicast packets transmitted from the port.",
-	"port_symbol_errors":          "Physical coding symbol errors detected on the port.",
-	"port_duplicate_request":      "Duplicate RDMA requests observed on the port.",
-	"port_out_of_sequence":        "Requests received out of sequence on the port.",
-	"port_rnr_nak_retry_err":      "RNR NAK retries exhausted on the port.",
-	"port_packet_seq_err":         "Packet sequence errors detected on the port.",
-	"port_implied_nak_seq_err":    "Implied NAK sequence errors detected on the port.",
-	"port_local_ack_timeout_err":  "Local ACK timeout errors observed on the port.",
+type metricSpec struct {
+	DocName string
+	Help    string
+}
+
+var (
+	metricSpecs = map[string]metricSpec{
+		"port_rcv_data": {
+			DocName: "port_rcv_data",
+			Help:    "The total number of data octets, divided by 4 (counting in double words, 32 bits), received on all VLs from the port.",
+		},
+		"port_rcv_packets": {
+			DocName: "port_rcv_packets",
+			Help:    "Total number of packets (may include packets containing errors).",
+		},
+		"multicast_rcv_packets": {
+			DocName: "port_multicast_rcv_packets",
+			Help:    "Total number of multicast packets, including multicast packets containing errors.",
+		},
+		"port_multicast_rcv_packets": {
+			DocName: "port_multicast_rcv_packets",
+			Help:    "Total number of multicast packets, including multicast packets containing errors.",
+		},
+		"unicast_rcv_packets": {
+			DocName: "port_unicast_rcv_packets",
+			Help:    "Total number of unicast packets, including unicast packets containing errors.",
+		},
+		"port_unicast_rcv_packets": {
+			DocName: "port_unicast_rcv_packets",
+			Help:    "Total number of unicast packets, including unicast packets containing errors.",
+		},
+		"port_xmit_data": {
+			DocName: "port_xmit_data",
+			Help:    "The total number of data octets, divided by 4, transmitted on all VLs from the port.",
+		},
+		"port_xmit_packets": {
+			DocName: "port_xmit_packets",
+			Help:    "Total number of packets transmitted on all VLs from this port (may include packets with errors).",
+		},
+		"multicast_xmit_packets": {
+			DocName: "port_multicast_xmit_packets",
+			Help:    "Total number of multicast packets transmitted on all VLs from the port (may include multicast packets with errors).",
+		},
+		"port_multicast_xmit_packets": {
+			DocName: "port_multicast_xmit_packets",
+			Help:    "Total number of multicast packets transmitted on all VLs from the port (may include multicast packets with errors).",
+		},
+		"unicast_xmit_packets": {
+			DocName: "port_unicast_xmit_packets",
+			Help:    "Total number of unicast packets transmitted on all VLs from the port (may include unicast packets with errors).",
+		},
+		"port_unicast_xmit_packets": {
+			DocName: "port_unicast_xmit_packets",
+			Help:    "Total number of unicast packets transmitted on all VLs from the port (may include unicast packets with errors).",
+		},
+		"port_rcv_switch_relay_errors": {
+			DocName: "port_rcv_switch_relay_errors",
+			Help:    "Total number of packets received on the port that were discarded because they could not be forwarded by the switch relay.",
+		},
+		"port_rcv_errors": {
+			DocName: "port_rcv_errors",
+			Help:    "Total number of packets containing an error that were received on the port.",
+		},
+		"port_rcv_constraint_errors": {
+			DocName: "port_rcv_constraint_errors",
+			Help:    "Total number of packets received on the switch physical port that are discarded.",
+		},
+		"local_link_integrity_errors": {
+			DocName: "local_link_integrity_errors",
+			Help:    "Number of times that the count of local physical errors exceeded the threshold specified by LocalPhyErrors.",
+		},
+		"port_xmit_wait": {
+			DocName: "port_xmit_wait",
+			Help:    "Number of ticks during which the port had data to transmit but no data was sent during the entire tick.",
+		},
+		"port_xmit_discards": {
+			DocName: "port_xmit_discards",
+			Help:    "Total number of outbound packets discarded by the port because the port is down or congested.",
+		},
+		"port_xmit_constraint_errors": {
+			DocName: "port_xmit_constraint_errors",
+			Help:    "Total number of packets not transmitted from the switch physical port.",
+		},
+		"port_rcv_remote_physical_errors": {
+			DocName: "port_rcv_remote_physical_errors",
+			Help:    "Total number of packets marked with the EBP delimiter received on the port.",
+		},
+		"symbol_error": {
+			DocName: "symbol_error",
+			Help:    "Total number of minor link errors detected on one or more physical lanes.",
+		},
+		"symbol_errors": {
+			DocName: "symbol_error",
+			Help:    "Total number of minor link errors detected on one or more physical lanes.",
+		},
+		"vl15_dropped": {
+			DocName: "VL15_dropped",
+			Help:    "Number of incoming VL15 packets dropped due to resource limitations.",
+		},
+		"VL15_dropped": {
+			DocName: "VL15_dropped",
+			Help:    "Number of incoming VL15 packets dropped due to resource limitations.",
+		},
+		"link_error_recovery": {
+			DocName: "link_error_recovery",
+			Help:    "Total number of times the Port Training state machine successfully completed the link error recovery process.",
+		},
+		"link_downed": {
+			DocName: "link_downed",
+			Help:    "Total number of times the Port Training state machine failed the link error recovery process and downed the link.",
+		},
+		"duplicate_request": {
+			DocName: "duplicate_request",
+			Help:    "The number of received packets where the request had already been executed.",
+		},
+		"implied_nak_seq_err": {
+			DocName: "implied_nak_seq_err",
+			Help:    "Number of implied NAK sequence errors detected.",
+		},
+		"local_ack_timeout_err": {
+			DocName: "local_ack_timeout_err",
+			Help:    "Number of local ACK timeout errors observed.",
+		},
+		"np_cnp_sent": {
+			DocName: "np_cnp_sent",
+			Help:    "Number of notification point congestion notification packets transmitted.",
+		},
+		"np_ecn_marked_roce_packets": {
+			DocName: "np_ecn_marked_roce_packets",
+			Help:    "Number of RoCE packets transmitted with ECN marking by the NP.",
+		},
+		"out_of_buffer": {
+			DocName: "out_of_buffer",
+			Help:    "Count of requests dropped because the responder ran out of receive buffers.",
+		},
+		"out_of_sequence": {
+			DocName: "out_of_sequence",
+			Help:    "Requests received out of sequence on the port.",
+		},
+		"packet_seq_err": {
+			DocName: "packet_seq_err",
+			Help:    "Packet sequence errors detected on the port.",
+		},
+		"req_cqe_error": {
+			DocName: "req_cqe_error",
+			Help:    "Completion queue entries with error for requester operations.",
+		},
+		"req_cqe_flush_error": {
+			DocName: "req_cqe_flush_error",
+			Help:    "Requester completion queue entries flushed due to QP error.",
+		},
+		"req_remote_access_errors": {
+			DocName: "req_remote_access_errors",
+			Help:    "Remote access errors reported for requester operations.",
+		},
+		"req_remote_invalid_request": {
+			DocName: "req_remote_invalid_request",
+			Help:    "Remote invalid request errors reported for requester operations.",
+		},
+		"resp_cqe_error": {
+			DocName: "resp_cqe_error",
+			Help:    "Completion queue entries with error for responder operations.",
+		},
+		"resp_cqe_flush_error": {
+			DocName: "resp_cqe_flush_error",
+			Help:    "Responder completion queue entries flushed due to QP error.",
+		},
+		"resp_local_length_error": {
+			DocName: "resp_local_length_error",
+			Help:    "Local length errors reported for responder operations.",
+		},
+		"resp_remote_access_errors": {
+			DocName: "resp_remote_access_errors",
+			Help:    "Remote access errors reported for responder operations.",
+		},
+		"rnr_nak_retry_err": {
+			DocName: "rnr_nak_retry_err",
+			Help:    "Count of times RNR NAK retries were exhausted.",
+		},
+		"roce_adp_retrans": {
+			DocName: "roce_adp_retrans",
+			Help:    "Number of adaptive retransmissions observed for RoCE.",
+		},
+		"roce_adp_retrans_to": {
+			DocName: "roce_adp_retrans_to",
+			Help:    "Adaptive retransmissions triggered by timeout for RoCE.",
+		},
+		"roce_slow_restart": {
+			DocName: "roce_slow_restart",
+			Help:    "Count of RoCE slow restart events.",
+		},
+		"roce_slow_restart_cnps": {
+			DocName: "roce_slow_restart_cnps",
+			Help:    "Number of CNPs that triggered RoCE slow restart.",
+		},
+		"roce_slow_restart_trans": {
+			DocName: "roce_slow_restart_trans",
+			Help:    "Number of retransmissions during RoCE slow restart.",
+		},
+		"rp_cnp_handled": {
+			DocName: "rp_cnp_handled",
+			Help:    "Number of congestion notification packets handled by the responder.",
+		},
+		"rp_cnp_ignored": {
+			DocName: "rp_cnp_ignored",
+			Help:    "Number of congestion notification packets ignored by the responder.",
+		},
+		"rx_atomic_requests": {
+			DocName: "rx_atomic_requests",
+			Help:    "Number of incoming Atomic requests processed.",
+		},
+		"rx_dct_connect": {
+			DocName: "rx_dct_connect",
+			Help:    "Number of DCT connections established.",
+		},
+		"rx_icrc_encapsulated": {
+			DocName: "rx_icrc_encapsulated",
+			Help:    "Packets received with ICRC encapsulation.",
+		},
+		"rx_read_requests": {
+			DocName: "rx_read_requests",
+			Help:    "Number of incoming RDMA read requests processed.",
+		},
+		"rx_write_requests": {
+			DocName: "rx_write_requests",
+			Help:    "Number of incoming RDMA write requests processed.",
+		},
+	}
+
+	metricHelpByDocName = buildMetricHelpByDocName()
+)
+
+func buildMetricHelpByDocName() map[string]string {
+	help := make(map[string]string, len(metricSpecs))
+	for _, spec := range metricSpecs {
+		if spec.DocName == "" || spec.Help == "" {
+			continue
+		}
+		help[spec.DocName] = spec.Help
+	}
+	return help
 }
 
 func (c *RdmaCollector) hwMetricDesc(stat string) *prometheus.Desc {
@@ -108,13 +332,6 @@ func (c *RdmaCollector) metricDesc(stat, docName, fallback string, entries map[s
 	return desc
 }
 
-func metricDocHelp(docName, fallback string) string {
-	if desc, ok := metricHelpText[docName]; ok {
-		return desc
-	}
-	return fallback
-}
-
 func buildMetricName(docName string, existing map[string]metricEntry) string {
 	base := sanitizeStatName(docName)
 	metricName := fmt.Sprintf("rdma_%s_total", base)
@@ -124,6 +341,13 @@ func buildMetricName(docName string, existing map[string]metricEntry) string {
 	}
 
 	return metricName
+}
+
+func metricDocHelp(docName, fallback string) string {
+	if help, ok := metricHelpByDocName[docName]; ok {
+		return help
+	}
+	return fallback
 }
 
 func sanitizeStatName(stat string) string {
@@ -169,14 +393,17 @@ func fnv32(s string) uint32 {
 }
 
 func canonicalDocName(stat string) string {
+	if spec, ok := metricSpecs[stat]; ok && spec.DocName != "" {
+		return spec.DocName
+	}
 	sanitized := sanitizeStatName(stat)
-	if strings.HasPrefix(sanitized, "port_") {
-		return sanitized
+	if spec, ok := metricSpecs[sanitized]; ok && spec.DocName != "" {
+		return spec.DocName
 	}
-	if sanitized == "unknown" {
-		return "port_unknown"
+	if sanitized == "" {
+		return "unknown"
 	}
-	return "port_" + sanitized
+	return sanitized
 }
 
 // New creates a new RDMA collector with the provided provider and logger.
