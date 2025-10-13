@@ -1,0 +1,28 @@
+[Unit]
+Description=Prometheus RDMA Exporter
+Documentation=https://github.com/yuuki/rdma_exporter
+Wants=network-online.target
+After=network-online.target
+
+[Service]
+User=rdma_exporter
+Group=rdma_exporter
+EnvironmentFile=-/etc/rdma_exporter.env
+ExecStart=/usr/local/bin/rdma_exporter \
+  --listen-address=${RDMA_EXPORTER_LISTEN_ADDRESS:-:9879} \
+  --metrics-path=${RDMA_EXPORTER_METRICS_PATH:-/metrics} \
+  --health-path=${RDMA_EXPORTER_HEALTH_PATH:-/healthz}
+Restart=on-failure
+RestartSec=5s
+StateDirectory=rdma_exporter
+RuntimeDirectory=rdma_exporter
+WorkingDirectory=/var/lib/rdma_exporter
+ProtectSystem=strict
+ProtectHome=true
+PrivateTmp=true
+NoNewPrivileges=true
+AmbientCapabilities=
+CapabilityBoundingSet=
+
+[Install]
+WantedBy=multi-user.target

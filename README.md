@@ -54,6 +54,10 @@ go test ./...
 
 `internal/rdma/testdata/sysfs` contains fixture trees used in unit tests to emulate sysfs layouts.
 
+## Deployment
+- A systemd unit file is available under `deploy/systemd/rdma_exporter.service`.
+- A multi-stage Dockerfile lives in `deploy/docker/Dockerfile`; see `docs/deployment.md` for build and run instructions.
+
 ## Development Notes
 - Architectural decisions and future work are documented in `docs/design.md`.
 - Logging uses the Go standard library `log/slog`. Set `--log-level=debug` for detailed scrape traces.
