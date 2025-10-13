@@ -1,0 +1,1002 @@
+{
+  "annotations": {
+    "list": [
+      {
+        "builtIn": 1,
+        "datasource": {
+          "type": "grafana",
+          "uid": "-- Grafana --"
+        },
+        "enable": true,
+        "hide": true,
+        "iconColor": "rgba(0, 211, 255, 1)",
+        "name": "Annotations & Alerts",
+        "type": "dashboard"
+      }
+    ]
+  },
+  "description": "Grafana dashboard for rdma_exporter covering port health, throughput, congestion, and error diagnostics.",
+  "editable": true,
+  "fiscalYearStartMonth": 1,
+  "graphTooltip": 1,
+  "id": null,
+  "iteration": 1718222400000,
+  "links": [
+    {
+      "icon": "external link",
+      "includeVars": true,
+      "keepTime": true,
+      "targetBlank": true,
+      "title": "rdma_exporter project",
+      "type": "link",
+      "url": "https://github.com/yuuki/rdma_exporter"
+    }
+  ],
+  "panels": [
+    {
+      "datasource": "$ds",
+      "fieldConfig": {
+        "defaults": {
+          "color": {
+            "mode": "palette-classic"
+          },
+          "mappings": [],
+          "thresholds": {
+            "mode": "absolute",
+            "steps": [
+              {
+                "color": "green",
+                "value": null
+              },
+              {
+                "color": "red",
+                "value": 1
+              }
+            ]
+          },
+          "unit": "none"
+        },
+        "overrides": []
+      },
+      "gridPos": {
+        "h": 8,
+        "w": 8,
+        "x": 0,
+        "y": 0
+      },
+      "id": 1,
+      "options": {
+        "colorMode": "value",
+        "graphMode": "area",
+        "justifyMode": "center",
+        "orientation": "horizontal",
+        "reduceOptions": {
+          "calcs": [
+            "lastNotNull"
+          ],
+          "fields": "",
+          "values": false
+        },
+        "textMode": "auto"
+      },
+      "pluginVersion": "10.4.0",
+      "targets": [
+        {
+          "datasource": "$ds",
+          "editorMode": "code",
+          "expr": "count(rdma_port_info{job=\"$job\", instance=\"$instance\", state!=\"ACTIVE\"})",
+          "legendFormat": "Non-ACTIVE ports",
+          "refId": "A"
+        }
+      ],
+      "title": "Overview: Non-ACTIVE Ports [count] / job",
+      "type": "stat"
+    },
+    {
+      "datasource": "$ds",
+      "fieldConfig": {
+        "defaults": {
+          "custom": {
+            "align": "left"
+          },
+          "mappings": [],
+          "unit": "none"
+        },
+        "overrides": []
+      },
+      "gridPos": {
+        "h": 8,
+        "w": 8,
+        "x": 8,
+        "y": 0
+      },
+      "id": 2,
+      "options": {
+        "footer": {
+          "enablePagination": true,
+          "fields": ""
+        },
+        "showHeader": true,
+        "sortBy": []
+      },
+      "pluginVersion": "10.4.0",
+      "targets": [
+        {
+          "datasource": "$ds",
+          "editorMode": "code",
+          "expr": "rdma_port_info{job=\"$job\", instance=\"$instance\"}",
+          "format": "table",
+          "instant": true,
+          "legendFormat": "",
+          "refId": "A"
+        }
+      ],
+      "title": "Overview: Port State Matrix",
+      "transformations": [
+        {
+          "id": "labelsToFields",
+          "options": {
+            "valueFieldName": "state"
+          }
+        }
+      ],
+      "type": "table"
+    },
+    {
+      "datasource": "$ds",
+      "fieldConfig": {
+        "defaults": {
+          "color": {
+            "mode": "palette-classic"
+          },
+          "mappings": [],
+          "thresholds": {
+            "mode": "absolute",
+            "steps": [
+              {
+                "color": "green",
+                "value": null
+              },
+              {
+                "color": "orange",
+                "value": 0.1
+              }
+            ]
+          },
+          "unit": "events/s"
+        },
+        "overrides": []
+      },
+      "gridPos": {
+        "h": 8,
+        "w": 8,
+        "x": 16,
+        "y": 0
+      },
+      "id": 3,
+      "options": {
+        "colorMode": "value",
+        "graphMode": "area",
+        "justifyMode": "center",
+        "orientation": "horizontal",
+        "reduceOptions": {
+          "calcs": [
+            "lastNotNull"
+          ],
+          "fields": "",
+          "values": false
+        },
+        "textMode": "auto"
+      },
+      "pluginVersion": "10.4.0",
+      "targets": [
+        {
+          "datasource": "$ds",
+          "editorMode": "code",
+          "expr": "sum(rate(rdma_link_downed_total{job=\"$job\", instance=\"$instance\"}[$interval])) + sum(rate(rdma_link_error_recovery_total{job=\"$job\", instance=\"$instance\"}[$interval]))",
+          "legendFormat": "Link events/s",
+          "refId": "A"
+        }
+      ],
+      "title": "Overview: Link Events [events/s] / job",
+      "type": "stat"
+    },
+    {
+      "datasource": "$ds",
+      "fieldConfig": {
+        "defaults": {
+          "color": {
+            "mode": "continuous-YlBl"
+          },
+          "custom": {
+            "drawStyle": "line",
+            "lineInterpolation": "smooth",
+            "lineWidth": 2,
+            "showPoints": "never"
+          },
+          "mappings": [],
+          "thresholds": {
+            "mode": "absolute",
+            "steps": [
+              {
+                "color": "green",
+                "value": null
+              },
+              {
+                "color": "red",
+                "value": 0
+              }
+            ]
+          },
+          "unit": "Bps"
+        },
+        "overrides": []
+      },
+      "gridPos": {
+        "h": 9,
+        "w": 12,
+        "x": 0,
+        "y": 8
+      },
+      "id": 4,
+      "options": {
+        "legend": {
+          "calcs": [
+            "lastNotNull"
+          ],
+          "displayMode": "list",
+          "placement": "bottom",
+          "showLegend": true
+        },
+        "tooltip": {
+          "mode": "single",
+          "sort": "none"
+        }
+      },
+      "pluginVersion": "10.4.0",
+      "targets": [
+        {
+          "datasource": "$ds",
+          "editorMode": "code",
+          "expr": "topk($topn, 4 * rate(rdma_port_rcv_data_total{job=\"$job\", instance=\"$instance\"}[$interval]))",
+          "legendFormat": "{{device}}:{{port}}",
+          "range": true,
+          "refId": "A"
+        }
+      ],
+      "title": "Throughput: RX Top-$topn [B/s] / instance",
+      "type": "timeseries"
+    },
+    {
+      "datasource": "$ds",
+      "fieldConfig": {
+        "defaults": {
+          "color": {
+            "mode": "continuous-YlRd"
+          },
+          "custom": {
+            "drawStyle": "line",
+            "lineInterpolation": "smooth",
+            "lineWidth": 2,
+            "showPoints": "never"
+          },
+          "mappings": [],
+          "thresholds": {
+            "mode": "absolute",
+            "steps": [
+              {
+                "color": "green",
+                "value": null
+              },
+              {
+                "color": "red",
+                "value": 0
+              }
+            ]
+          },
+          "unit": "Bps"
+        },
+        "overrides": []
+      },
+      "gridPos": {
+        "h": 9,
+        "w": 12,
+        "x": 12,
+        "y": 8
+      },
+      "id": 5,
+      "options": {
+        "legend": {
+          "calcs": [
+            "lastNotNull"
+          ],
+          "displayMode": "list",
+          "placement": "bottom",
+          "showLegend": true
+        },
+        "tooltip": {
+          "mode": "single",
+          "sort": "none"
+        }
+      },
+      "pluginVersion": "10.4.0",
+      "targets": [
+        {
+          "datasource": "$ds",
+          "editorMode": "code",
+          "expr": "topk($topn, 4 * rate(rdma_port_xmit_data_total{job=\"$job\", instance=\"$instance\"}[$interval]))",
+          "legendFormat": "{{device}}:{{port}}",
+          "range": true,
+          "refId": "A"
+        }
+      ],
+      "title": "Throughput: TX Top-$topn [B/s] / instance",
+      "type": "timeseries"
+    },
+    {
+      "datasource": "$ds",
+      "fieldConfig": {
+        "defaults": {
+          "color": {
+            "mode": "palette-classic"
+          },
+          "custom": {
+            "drawStyle": "line",
+            "lineInterpolation": "smooth",
+            "lineWidth": 2,
+            "showPoints": "never"
+          },
+          "displayName": "",
+          "mappings": [],
+          "unit": "pps"
+        },
+        "overrides": [
+          {
+            "matcher": {
+              "id": "byName",
+              "options": "rx_packets"
+            },
+            "properties": [
+              {
+                "id": "color",
+                "value": {
+                  "fixedColor": "#5794F2",
+                  "mode": "fixed"
+                }
+              }
+            ]
+          },
+          {
+            "matcher": {
+              "id": "byName",
+              "options": "tx_packets"
+            },
+            "properties": [
+              {
+                "id": "color",
+                "value": {
+                  "fixedColor": "#F2495C",
+                  "mode": "fixed"
+                }
+              }
+            ]
+          }
+        ]
+      },
+      "gridPos": {
+        "h": 9,
+        "w": 12,
+        "x": 0,
+        "y": 17
+      },
+      "id": 6,
+      "options": {
+        "legend": {
+          "calcs": [
+            "lastNotNull"
+          ],
+          "displayMode": "list",
+          "placement": "bottom",
+          "showLegend": true
+        },
+        "tooltip": {
+          "mode": "multi",
+          "sort": "none"
+        }
+      },
+      "pluginVersion": "10.4.0",
+      "targets": [
+        {
+          "datasource": "$ds",
+          "editorMode": "code",
+          "expr": "rate(rdma_port_rcv_packets_total{job=\"$job\", instance=\"$instance\", device=\"$device\", port=\"$port\"}[$interval])",
+          "legendFormat": "rx_packets",
+          "range": true,
+          "refId": "A"
+        },
+        {
+          "datasource": "$ds",
+          "editorMode": "code",
+          "expr": "rate(rdma_port_xmit_packets_total{job=\"$job\", instance=\"$instance\", device=\"$device\", port=\"$port\"}[$interval])",
+          "legendFormat": "tx_packets",
+          "range": true,
+          "refId": "B"
+        },
+        {
+          "datasource": "$ds",
+          "editorMode": "code",
+          "expr": "rate(rdma_port_multicast_rcv_packets_total{job=\"$job\", instance=\"$instance\", device=\"$device\", port=\"$port\"}[$interval])",
+          "legendFormat": "multicast_rx",
+          "range": true,
+          "refId": "C"
+        },
+        {
+          "datasource": "$ds",
+          "editorMode": "code",
+          "expr": "rate(rdma_port_unicast_rcv_packets_total{job=\"$job\", instance=\"$instance\", device=\"$device\", port=\"$port\"}[$interval])",
+          "legendFormat": "unicast_rx",
+          "range": true,
+          "refId": "D"
+        }
+      ],
+      "title": "Packets: Selected Port [pkt/s] / device",
+      "type": "timeseries"
+    },
+    {
+      "datasource": "$ds",
+      "fieldConfig": {
+        "defaults": {
+          "color": {
+            "mode": "continuous-RdYlGr"
+          },
+          "custom": {
+            "drawStyle": "line",
+            "lineInterpolation": "smooth",
+            "lineWidth": 2,
+            "showPoints": "never"
+          },
+          "mappings": [],
+          "unit": "none"
+        },
+        "overrides": []
+      },
+      "gridPos": {
+        "h": 9,
+        "w": 12,
+        "x": 12,
+        "y": 17
+      },
+      "id": 7,
+      "options": {
+        "legend": {
+          "calcs": [
+            "lastNotNull"
+          ],
+          "displayMode": "list",
+          "placement": "bottom",
+          "showLegend": true
+        },
+        "tooltip": {
+          "mode": "single",
+          "sort": "none"
+        }
+      },
+      "pluginVersion": "10.4.0",
+      "targets": [
+        {
+          "datasource": "$ds",
+          "editorMode": "code",
+          "expr": "rate(rdma_port_xmit_wait_total{job=\"$job\", instance=\"$instance\", device=\"$device\", port=\"$port\"}[$interval])",
+          "legendFormat": "{{device}}:{{port}}",
+          "range": true,
+          "refId": "A"
+        }
+      ],
+      "title": "Congestion: xmit_wait [ticks/s] / device",
+      "type": "timeseries"
+    },
+    {
+      "datasource": "$ds",
+      "fieldConfig": {
+        "defaults": {
+          "color": {
+            "mode": "palette-classic"
+          },
+          "custom": {
+            "drawStyle": "line",
+            "lineInterpolation": "smooth",
+            "lineWidth": 2,
+            "showPoints": "never"
+          },
+          "mappings": [],
+          "unit": "pps"
+        },
+        "overrides": []
+      },
+      "gridPos": {
+        "h": 9,
+        "w": 12,
+        "x": 0,
+        "y": 26
+      },
+      "id": 8,
+      "options": {
+        "legend": {
+          "calcs": [
+            "lastNotNull"
+          ],
+          "displayMode": "list",
+          "placement": "bottom",
+          "showLegend": true
+        },
+        "tooltip": {
+          "mode": "multi",
+          "sort": "none"
+        }
+      },
+      "pluginVersion": "10.4.0",
+      "targets": [
+        {
+          "datasource": "$ds",
+          "editorMode": "code",
+          "expr": "rate(rdma_np_cnp_sent_total{job=\"$job\", instance=\"$instance\", device=\"$device\", port=\"$port\"}[$interval])",
+          "legendFormat": "np_cnp_sent",
+          "range": true,
+          "refId": "A"
+        },
+        {
+          "datasource": "$ds",
+          "editorMode": "code",
+          "expr": "rate(rdma_np_ecn_marked_roce_packets_total{job=\"$job\", instance=\"$instance\", device=\"$device\", port=\"$port\"}[$interval])",
+          "legendFormat": "np_ecn_marked",
+          "range": true,
+          "refId": "B"
+        },
+        {
+          "datasource": "$ds",
+          "editorMode": "code",
+          "expr": "rate(rdma_rp_cnp_handled_total{job=\"$job\", instance=\"$instance\", device=\"$device\", port=\"$port\"}[$interval])",
+          "legendFormat": "rp_cnp_handled",
+          "range": true,
+          "refId": "C"
+        },
+        {
+          "datasource": "$ds",
+          "editorMode": "code",
+          "expr": "rate(rdma_rp_cnp_ignored_total{job=\"$job\", instance=\"$instance\", device=\"$device\", port=\"$port\"}[$interval])",
+          "legendFormat": "rp_cnp_ignored",
+          "range": true,
+          "refId": "D"
+        }
+      ],
+      "title": "Congestion: ECN & CNP Signals [events/s] / port",
+      "type": "timeseries"
+    },
+    {
+      "datasource": "$ds",
+      "fieldConfig": {
+        "defaults": {
+          "color": {
+            "mode": "palette-classic"
+          },
+          "custom": {
+            "drawStyle": "line",
+            "lineInterpolation": "smooth",
+            "lineWidth": 2,
+            "showPoints": "never"
+          },
+          "mappings": [],
+          "unit": "pps"
+        },
+        "overrides": []
+      },
+      "gridPos": {
+        "h": 9,
+        "w": 12,
+        "x": 12,
+        "y": 26
+      },
+      "id": 9,
+      "options": {
+        "legend": {
+          "calcs": [
+            "lastNotNull"
+          ],
+          "displayMode": "list",
+          "placement": "bottom",
+          "showLegend": true
+        },
+        "tooltip": {
+          "mode": "single",
+          "sort": "none"
+        }
+      },
+      "pluginVersion": "10.4.0",
+      "targets": [
+        {
+          "datasource": "$ds",
+          "editorMode": "code",
+          "expr": "rate(rdma_roce_adp_retrans_total{job=\"$job\", instance=\"$instance\", device=\"$device\", port=\"$port\"}[$interval])",
+          "legendFormat": "adp_retrans",
+          "range": true,
+          "refId": "A"
+        },
+        {
+          "datasource": "$ds",
+          "editorMode": "code",
+          "expr": "rate(rdma_roce_adp_retrans_to_total{job=\"$job\", instance=\"$instance\", device=\"$device\", port=\"$port\"}[$interval])",
+          "legendFormat": "adp_retrans_to",
+          "range": true,
+          "refId": "B"
+        }
+      ],
+      "title": "Congestion: Adaptive Retransmission [events/s] / port",
+      "type": "timeseries"
+    },
+    {
+      "datasource": "$ds",
+      "fieldConfig": {
+        "defaults": {
+          "color": {
+            "mode": "palette-classic"
+          },
+          "custom": {
+            "fillOpacity": 70,
+            "gradientMode": "hue",
+            "showPoints": "never"
+          },
+          "mappings": [],
+          "unit": "pps"
+        },
+        "overrides": []
+      },
+      "gridPos": {
+        "h": 9,
+        "w": 12,
+        "x": 0,
+        "y": 35
+      },
+      "id": 10,
+      "options": {
+        "legend": {
+          "calcs": [
+            "lastNotNull"
+          ],
+          "displayMode": "list",
+          "placement": "bottom",
+          "showLegend": true
+        },
+        "tooltip": {
+          "mode": "multi",
+          "sort": "none"
+        }
+      },
+      "pluginVersion": "10.4.0",
+      "targets": [
+        {
+          "datasource": "$ds",
+          "editorMode": "code",
+          "expr": "rate(rdma_port_rcv_errors_total{job=\"$job\", instance=\"$instance\"}[$interval])",
+          "legendFormat": "rcv_errors",
+          "range": true,
+          "refId": "A"
+        },
+        {
+          "datasource": "$ds",
+          "editorMode": "code",
+          "expr": "rate(rdma_port_xmit_discards_total{job=\"$job\", instance=\"$instance\"}[$interval])",
+          "legendFormat": "xmit_discards",
+          "range": true,
+          "refId": "B"
+        },
+        {
+          "datasource": "$ds",
+          "editorMode": "code",
+          "expr": "rate(rdma_port_rcv_remote_physical_errors_total{job=\"$job\", instance=\"$instance\"}[$interval])",
+          "legendFormat": "rcv_remote_physical",
+          "range": true,
+          "refId": "C"
+        },
+        {
+          "datasource": "$ds",
+          "editorMode": "code",
+          "expr": "rate(rdma_symbol_error_total{job=\"$job\", instance=\"$instance\"}[$interval])",
+          "legendFormat": "symbol_error",
+          "range": true,
+          "refId": "D"
+        },
+        {
+          "datasource": "$ds",
+          "editorMode": "code",
+          "expr": "rate(rdma_port_rcv_switch_relay_errors_total{job=\"$job\", instance=\"$instance\"}[$interval])",
+          "legendFormat": "switch_relay_errors",
+          "range": true,
+          "refId": "E"
+        },
+        {
+          "datasource": "$ds",
+          "editorMode": "code",
+          "expr": "rate(rdma_port_rcv_constraint_errors_total{job=\"$job\", instance=\"$instance\"}[$interval])",
+          "legendFormat": "rcv_constraint_errors",
+          "range": true,
+          "refId": "F"
+        },
+        {
+          "datasource": "$ds",
+          "editorMode": "code",
+          "expr": "rate(rdma_port_xmit_constraint_errors_total{job=\"$job\", instance=\"$instance\"}[$interval])",
+          "legendFormat": "xmit_constraint_errors",
+          "range": true,
+          "refId": "G"
+        }
+      ],
+      "title": "Errors: Port Counters [events/s] / instance",
+      "type": "timeseries"
+    },
+    {
+      "datasource": "$ds",
+      "fieldConfig": {
+        "defaults": {
+          "color": {
+            "mode": "continuous-YlRd"
+          },
+          "mappings": [],
+          "thresholds": {
+            "mode": "percentage",
+            "steps": [
+              {
+                "color": "green",
+                "value": null
+              },
+              {
+                "color": "red",
+                "value": 0.1
+              }
+            ]
+          },
+          "unit": "percent"
+        },
+        "overrides": []
+      },
+      "gridPos": {
+        "h": 9,
+        "w": 12,
+        "x": 12,
+        "y": 35
+      },
+      "id": 11,
+      "options": {
+        "legend": {
+          "calcs": [
+            "lastNotNull"
+          ],
+          "displayMode": "list",
+          "placement": "bottom",
+          "showLegend": true
+        },
+        "tooltip": {
+          "mode": "single",
+          "sort": "none"
+        }
+      },
+      "pluginVersion": "10.4.0",
+      "targets": [
+        {
+          "datasource": "$ds",
+          "editorMode": "code",
+          "expr": "100 * rate(rdma_port_xmit_discards_total{job=\"$job\", instance=\"$instance\", device=\"$device\", port=\"$port\"}[$interval]) / clamp_min(rate(rdma_port_xmit_packets_total{job=\"$job\", instance=\"$instance\", device=\"$device\", port=\"$port\"}[$interval]), 1e-6)",
+          "legendFormat": "tx_drop_ratio",
+          "range": true,
+          "refId": "A"
+        }
+      ],
+      "title": "Quality: TX Drop Ratio [%] / port",
+      "type": "timeseries"
+    }
+  ],
+  "refresh": "30s",
+  "schemaVersion": 39,
+  "style": "dark",
+  "tags": [
+    "rdma",
+    "roce",
+    "infiniband",
+    "networking",
+    "prometheus"
+  ],
+  "templating": {
+    "list": [
+      {
+        "current": {
+          "selected": false,
+          "text": "Prometheus",
+          "value": "Prometheus"
+        },
+        "hide": 0,
+        "includeAll": false,
+        "label": "Datasource",
+        "multi": false,
+        "name": "ds",
+        "options": [],
+        "query": "prometheus",
+        "refresh": 1,
+        "regex": "",
+        "skipUrlSync": false,
+        "type": "datasource"
+      },
+      {
+        "allValue": null,
+        "current": {},
+        "datasource": "$ds",
+        "definition": "label_values(rdma_port_info, job)",
+        "hide": 0,
+        "includeAll": false,
+        "label": "Job",
+        "multi": false,
+        "name": "job",
+        "options": [],
+        "query": {
+          "query": "label_values(rdma_port_info, job)",
+          "refId": "PromJob"
+        },
+        "refresh": 1,
+        "regex": "",
+        "skipUrlSync": false,
+        "sort": 1,
+        "type": "query"
+      },
+      {
+        "allValue": null,
+        "current": {},
+        "datasource": "$ds",
+        "definition": "label_values(rdma_port_info{job=\"$job\"}, instance)",
+        "hide": 0,
+        "includeAll": false,
+        "label": "Instance",
+        "multi": false,
+        "name": "instance",
+        "options": [],
+        "query": {
+          "query": "label_values(rdma_port_info{job=\"$job\"}, instance)",
+          "refId": "PromInstance"
+        },
+        "refresh": 1,
+        "regex": "",
+        "skipUrlSync": false,
+        "sort": 1,
+        "type": "query"
+      },
+      {
+        "allValue": null,
+        "current": {},
+        "datasource": "$ds",
+        "definition": "label_values(rdma_port_info{job=\"$job\", instance=\"$instance\"}, device)",
+        "hide": 0,
+        "includeAll": false,
+        "label": "Device",
+        "multi": false,
+        "name": "device",
+        "options": [],
+        "query": {
+          "query": "label_values(rdma_port_info{job=\"$job\", instance=\"$instance\"}, device)",
+          "refId": "PromDevice"
+        },
+        "refresh": 1,
+        "regex": "",
+        "skipUrlSync": false,
+        "sort": 1,
+        "type": "query"
+      },
+      {
+        "allValue": null,
+        "current": {},
+        "datasource": "$ds",
+        "definition": "label_values(rdma_port_info{job=\"$job\", instance=\"$instance\", device=\"$device\"}, port)",
+        "hide": 0,
+        "includeAll": false,
+        "label": "Port",
+        "multi": false,
+        "name": "port",
+        "options": [],
+        "query": {
+          "query": "label_values(rdma_port_info{job=\"$job\", instance=\"$instance\", device=\"$device\"}, port)",
+          "refId": "PromPort"
+        },
+        "refresh": 1,
+        "regex": "",
+        "skipUrlSync": false,
+        "sort": 1,
+        "type": "query"
+      },
+      {
+        "auto": false,
+        "auto_count": 30,
+        "auto_min": "30s",
+        "current": {
+          "selected": true,
+          "text": "5m",
+          "value": "5m"
+        },
+        "hide": 0,
+        "label": "Interval",
+        "name": "interval",
+        "options": [
+          {
+            "selected": false,
+            "text": "1m",
+            "value": "1m"
+          },
+          {
+            "selected": true,
+            "text": "5m",
+            "value": "5m"
+          },
+          {
+            "selected": false,
+            "text": "15m",
+            "value": "15m"
+          }
+        ],
+        "query": "1m,5m,15m",
+        "queryValue": "",
+        "refresh": 0,
+        "skipUrlSync": false,
+        "type": "interval"
+      },
+      {
+        "current": {
+          "selected": true,
+          "text": "10",
+          "value": "10"
+        },
+        "hide": 0,
+        "label": "Top N",
+        "name": "topn",
+        "options": [
+          {
+            "selected": false,
+            "text": "5",
+            "value": "5"
+          },
+          {
+            "selected": true,
+            "text": "10",
+            "value": "10"
+          },
+          {
+            "selected": false,
+            "text": "20",
+            "value": "20"
+          }
+        ],
+        "query": "5,10,20",
+        "type": "custom"
+      }
+    ]
+  },
+  "time": {
+    "from": "now-6h",
+    "to": "now"
+  },
+  "timepicker": {
+    "refresh_intervals": [
+      "30s",
+      "1m",
+      "5m",
+      "15m",
+      "1h"
+    ],
+    "time_options": [
+      "now-1h",
+      "now-6h",
+      "now-24h",
+      "now-7d",
+      "now-30d"
+    ]
+  },
+  "timezone": "",
+  "title": "RDMA / RoCE Port Telemetry (rdma_exporter)",
+  "uid": "rdma-exporter",
+  "version": 1,
+  "weekStart": ""
+}
