@@ -53,12 +53,13 @@ type metricEntry struct {
 }
 
 func (c *RdmaCollector) hwMetricDesc(stat string) *prometheus.Desc {
-	docName := normalizeHwStatName(stat)
+	docName := canonicalDocName(stat)
 	return c.metricDesc(stat, docName, "RDMA port hardware counter sourced from sysfs hw_counters.", c.portHwMetrics, c.portHwStatLookup)
 }
 
 func (c *RdmaCollector) statMetricDesc(stat string) *prometheus.Desc {
-	return c.metricDesc(stat, stat, "RDMA port counter sourced from sysfs counters.", c.portStatMetrics, c.portStatLookup)
+	docName := canonicalDocName(stat)
+	return c.metricDesc(stat, docName, "RDMA port counter sourced from sysfs counters.", c.portStatMetrics, c.portStatLookup)
 }
 
 func (c *RdmaCollector) metricDesc(stat, docName, help string, entries map[string]metricEntry, lookup map[string]string) *prometheus.Desc {
@@ -140,11 +141,15 @@ func fnv32(s string) uint32 {
 	return h.Sum32()
 }
 
-func normalizeHwStatName(stat string) string {
-	if strings.HasPrefix(stat, "hw_") {
-		return stat
+func canonicalDocName(stat string) string {
+	sanitized := sanitizeStatName(stat)
+	if strings.HasPrefix(sanitized, "port_") {
+		return sanitized
 	}
-	return "hw_" + stat
+	if sanitized == "unknown" {
+		return "port_unknown"
+	}
+	return "port_" + sanitized
 }
 
 // New creates a new RDMA collector with the provided provider and logger.
