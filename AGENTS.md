@@ -24,7 +24,7 @@
 - Run `GOCACHE=$(pwd)/.gocache GOMODCACHE=$(pwd)/.gomodcache go test ./...` before every pull request to keep the suite green and flake-free.
 
 ## Commit & Pull Request Guidelines
-- Write commits as `type(scope): subject`, imperative; detail motivation and behavioural change in the body.
+- Write commits as `type(scope): subject`, imperative; keep the subject descriptive so it captures both change and rationale, append related ticket IDs when applicable, and include a multiline body with labeled sections `Motivation`, `Changes`, and `Tests` that explain context, behavioural impact, and verification steps in complete sentences without abbreviations.
 - Accepted types include `feat`, `fix`, `docs`, `style`, `refactor`, `test`, `chore`, `init`, `rearrange`, and `update`; choose a scope that pinpoints the touched package or feature.
 - Pull requests should include a concise summary, test evidence (logs, screenshots, or metric samples), and links to relevant issues. When introducing new metrics, paste a sample `/metrics` snippet for reviewers.
 
