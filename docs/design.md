@@ -1,7 +1,7 @@
-# Prometheus RDMA Exporter Design
+# rdma_exporter Design
 
 ## 1. Background and Goals
-High-performance computing clusters and low-latency trading platforms increasingly rely on RDMA-capable network adapters to reduce CPU overhead and latency. Operators need continuous visibility into link health, error counters, and configuration drift. The Prometheus RDMA Exporter collects RDMA NIC statistics from Linux hosts and exposes them as Prometheus metrics, providing the following goals:
+High-performance computing clusters and low-latency trading platforms increasingly rely on RDMA-capable network adapters to reduce CPU overhead and latency. Operators need continuous visibility into link health, error counters, and configuration drift. `rdma_exporter` collects RDMA NIC statistics from Linux hosts and exposes them as Prometheus metrics, providing the following goals:
 
 - Observe InfiniBand and RoCE ports with low operational overhead.
 - Follow Prometheus exporter best practices for metric naming, cardinality, and instrumentation.

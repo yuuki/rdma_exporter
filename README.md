@@ -1,6 +1,8 @@
 # Prometheus RDMA Exporter
 
-The Prometheus RDMA Exporter collects RDMA (InfiniBand/RoCE) NIC statistics from Linux hosts and exposes them as Prometheus metrics. It uses [`github.com/Mellanox/rdmamap`](https://pkg.go.dev/github.com/Mellanox/rdmamap) to traverse the sysfs tree and [`github.com/prometheus/client_golang`](https://pkg.go.dev/github.com/prometheus/client_golang) to publish metrics.
+[![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](LICENSE)
+
+`rdma_exporter` collects RDMA (InfiniBand/RoCE) NIC statistics from Linux hosts and exposes them as Prometheus metrics. It uses [`github.com/Mellanox/rdmamap`](https://pkg.go.dev/github.com/Mellanox/rdmamap) to traverse the sysfs tree and [`github.com/prometheus/client_golang`](https://pkg.go.dev/github.com/prometheus/client_golang) to publish metrics.
 
 ## Features
 - Publishes port-level counters from `/sys/class/infiniband/<dev>/<port>/counters` via `rdma_port_stat_total`.
@@ -58,3 +60,6 @@ go test ./...
 - Architectural decisions and future work are documented in `docs/design.md`.
 - Logging uses the Go standard library `log/slog`. Set `--log-level=debug` for detailed scrape traces.
 - Packaging artifacts such as container images or systemd units can be added under a future `build/` directory.
+
+## License
+This project is licensed under the MIT License. See `LICENSE` for full text.

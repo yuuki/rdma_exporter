@@ -12,7 +12,7 @@ import (
 	dto "github.com/prometheus/client_model/go"
 	"github.com/prometheus/common/expfmt"
 
-	"github.com/yuuki/prometheus-rdma-exporter/internal/collector"
+	"github.com/yuuki/rdma_exporter/internal/collector"
 )
 
 // Options contains the configuration required to start the HTTP server.

@@ -12,7 +12,7 @@ import (
 	"github.com/prometheus/client_golang/prometheus/testutil"
 	dto "github.com/prometheus/client_model/go"
 
-	"github.com/yuuki/prometheus-rdma-exporter/internal/rdma"
+	"github.com/yuuki/rdma_exporter/internal/rdma"
 )
 
 type stubProvider struct {

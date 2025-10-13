@@ -12,10 +12,10 @@ import (
 
 	"github.com/prometheus/client_golang/prometheus"
 
-	"github.com/yuuki/prometheus-rdma-exporter/internal/collector"
-	"github.com/yuuki/prometheus-rdma-exporter/internal/config"
-	"github.com/yuuki/prometheus-rdma-exporter/internal/rdma"
-	"github.com/yuuki/prometheus-rdma-exporter/internal/server"
+	"github.com/yuuki/rdma_exporter/internal/collector"
+	"github.com/yuuki/rdma_exporter/internal/config"
+	"github.com/yuuki/rdma_exporter/internal/rdma"
+	"github.com/yuuki/rdma_exporter/internal/server"
 )
 
 func main() {

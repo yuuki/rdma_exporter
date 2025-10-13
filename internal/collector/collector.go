@@ -11,7 +11,7 @@ import (
 
 	"github.com/prometheus/client_golang/prometheus"
 
-	"github.com/yuuki/prometheus-rdma-exporter/internal/rdma"
+	"github.com/yuuki/rdma_exporter/internal/rdma"
 )
 
 // Provider defines the subset of the rdma.Provider interface required by the collector.
