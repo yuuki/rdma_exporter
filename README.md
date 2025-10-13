@@ -6,7 +6,7 @@
 
 ## Features
 - Publishes port-level counters from `/sys/class/infiniband/<dev>/<port>/counters` via `rdma_port_stat_total`.
-- Publishes hardware counters from `/sys/class/infiniband/<dev>/<port>/hw_counters` via `rdma_port_hw_stat_total`.
+- Publishes hardware counters from `/sys/class/infiniband/<dev>/<port>/hw_counters` as `rdma_port_hw_<stat>_total` metrics (e.g. `rdma_port_hw_duplicate_request_total`).
 - Exposes port metadata (link layer, state, width, speed, etc.) through `rdma_port_info`.
 - Tracks scrape failures with `rdma_scrape_errors_total`.
 - Ships with an HTTP server that serves `/metrics` and `/healthz`.
@@ -43,7 +43,7 @@ Every CLI flag has an equivalent environment variable. Environment values provid
 
 ## Metrics
 - `rdma_port_stat_total{device,port,stat}` – Standard counters (e.g. `port_xmit_data`, `port_rcv_data`).
-- `rdma_port_hw_stat_total{device,port,stat}` – Hardware counters from `hw_counters`.
+- `rdma_port_hw_<stat>_total{device,port}` – Hardware counters from `hw_counters` (e.g. `rdma_port_hw_symbol_errors_total`).
 - `rdma_port_info{device,port,link_layer,state,phys_state,link_width,link_speed}` – Gauge set to `1` with descriptive labels.
 - `rdma_scrape_errors_total` – Counter incremented when sysfs collection fails.
 

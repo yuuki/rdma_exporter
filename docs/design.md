@@ -14,7 +14,7 @@ High-performance computing clusters and low-latency trading platforms increasing
   - [`github.com/prometheus/client_golang`](https://pkg.go.dev/github.com/prometheus/client_golang) for instrumentation and HTTP handlers.
 - **Metrics**:
   - Port-level counters (`rdma_port_stat_total`) for standard sysfs statistics.
-  - Hardware counters (`rdma_port_hw_stat_total`) for vendor-specific counters exposed by `rdmamap`.
+  - Hardware counters (`rdma_port_hw_<stat>_total`) for vendor-specific counters exposed by `rdmamap` (e.g. `rdma_port_hw_symbol_errors_total`).
   - Port metadata (`rdma_port_info`) with value `1` and descriptive labels.
   - Exporter health metrics (Go/process collectors, HTTP instrumentation).
 - **Service Interface**:
@@ -67,7 +67,7 @@ The `cmd/rdma_exporter` package wires configuration, logging, and the HTTP serve
    - Host Channel Adapter (HCA) inventory.
    - Per-port standard stats.
    - Per-port hardware stats (if available).
-4. The collector transforms each counter into const metrics, adding labels `device`, `port`, and `stat`. Metadata metrics add labels like `link_layer`, `state`, `phys_state`, `link_width`, and `link_speed`.
+4. The collector transforms each counter into const metrics. Standard counters include labels `device`, `port`, and `stat`, while hardware counters become stat-specific metric names (e.g. `rdma_port_hw_symbol_errors_total`) with labels `device` and `port`. Metadata metrics add labels like `link_layer`, `state`, `phys_state`, `link_width`, and `link_speed`.
 5. Prometheus receives the serialized metrics response.
 
 ## 5. Error Handling and Resilience

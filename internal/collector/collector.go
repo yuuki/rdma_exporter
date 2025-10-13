@@ -2,12 +2,16 @@ package collector
 
 import (
 	"context"
+	"fmt"
+	"hash/fnv"
 	"log/slog"
 	"slices"
 	"strconv"
+	"strings"
 	"sync"
 	"sync/atomic"
 	"time"
+	"unicode"
 
 	"github.com/prometheus/client_golang/prometheus"
 
@@ -24,9 +28,11 @@ type RdmaCollector struct {
 	provider Provider
 	logger   *slog.Logger
 
-	portStatDesc   *prometheus.Desc
-	portHwStatDesc *prometheus.Desc
-	portInfoDesc   *prometheus.Desc
+	portStatDesc *prometheus.Desc
+	portInfoDesc *prometheus.Desc
+
+	portHwMetrics    map[string]hwMetricEntry
+	portHwStatLookup map[string]string
 
 	scrapeErrors prometheus.Counter
 
@@ -36,6 +42,90 @@ type RdmaCollector struct {
 
 type contextHolder struct {
 	ctx context.Context
+}
+
+type hwMetricEntry struct {
+	desc       *prometheus.Desc
+	metricName string
+	stat       string
+}
+
+func (c *RdmaCollector) hwMetricDesc(stat string) *prometheus.Desc {
+	if metricName, ok := c.portHwStatLookup[stat]; ok {
+		if entry, exists := c.portHwMetrics[metricName]; exists {
+			return entry.desc
+		}
+	}
+
+	metricName := buildHwMetricName(stat, c.portHwMetrics)
+	desc := prometheus.NewDesc(
+		metricName,
+		"RDMA port hardware counter sourced from sysfs hw_counters.",
+		[]string{"device", "port"},
+		nil,
+	)
+
+	c.portHwMetrics[metricName] = hwMetricEntry{
+		desc:       desc,
+		metricName: metricName,
+		stat:       stat,
+	}
+	c.portHwStatLookup[stat] = metricName
+
+	return desc
+}
+
+func buildHwMetricName(stat string, existing map[string]hwMetricEntry) string {
+	base := sanitizeStatName(stat)
+	metricName := fmt.Sprintf("rdma_port_hw_%s_total", base)
+
+	if entry, ok := existing[metricName]; ok && entry.stat != stat {
+		metricName = fmt.Sprintf("rdma_port_hw_%s_%x_total", base, fnv32(stat))
+	}
+
+	return metricName
+}
+
+func sanitizeStatName(stat string) string {
+	if stat == "" {
+		return "unknown"
+	}
+
+	var b strings.Builder
+	b.Grow(len(stat))
+	for i, r := range stat {
+		switch {
+		case r >= 'a' && r <= 'z':
+			b.WriteRune(r)
+		case r >= 'A' && r <= 'Z':
+			b.WriteRune(unicode.ToLower(r))
+		case r >= '0' && r <= '9':
+			if i == 0 {
+				b.WriteRune('_')
+			}
+			b.WriteRune(r)
+		case r == '_':
+			b.WriteRune(r)
+		default:
+			b.WriteRune('_')
+		}
+	}
+
+	res := b.String()
+	if res == "" {
+		res = "unknown"
+	}
+	if res[0] >= '0' && res[0] <= '9' {
+		res = "_" + res
+	}
+
+	return res
+}
+
+func fnv32(s string) uint32 {
+	h := fnv.New32a()
+	_, _ = h.Write([]byte(s))
+	return h.Sum32()
 }
 
 // New creates a new RDMA collector with the provided provider and logger.
@@ -53,12 +143,6 @@ func New(provider Provider, logger *slog.Logger) *RdmaCollector {
 			[]string{"device", "port", "stat"},
 			nil,
 		),
-		portHwStatDesc: prometheus.NewDesc(
-			"rdma_port_hw_stat_total",
-			"RDMA port hardware counter sourced from sysfs hw_counters.",
-			[]string{"device", "port", "stat"},
-			nil,
-		),
 		portInfoDesc: prometheus.NewDesc(
 			"rdma_port_info",
 			"RDMA port metadata exported as labels.",
@@ -69,6 +153,8 @@ func New(provider Provider, logger *slog.Logger) *RdmaCollector {
 			Name: "rdma_scrape_errors_total",
 			Help: "Total number of errors encountered while scraping RDMA sysfs.",
 		}),
+		portHwMetrics:    make(map[string]hwMetricEntry),
+		portHwStatLookup: make(map[string]string),
 	}
 	c.ctxValue.Store(contextHolder{ctx: context.Background()})
 
@@ -91,9 +177,19 @@ func (c *RdmaCollector) ResetContext() {
 // Describe implements prometheus.Collector.
 func (c *RdmaCollector) Describe(ch chan<- *prometheus.Desc) {
 	ch <- c.portStatDesc
-	ch <- c.portHwStatDesc
 	ch <- c.portInfoDesc
 	c.scrapeErrors.Describe(ch)
+
+	c.collectMu.Lock()
+	hwDescs := make([]*prometheus.Desc, 0, len(c.portHwMetrics))
+	for _, entry := range c.portHwMetrics {
+		hwDescs = append(hwDescs, entry.desc)
+	}
+	c.collectMu.Unlock()
+
+	for _, desc := range hwDescs {
+		ch <- desc
+	}
 }
 
 // Collect implements prometheus.Collector.
@@ -145,13 +241,13 @@ func (c *RdmaCollector) Collect(ch chan<- prometheus.Metric) {
 				names := sortedKeys(port.HwStats)
 				for _, name := range names {
 					value := float64(port.HwStats[name])
+					desc := c.hwMetricDesc(name)
 					ch <- prometheus.MustNewConstMetric(
-						c.portHwStatDesc,
+						desc,
 						prometheus.CounterValue,
 						value,
 						device.Name,
 						portID,
-						name,
 					)
 				}
 			}
