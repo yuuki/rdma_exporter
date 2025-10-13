@@ -56,6 +56,7 @@ Organize panels into three horizontal rows across a 24-column grid, following �
 - **Time series: ECN / CNP Activity** – visualize `rdma_np_cnp_sent_total`, `rdma_np_ecn_marked_roce_packets_total`, `rdma_rp_cnp_handled_total`, `rdma_rp_cnp_ignored_total`.
 - **Time series: Adaptive Retransmission / Timeout** – highlight reliability and congestion control behavior.
 - **Stacked bars: Error Family Breakdown** – `rdma_port_rcv_errors_total`, `rdma_port_xmit_discards_total`, `rdma_port_rcv_remote_physical_errors_total`, `rdma_symbol_error_total`.
+  Extend the stack with auxiliary counters exposed by the collector such as `rdma_port_rcv_switch_relay_errors_total`, `rdma_port_rcv_constraint_errors_total`, and `rdma_port_xmit_constraint_errors_total` to highlight switch-forwarding and congestion drops.
 - **Stat / Time series: TX Drop Ratio (%)** – ratio of discards to transmitted packets with `clamp_min` to prevent division by zero.
 
 ## 7. Panel Naming, Tooltips, and Units
@@ -76,7 +77,7 @@ Organize panels into three horizontal rows across a 24-column grid, following �
 | Transmit wait | `rate(rdma_port_xmit_wait_total{job="$job", instance="$instance", device="$device", port="$port"}[$interval])` | Highlight sustained non-zero periods |
 | ECN / CNP signals | `rate(rdma_np_cnp_sent_total{...}[$interval])`, `rate(rdma_np_ecn_marked_roce_packets_total{...}[$interval])`, etc. | Group into repeating panel if needed |
 | Adaptive retransmission | `rate(rdma_roce_adp_retrans_total{...}[$interval])`, `rate(rdma_roce_adp_retrans_to_total{...}[$interval])` | Watch for spikes |
-| Error breakdown | `rate(rdma_port_rcv_errors_total{...}[$interval])`, `rate(rdma_port_xmit_discards_total{...}[$interval])`, `rate(rdma_port_rcv_remote_physical_errors_total{...}[$interval])`, `rate(rdma_symbol_error_total{...}[$interval])` | Stack by metric |
+| Error breakdown | `rate(rdma_port_rcv_errors_total{...}[$interval])`, `rate(rdma_port_xmit_discards_total{...}[$interval])`, `rate(rdma_port_rcv_remote_physical_errors_total{...}[$interval])`, `rate(rdma_symbol_error_total{...}[$interval])`, `rate(rdma_port_rcv_switch_relay_errors_total{...}[$interval])`, `rate(rdma_port_rcv_constraint_errors_total{...}[$interval])`, `rate(rdma_port_xmit_constraint_errors_total{...}[$interval])` | Stack by metric; toggle visibility for high-cardinality fabrics |
 | TX drop ratio % | `100 * rate(rdma_port_xmit_discards_total{...}[$interval]) / clamp_min(rate(rdma_port_xmit_packets_total{...}[$interval]), 1e-6)` | Apply percent unit |
 
 ## 9. Alerting Recommendations (Grafana Alerting)
@@ -129,3 +130,4 @@ Precompute heavy expressions to accelerate dashboards and keep query inspector r
 - Automate JSON generation via Grafana provisioning pipelines and include schema validation in CI.
 - Extend dashboard links to per-switch telemetry dashboards once available.
 - Evaluate Grafana 12+ Git Sync for two-way synchronization between hosted Grafana Cloud and repository-managed JSON.
+- Prototype optional deep-dive panels that visualize additional collector counters (`port_rcv_switch_relay_errors`, `port_rcv_constraint_errors`, `port_xmit_constraint_errors`, etc.) when operators need finer-grained failure attribution.
