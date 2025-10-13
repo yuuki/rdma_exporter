@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"flag"
+	"fmt"
 	"log/slog"
 	"os"
 	"os/signal"
@@ -18,6 +19,8 @@ import (
 	"github.com/yuuki/rdma_exporter/internal/server"
 )
 
+var version = "0.1.0"
+
 func main() {
 	cfg, err := config.Parse(os.Args[1:])
 	if err != nil {
@@ -26,6 +29,11 @@ func main() {
 		}
 		// flag package already printed the error to stderr.
 		os.Exit(2)
+	}
+
+	if cfg.ShowVersion {
+		fmt.Println(version)
+		os.Exit(0)
 	}
 
 	logger := newLogger(cfg.LogLevel)

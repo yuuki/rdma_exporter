@@ -28,6 +28,7 @@ type Config struct {
 	LogLevel      slog.Level
 	SysfsRoot     string
 	ScrapeTimeout time.Duration
+	ShowVersion   bool
 }
 
 // Parse constructs a Config from command-line flags and environment variables.
@@ -52,6 +53,7 @@ func Parse(args []string) (Config, error) {
 		timeoutDefault = parsed
 	}
 	scrapeTimeout := fs.Duration("scrape-timeout", timeoutDefault, "Maximum duration to spend gathering metrics per scrape.")
+	showVersion := fs.Bool("version", false, "Print version information and exit.")
 
 	if err := fs.Parse(args); err != nil {
 		if errors.Is(err, flag.ErrHelp) {
@@ -72,6 +74,7 @@ func Parse(args []string) (Config, error) {
 		LogLevel:      level,
 		SysfsRoot:     *sysfsRoot,
 		ScrapeTimeout: *scrapeTimeout,
+		ShowVersion:   *showVersion,
 	}
 	return cfg, nil
 }

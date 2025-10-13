@@ -26,6 +26,9 @@ func TestParseDefaults(t *testing.T) {
 	if cfg.ScrapeTimeout != defaultTimeout {
 		t.Fatalf("expected scrape timeout %v, got %v", defaultTimeout, cfg.ScrapeTimeout)
 	}
+	if cfg.ShowVersion {
+		t.Fatalf("expected show version to be false by default")
+	}
 }
 
 func TestEnvOverridesDefault(t *testing.T) {
@@ -63,6 +66,16 @@ func TestInvalidDurationFromEnv(t *testing.T) {
 
 	if _, err := Parse(nil); err == nil {
 		t.Fatalf("expected error for invalid duration")
+	}
+}
+
+func TestVersionFlag(t *testing.T) {
+	cfg, err := Parse([]string{"--version"})
+	if err != nil {
+		t.Fatalf("Parse returned error: %v", err)
+	}
+	if !cfg.ShowVersion {
+		t.Fatalf("expected show version to be true when flag is set")
 	}
 }
 
