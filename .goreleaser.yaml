@@ -32,6 +32,40 @@ archives:
       - README.md
       - deploy/systemd/rdma_exporter.service
 
+dockers:
+  - id: rdma_exporter_amd64
+    ids:
+      - rdma_exporter
+    image_templates:
+      - ghcr.io/{{ .RepoOwner }}/{{ .ProjectName }}:{{ .Version }}-amd64
+    use: buildx
+    build_flag_templates:
+      - --platform=linux/amd64
+    dockerfile: deploy/docker/Dockerfile
+    goarch: amd64
+    goos: linux
+  - id: rdma_exporter_arm64
+    ids:
+      - rdma_exporter
+    image_templates:
+      - ghcr.io/{{ .RepoOwner }}/{{ .ProjectName }}:{{ .Version }}-arm64
+    use: buildx
+    build_flag_templates:
+      - --platform=linux/arm64
+    dockerfile: deploy/docker/Dockerfile
+    goarch: arm64
+    goos: linux
+
+docker_manifests:
+  - name_template: ghcr.io/{{ .RepoOwner }}/{{ .ProjectName }}:{{ .Version }}
+    image_templates:
+      - ghcr.io/{{ .RepoOwner }}/{{ .ProjectName }}:{{ .Version }}-amd64
+      - ghcr.io/{{ .RepoOwner }}/{{ .ProjectName }}:{{ .Version }}-arm64
+  - name_template: ghcr.io/{{ .RepoOwner }}/{{ .ProjectName }}:latest
+    image_templates:
+      - ghcr.io/{{ .RepoOwner }}/{{ .ProjectName }}:{{ .Version }}-amd64
+      - ghcr.io/{{ .RepoOwner }}/{{ .ProjectName }}:{{ .Version }}-arm64
+
 checksum:
   name_template: "{{ .ProjectName }}_checksums.txt"
 
