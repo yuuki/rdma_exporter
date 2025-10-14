@@ -3,6 +3,11 @@
 version: 2
 project_name: rdma_exporter
 
+release:
+  github:
+    owner: yuuki
+    name: rdma_exporter
+
 builds:
   - id: rdma_exporter
     main: .
@@ -37,7 +42,7 @@ dockers:
     ids:
       - rdma_exporter
     image_templates:
-      - ghcr.io/{{ .RepoOwner }}/{{ .ProjectName }}:{{ .Version }}-amd64
+      - ghcr.io/yuuki/rdma_exporter:{{ .Version }}-amd64
     use: buildx
     build_flag_templates:
       - --platform=linux/amd64
@@ -48,7 +53,7 @@ dockers:
     ids:
       - rdma_exporter
     image_templates:
-      - ghcr.io/{{ .RepoOwner }}/{{ .ProjectName }}:{{ .Version }}-arm64
+      - ghcr.io/yuuki/rdma_exporter:{{ .Version }}-arm64
     use: buildx
     build_flag_templates:
       - --platform=linux/arm64
@@ -57,14 +62,14 @@ dockers:
     goos: linux
 
 docker_manifests:
-  - name_template: ghcr.io/{{ .RepoOwner }}/{{ .ProjectName }}:{{ .Version }}
+  - name_template: ghcr.io/yuuki/rdma_exporter:{{ .Version }}
     image_templates:
-      - ghcr.io/{{ .RepoOwner }}/{{ .ProjectName }}:{{ .Version }}-amd64
-      - ghcr.io/{{ .RepoOwner }}/{{ .ProjectName }}:{{ .Version }}-arm64
-  - name_template: ghcr.io/{{ .RepoOwner }}/{{ .ProjectName }}:latest
+      - ghcr.io/yuuki/rdma_exporter:{{ .Version }}-amd64
+      - ghcr.io/yuuki/rdma_exporter:{{ .Version }}-arm64
+  - name_template: ghcr.io/yuuki/rdma_exporter:latest
     image_templates:
-      - ghcr.io/{{ .RepoOwner }}/{{ .ProjectName }}:{{ .Version }}-amd64
-      - ghcr.io/{{ .RepoOwner }}/{{ .ProjectName }}:{{ .Version }}-arm64
+      - ghcr.io/yuuki/rdma_exporter:{{ .Version }}-amd64
+      - ghcr.io/yuuki/rdma_exporter:{{ .Version }}-arm64
 
 checksum:
   name_template: "{{ .ProjectName }}_checksums.txt"
