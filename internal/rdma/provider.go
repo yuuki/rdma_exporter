@@ -10,6 +10,7 @@ import (
 	"strconv"
 	"strings"
 	"sync"
+	"unicode"
 
 	"github.com/Mellanox/rdmamap"
 )
@@ -26,6 +27,26 @@ const (
 	physStateFile       = "phys_state"
 	linkWidthFile       = "link_width"
 	rateFile            = "rate"
+)
+
+var (
+	portStateNames = map[int]string{
+		0: "NOP",
+		1: "DOWN",
+		2: "INIT",
+		3: "ARMED",
+		4: "ACTIVE",
+		5: "ACTIVE_DEFER",
+	}
+	portPhysStateNames = map[int]string{
+		1: "SLEEP",
+		2: "POLLING",
+		3: "DISABLED",
+		4: "PORT_CONFIGURATION_TRAINING",
+		5: "LINK_UP",
+		6: "LINK_ERROR_RECOVERY",
+		7: "PHY_TEST",
+	}
 )
 
 // Provider exposes RDMA device information sourced from sysfs.
@@ -225,25 +246,111 @@ func (p *SysfsProvider) portsFromRoot(ctx context.Context, root, device string) 
 func (p *SysfsProvider) readPortAttributes(root, device string, port int) (PortAttributes, error) {
 	portDir := filepath.Join(root, classInfinibandPath, device, portsDirName, strconv.Itoa(port))
 
-	read := func(name string) string {
+	readRaw := func(name string) string {
 		data, err := os.ReadFile(filepath.Join(portDir, name))
 		if err != nil {
 			return ""
 		}
-		value := strings.TrimSpace(string(data))
+		return strings.TrimSpace(string(data))
+	}
+
+	read := func(name string) string {
+		value := readRaw(name)
 		if idx := strings.Index(value, "("); idx > 0 {
 			value = strings.TrimSpace(value[:idx])
 		}
 		return value
 	}
 
+	state := normalizePortState(readRaw(stateFile), portStateNames)
+	physState := normalizePortState(readRaw(physStateFile), portPhysStateNames)
+
 	return PortAttributes{
 		LinkLayer: read(linkLayerFile),
-		State:     read(stateFile),
-		PhysState: read(physStateFile),
+		State:     state,
+		PhysState: physState,
 		LinkWidth: read(linkWidthFile),
 		LinkSpeed: read(rateFile),
 	}, nil
+}
+
+func normalizePortState(value string, names map[int]string) string {
+	value = strings.TrimSpace(value)
+	if value == "" {
+		return ""
+	}
+
+	if number, ok := extractFirstNumber(value); ok {
+		if label, found := names[number]; found {
+			return label
+		}
+	}
+
+	if idx := strings.Index(value, ":"); idx >= 0 {
+		if label := canonicalFromLabel(value[idx+1:], names); label != "" {
+			return label
+		}
+	}
+
+	if label := canonicalFromLabel(value, names); label != "" {
+		return label
+	}
+
+	return value
+}
+
+func canonicalFromLabel(label string, names map[int]string) string {
+	normalized := normalizeLabelKey(label)
+	if normalized == "" {
+		return ""
+	}
+
+	for _, name := range names {
+		if normalizeLabelKey(name) == normalized {
+			return name
+		}
+	}
+
+	return ""
+}
+
+func normalizeLabelKey(label string) string {
+	var b strings.Builder
+	for _, r := range label {
+		switch {
+		case unicode.IsLetter(r), unicode.IsDigit(r):
+			b.WriteRune(unicode.ToUpper(r))
+		}
+	}
+	return b.String()
+}
+
+func extractFirstNumber(value string) (int, bool) {
+	start := -1
+	for i, r := range value {
+		if r >= '0' && r <= '9' {
+			if start == -1 {
+				start = i
+			}
+			continue
+		}
+		if start != -1 {
+			num, err := strconv.Atoi(value[start:i])
+			if err == nil {
+				return num, true
+			}
+			start = -1
+		}
+	}
+
+	if start != -1 {
+		num, err := strconv.Atoi(value[start:])
+		if err == nil {
+			return num, true
+		}
+	}
+
+	return 0, false
 }
 
 func readCounterDir(path string) (map[string]uint64, error) {

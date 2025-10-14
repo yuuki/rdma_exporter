@@ -47,7 +47,7 @@ func TestSysfsProviderDevicesFromCustomRoot(t *testing.T) {
 	if want, got := "ACTIVE", port1.Attributes.State; got != want {
 		t.Fatalf("expected state %q, got %q", want, got)
 	}
-	if want, got := "LinkUp", port1.Attributes.PhysState; got != want {
+	if want, got := "LINK_UP", port1.Attributes.PhysState; got != want {
 		t.Fatalf("expected phys_state %q, got %q", want, got)
 	}
 	if want, got := "4X", port1.Attributes.LinkWidth; got != want {
