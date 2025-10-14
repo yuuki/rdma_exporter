@@ -270,7 +270,7 @@
           "datasource": "$ds",
           "editorMode": "code",
           "expr": "topk($topn, 4 * rate(rdma_port_rcv_data_total{job=\"$job\", instance=~\"$instance\", device=~\"$device\", port=~\"$port\"}[$interval]))",
-          "legendFormat": "{{device}}:{{port}}",
+          "legendFormat": "{{instance}} {{device}}:{{port}}",
           "range": true,
           "refId": "A"
         }
@@ -336,7 +336,7 @@
           "datasource": "$ds",
           "editorMode": "code",
           "expr": "topk($topn, 4 * rate(rdma_port_xmit_data_total{job=\"$job\", instance=~\"$instance\", device=~\"$device\", port=~\"$port\"}[$interval]))",
-          "legendFormat": "{{device}}:{{port}}",
+          "legendFormat": "{{instance}} {{device}}:{{port}}",
           "range": true,
           "refId": "A"
         }
@@ -451,7 +451,7 @@
           "datasource": "$ds",
           "editorMode": "code",
           "expr": "rate(rdma_port_rcv_packets_total{job=\"$job\", instance=~\"$instance\", device=~\"$device\", port=~\"$port\"}[$interval])",
-          "legendFormat": "{{device}}:{{port}} rx",
+          "legendFormat": "{{instance}} {{device}}:{{port}} rx",
           "range": true,
           "refId": "A"
         },
@@ -459,7 +459,7 @@
           "datasource": "$ds",
           "editorMode": "code",
           "expr": "rate(rdma_port_xmit_packets_total{job=\"$job\", instance=~\"$instance\", device=~\"$device\", port=~\"$port\"}[$interval])",
-          "legendFormat": "{{device}}:{{port}} tx",
+          "legendFormat": "{{instance}} {{device}}:{{port}} tx",
           "range": true,
           "refId": "B"
         },
@@ -467,7 +467,7 @@
           "datasource": "$ds",
           "editorMode": "code",
           "expr": "rate(rdma_port_multicast_rcv_packets_total{job=\"$job\", instance=~\"$instance\", device=~\"$device\", port=~\"$port\"}[$interval])",
-          "legendFormat": "{{device}}:{{port}} mcast",
+          "legendFormat": "{{instance}} {{device}}:{{port}} mcast",
           "range": true,
           "refId": "C"
         },
@@ -475,7 +475,7 @@
           "datasource": "$ds",
           "editorMode": "code",
           "expr": "rate(rdma_port_unicast_rcv_packets_total{job=\"$job\", instance=~\"$instance\", device=~\"$device\", port=~\"$port\"}[$interval])",
-          "legendFormat": "{{device}}:{{port}} ucast",
+          "legendFormat": "{{instance}} {{device}}:{{port}} ucast",
           "range": true,
           "refId": "D"
         }
@@ -528,7 +528,7 @@
           "datasource": "$ds",
           "editorMode": "code",
           "expr": "rate(rdma_port_xmit_wait_total{job=\"$job\", instance=~\"$instance\", device=~\"$device\", port=~\"$port\"}[$interval])",
-          "legendFormat": "{{device}}:{{port}}",
+          "legendFormat": "{{instance}} {{device}}:{{port}}",
           "range": true,
           "refId": "A"
         }
@@ -581,7 +581,7 @@
           "datasource": "$ds",
           "editorMode": "code",
           "expr": "rate(rdma_np_cnp_sent_total{job=\"$job\", instance=~\"$instance\", device=~\"$device\", port=~\"$port\"}[$interval])",
-          "legendFormat": "np_cnp_sent",
+          "legendFormat": "{{instance}} {{device}}:{{port}} np_cnp_sent",
           "range": true,
           "refId": "A"
         },
@@ -589,7 +589,7 @@
           "datasource": "$ds",
           "editorMode": "code",
           "expr": "rate(rdma_np_ecn_marked_roce_packets_total{job=\"$job\", instance=~\"$instance\", device=~\"$device\", port=~\"$port\"}[$interval])",
-          "legendFormat": "np_ecn_marked",
+          "legendFormat": "{{instance}} {{device}}:{{port}} np_ecn_marked",
           "range": true,
           "refId": "B"
         },
@@ -597,7 +597,7 @@
           "datasource": "$ds",
           "editorMode": "code",
           "expr": "rate(rdma_rp_cnp_handled_total{job=\"$job\", instance=~\"$instance\", device=~\"$device\", port=~\"$port\"}[$interval])",
-          "legendFormat": "rp_cnp_handled",
+          "legendFormat": "{{instance}} {{device}}:{{port}} rp_cnp_handled",
           "range": true,
           "refId": "C"
         },
@@ -605,7 +605,7 @@
           "datasource": "$ds",
           "editorMode": "code",
           "expr": "rate(rdma_rp_cnp_ignored_total{job=\"$job\", instance=~\"$instance\", device=~\"$device\", port=~\"$port\"}[$interval])",
-          "legendFormat": "rp_cnp_ignored",
+          "legendFormat": "{{instance}} {{device}}:{{port}} rp_cnp_ignored",
           "range": true,
           "refId": "D"
         }
@@ -658,7 +658,7 @@
           "datasource": "$ds",
           "editorMode": "code",
           "expr": "rate(rdma_roce_adp_retrans_total{job=\"$job\", instance=~\"$instance\", device=~\"$device\", port=~\"$port\"}[$interval])",
-          "legendFormat": "adp_retrans",
+          "legendFormat": "{{instance}} {{device}}:{{port}} adp_retrans",
           "range": true,
           "refId": "A"
         },
@@ -666,7 +666,7 @@
           "datasource": "$ds",
           "editorMode": "code",
           "expr": "rate(rdma_roce_adp_retrans_to_total{job=\"$job\", instance=~\"$instance\", device=~\"$device\", port=~\"$port\"}[$interval])",
-          "legendFormat": "adp_retrans_to",
+          "legendFormat": "{{instance}} {{device}}:{{port}} adp_retrans_to",
           "range": true,
           "refId": "B"
         }
@@ -722,7 +722,7 @@
           "datasource": "$ds",
           "editorMode": "code",
           "expr": "rate(rdma_port_rcv_errors_total{job=\"$job\", instance=~\"$instance\", device=~\"$device\", port=~\"$port\"}[$interval])",
-          "legendFormat": "rcv_errors",
+          "legendFormat": "{{instance}} {{device}}:{{port}} rcv_errors",
           "range": true,
           "refId": "A"
         },
@@ -730,7 +730,7 @@
           "datasource": "$ds",
           "editorMode": "code",
           "expr": "rate(rdma_port_xmit_discards_total{job=\"$job\", instance=~\"$instance\", device=~\"$device\", port=~\"$port\"}[$interval])",
-          "legendFormat": "xmit_discards",
+          "legendFormat": "{{instance}} {{device}}:{{port}} xmit_discards",
           "range": true,
           "refId": "B"
         },
@@ -738,7 +738,7 @@
           "datasource": "$ds",
           "editorMode": "code",
           "expr": "rate(rdma_port_rcv_remote_physical_errors_total{job=\"$job\", instance=~\"$instance\", device=~\"$device\", port=~\"$port\"}[$interval])",
-          "legendFormat": "rcv_remote_physical",
+          "legendFormat": "{{instance}} {{device}}:{{port}} rcv_remote_physical",
           "range": true,
           "refId": "C"
         },
@@ -746,7 +746,7 @@
           "datasource": "$ds",
           "editorMode": "code",
           "expr": "rate(rdma_symbol_error_total{job=\"$job\", instance=~\"$instance\", device=~\"$device\", port=~\"$port\"}[$interval])",
-          "legendFormat": "symbol_error",
+          "legendFormat": "{{instance}} {{device}}:{{port}} symbol_error",
           "range": true,
           "refId": "D"
         },
@@ -754,7 +754,7 @@
           "datasource": "$ds",
           "editorMode": "code",
           "expr": "rate(rdma_port_rcv_switch_relay_errors_total{job=\"$job\", instance=~\"$instance\", device=~\"$device\", port=~\"$port\"}[$interval])",
-          "legendFormat": "switch_relay_errors",
+          "legendFormat": "{{instance}} {{device}}:{{port}} switch_relay_errors",
           "range": true,
           "refId": "E"
         },
@@ -762,7 +762,7 @@
           "datasource": "$ds",
           "editorMode": "code",
           "expr": "rate(rdma_port_rcv_constraint_errors_total{job=\"$job\", instance=~\"$instance\", device=~\"$device\", port=~\"$port\"}[$interval])",
-          "legendFormat": "rcv_constraint_errors",
+          "legendFormat": "{{instance}} {{device}}:{{port}} rcv_constraint_errors",
           "range": true,
           "refId": "F"
         },
@@ -770,7 +770,7 @@
           "datasource": "$ds",
           "editorMode": "code",
           "expr": "rate(rdma_port_xmit_constraint_errors_total{job=\"$job\", instance=~\"$instance\", device=~\"$device\", port=~\"$port\"}[$interval])",
-          "legendFormat": "xmit_constraint_errors",
+          "legendFormat": "{{instance}} {{device}}:{{port}} xmit_constraint_errors",
           "range": true,
           "refId": "G"
         }
@@ -830,7 +830,7 @@
           "datasource": "$ds",
           "editorMode": "code",
           "expr": "100 * rate(rdma_port_xmit_discards_total{job=\"$job\", instance=~\"$instance\", device=~\"$device\", port=~\"$port\"}[$interval]) / clamp_min(rate(rdma_port_xmit_packets_total{job=\"$job\", instance=~\"$instance\", device=~\"$device\", port=~\"$port\"}[$interval]), 1e-6)",
-          "legendFormat": "tx_drop_ratio",
+          "legendFormat": "{{instance}} {{device}}:{{port}} tx_drop_ratio",
           "range": true,
           "refId": "A"
         }
