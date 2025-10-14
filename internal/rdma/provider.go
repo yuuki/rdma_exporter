@@ -30,6 +30,7 @@ const (
 )
 
 var (
+	// ref. https://codebrowser.dev/linux/linux/include/rdma/ib_verbs.h.html#ib_port_state
 	portStateNames = map[int]string{
 		0: "NOP",
 		1: "DOWN",
@@ -38,6 +39,7 @@ var (
 		4: "ACTIVE",
 		5: "ACTIVE_DEFER",
 	}
+	// ref. https://codebrowser.dev/linux/linux/include/rdma/ib_verbs.h.html#ib_port_phys_state
 	portPhysStateNames = map[int]string{
 		1: "SLEEP",
 		2: "POLLING",
