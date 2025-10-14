@@ -84,7 +84,7 @@
         {
           "datasource": "$ds",
           "editorMode": "code",
-          "expr": "count(rdma_port_info{job=\"$job\", instance=~\"$instance\", device=~\"$device\", port=~\"$port\", state!=\"ACTIVE\"})",
+          "expr": "count(count by (job, instance, device, port) (rdma_port_info{job=\"$job\", instance=~\"$instance\", device=~\"$device\", port=~\"$port\", state!=\"ACTIVE\"}))",
           "legendFormat": "Non-ACTIVE ports",
           "refId": "A"
         }
@@ -137,6 +137,17 @@
           "id": "labelsToFields",
           "options": {
             "valueFieldName": "state"
+          }
+        },
+        {
+          "id": "organize",
+          "options": {
+            "excludeByName": {
+              "__name__": true
+            },
+            "renameByName": {
+              "Time": "Scrape Time"
+            }
           }
         }
       ],
@@ -206,7 +217,7 @@
       "fieldConfig": {
         "defaults": {
           "color": {
-            "mode": "continuous-YlBl"
+            "mode": "palette-classic"
           },
           "custom": {
             "drawStyle": "line",
@@ -272,7 +283,7 @@
       "fieldConfig": {
         "defaults": {
           "color": {
-            "mode": "continuous-YlRd"
+            "mode": "palette-classic-by-name"
           },
           "custom": {
             "drawStyle": "line",
@@ -353,8 +364,8 @@
         "overrides": [
           {
             "matcher": {
-              "id": "byName",
-              "options": "rx_packets"
+              "id": "byRegexp",
+              "options": ".* rx$"
             },
             "properties": [
               {
@@ -368,14 +379,44 @@
           },
           {
             "matcher": {
-              "id": "byName",
-              "options": "tx_packets"
+              "id": "byRegexp",
+              "options": ".* tx$"
             },
             "properties": [
               {
                 "id": "color",
                 "value": {
                   "fixedColor": "#F2495C",
+                  "mode": "fixed"
+                }
+              }
+            ]
+          },
+          {
+            "matcher": {
+              "id": "byRegexp",
+              "options": ".* mcast$"
+            },
+            "properties": [
+              {
+                "id": "color",
+                "value": {
+                  "fixedColor": "#8F3BB8",
+                  "mode": "fixed"
+                }
+              }
+            ]
+          },
+          {
+            "matcher": {
+              "id": "byRegexp",
+              "options": ".* ucast$"
+            },
+            "properties": [
+              {
+                "id": "color",
+                "value": {
+                  "fixedColor": "#73BF69",
                   "mode": "fixed"
                 }
               }
@@ -410,7 +451,7 @@
           "datasource": "$ds",
           "editorMode": "code",
           "expr": "rate(rdma_port_rcv_packets_total{job=\"$job\", instance=~\"$instance\", device=~\"$device\", port=~\"$port\"}[$interval])",
-          "legendFormat": "rx_packets",
+          "legendFormat": "{{device}}:{{port}} rx",
           "range": true,
           "refId": "A"
         },
@@ -418,7 +459,7 @@
           "datasource": "$ds",
           "editorMode": "code",
           "expr": "rate(rdma_port_xmit_packets_total{job=\"$job\", instance=~\"$instance\", device=~\"$device\", port=~\"$port\"}[$interval])",
-          "legendFormat": "tx_packets",
+          "legendFormat": "{{device}}:{{port}} tx",
           "range": true,
           "refId": "B"
         },
@@ -426,7 +467,7 @@
           "datasource": "$ds",
           "editorMode": "code",
           "expr": "rate(rdma_port_multicast_rcv_packets_total{job=\"$job\", instance=~\"$instance\", device=~\"$device\", port=~\"$port\"}[$interval])",
-          "legendFormat": "multicast_rx",
+          "legendFormat": "{{device}}:{{port}} mcast",
           "range": true,
           "refId": "C"
         },
@@ -434,7 +475,7 @@
           "datasource": "$ds",
           "editorMode": "code",
           "expr": "rate(rdma_port_unicast_rcv_packets_total{job=\"$job\", instance=~\"$instance\", device=~\"$device\", port=~\"$port\"}[$interval])",
-          "legendFormat": "unicast_rx",
+          "legendFormat": "{{device}}:{{port}} ucast",
           "range": true,
           "refId": "D"
         }
@@ -638,12 +679,16 @@
       "fieldConfig": {
         "defaults": {
           "color": {
-            "mode": "palette-classic"
+            "mode": "palette-classic-by-name"
           },
           "custom": {
             "fillOpacity": 70,
             "gradientMode": "hue",
-            "showPoints": "never"
+            "showPoints": "never",
+            "stacking": {
+              "group": "A",
+              "mode": "normal"
+            }
           },
           "mappings": [],
           "unit": "pps"
