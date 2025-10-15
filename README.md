@@ -2,14 +2,15 @@
 
 [![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](LICENSE)
 
-`rdma_exporter` collects RDMA (InfiniBand/RoCE) NIC statistics from Linux hosts and exposes them as Prometheus metrics. It uses [`github.com/Mellanox/rdmamap`](https://pkg.go.dev/github.com/Mellanox/rdmamap) to traverse the sysfs tree and [`github.com/prometheus/client_golang`](https://pkg.go.dev/github.com/prometheus/client_golang) to publish metrics.
+`rdma_exporter` collects RDMA (InfiniBand/RoCE) NIC statistics from Linux hosts and exposes them as Prometheus metrics. The exporter walks the kernel's sysfs tree via [`github.com/Mellanox/rdmamap`](https://pkg.go.dev/github.com/Mellanox/rdmamap) and publishes metrics with [`github.com/prometheus/client_golang`](https://pkg.go.dev/github.com/prometheus/client_golang).
 
 ## Features
 - Publishes counters from `/sys/class/infiniband/<dev>/<port>/counters` and `/hw_counters` as `rdma_<counter>_total` metrics that match NVIDIA's *Understanding mlx5 Linux Counters and Status Parameters* guide (e.g. `rdma_port_rcv_data_total`, `rdma_symbol_error_total`, `rdma_duplicate_request_total`).
 - Exposes port metadata (link layer, state, width, speed, etc.) through `rdma_port_info`.
 - Tracks scrape failures with `rdma_scrape_errors_total`.
-- Ships with an HTTP server that serves `/metrics` and `/healthz`.
+- Ships with an HTTP server that serves `/metrics` and `/healthz` and gracefully shuts down on `SIGINT`/`SIGTERM`.
 - Supports an alternative sysfs root (`--sysfs-root`) for testing or chroot environments.
+- Honors a configurable scrape timeout (`--scrape-timeout`) to protect long-running sysfs reads.
 
 ## Requirements
 - Go 1.25 or newer.
@@ -17,16 +18,26 @@
 
 ## Build
 ```bash
-go build -o bin/rdma_exporter ./cmd/rdma_exporter
+go build -o rdma_exporter .
+```
+
+Alternatively, use the provided `Makefile` helpers:
+
+```bash
+make build   # compiles ./rdma_exporter
+make test    # runs go test ./...
+make lint    # runs go vet ./...
 ```
 
 ## Run
 ```bash
-./bin/rdma_exporter \
+./rdma_exporter \
   --listen-address=":9879" \
   --metrics-path="/metrics" \
   --health-path="/healthz"
 ```
+
+To print build information without starting the server, add `--version`.
 
 ## Configuration
 Every CLI flag has an equivalent environment variable. Environment values provide defaults; explicit CLI flags take precedence.
@@ -43,13 +54,19 @@ Every CLI flag has an equivalent environment variable. Environment values provid
 ## Metrics
 - `rdma_<counter>_total{device,port}` – Port and hardware counters aligned with NVIDIA documentation (e.g. `rdma_port_rcv_data_total`, `rdma_symbol_error_total`, `rdma_duplicate_request_total`).
 - `rdma_port_info{device,port,link_layer,state,phys_state,link_width,link_speed}` – Gauge set to `1` with descriptive labels.
-- `rdma_scrape_errors_total` – Counter incremented when sysfs collection fails.
+- `rdma_scrape_errors_total{}` – Counter incremented when sysfs collection fails.
 
 The Go and process collectors from `client_golang` are registered automatically.
 
 ## Testing
 ```bash
 go test ./...
+```
+
+For deterministic builds in shared environments, you can pin Go's caches locally:
+
+```bash
+GOCACHE=$(pwd)/.gocache GOMODCACHE=$(pwd)/.gomodcache go test ./...
 ```
 
 `internal/rdma/testdata/sysfs` contains fixture trees used in unit tests to emulate sysfs layouts.
@@ -61,7 +78,7 @@ go test ./...
 ## Development Notes
 - Architectural decisions and future work are documented in `docs/design.md`.
 - Logging uses the Go standard library `log/slog`. Set `--log-level=debug` for detailed scrape traces.
-- Packaging artifacts such as container images or systemd units can be added under a future `build/` directory.
+- Deployment guidance (systemd and container) lives in `docs/deployment.md`.
 
 ## License
 This project is licensed under the MIT License. See `LICENSE` for full text.
