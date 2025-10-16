@@ -63,6 +63,9 @@ Every CLI flag has an equivalent environment variable. Environment values provid
 
 The Go and process collectors from `client_golang` are registered automatically.
 
+## Dashboards
+- Grafana dashboard: [RDMA/RoCE NIC Telemetry](https://grafana.com/grafana/dashboards/24241-rdma-roce-nic-telemetry/) – Prebuilt panels for visualizing the exporter metrics, helpful for quick validation and long-term monitoring.
+
 ## Testing
 ```bash
 go test ./...
