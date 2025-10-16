@@ -125,6 +125,7 @@ Precompute heavy expressions to accelerate dashboards and keep query inspector r
 - **Expensive variable queries**: Swap `label_values()` for `query_result(count by (...))` when scrape performance degrades.
 - **Unit mismatches**: Enforce `×4` conversion for `_data_total` counters; highlight this in panel descriptions and recording rules.
 - **Regenerating UID**: Prior to publishing, ensure JSON exports retain a fixed `uid` to avoid breaking embedded links or provisioning setups.
+- **Grafana.com external sharing**: Grafana Labs’ community gallery validates dashboards against the “Export for sharing externally” format. The repository JSON is the provisioning format (no `__inputs` / `__requires` blocks), so re-export from Grafana UI with that option—or manually add the required metadata—before uploading to avoid the “Old dashboard JSON format” error.
 
 ## 14. Appendix – Future Enhancements
 - Automate JSON generation via Grafana provisioning pipelines and include schema validation in CI.
