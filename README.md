@@ -42,6 +42,11 @@ make lint    # runs go vet ./...
   --health-path="/healthz"
 ```
 
+To exclude specific devices that trigger firmware errors (e.g., on NVIDIA DGX/GB200 systems):
+```bash
+./rdma_exporter --exclude-devices=mlx5_0,mlx5_1
+```
+
 To print build information without starting the server, add `--version`.
 
 ## Configuration
@@ -55,6 +60,7 @@ Every CLI flag has an equivalent environment variable. Environment values provid
 | `--log-level` | `RDMA_EXPORTER_LOG_LEVEL` | `info` | Log verbosity (`debug`, `info`, `warn`, `error`) |
 | `--sysfs-root` | `RDMA_EXPORTER_SYSFS_ROOT` | `/sys` | Root directory used to read RDMA sysfs data |
 | `--scrape-timeout` | `RDMA_EXPORTER_SCRAPE_TIMEOUT` | `5s` | Upper bound for metric gathering per scrape |
+| `--exclude-devices` | `RDMA_EXPORTER_EXCLUDE_DEVICES` | `` | Comma-separated list of RDMA devices to exclude (e.g., `mlx5_0,mlx5_1`) |
 
 ## Metrics
 - `rdma_<counter>_total{device,port}` – Port and hardware counters aligned with NVIDIA documentation (e.g. `rdma_port_rcv_data_total`, `rdma_symbol_error_total`, `rdma_duplicate_request_total`).

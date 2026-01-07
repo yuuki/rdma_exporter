@@ -22,13 +22,14 @@ const (
 
 // Config captures runtime configuration options.
 type Config struct {
-	ListenAddress string
-	MetricsPath   string
-	HealthPath    string
-	LogLevel      slog.Level
-	SysfsRoot     string
-	ScrapeTimeout time.Duration
-	ShowVersion   bool
+	ListenAddress  string
+	MetricsPath    string
+	HealthPath     string
+	LogLevel       slog.Level
+	SysfsRoot      string
+	ScrapeTimeout  time.Duration
+	ExcludeDevices []string
+	ShowVersion    bool
 }
 
 // Parse constructs a Config from command-line flags and environment variables.
@@ -43,6 +44,7 @@ func Parse(args []string) (Config, error) {
 	healthPath := fs.String("health-path", envOrDefault("RDMA_EXPORTER_HEALTH_PATH", defaultHealthPath), "HTTP path for health checks.")
 	logLevel := fs.String("log-level", envOrDefault("RDMA_EXPORTER_LOG_LEVEL", defaultLogLevel), "Log level (debug, info, warn, error).")
 	sysfsRoot := fs.String("sysfs-root", envOrDefault("RDMA_EXPORTER_SYSFS_ROOT", defaultSysfsRoot), "Root of the sysfs tree to read RDMA data from.")
+	excludeDevices := fs.String("exclude-devices", envOrDefault("RDMA_EXPORTER_EXCLUDE_DEVICES", ""), "Comma-separated list of RDMA devices to exclude from monitoring (e.g., mlx5_0,mlx5_1).")
 
 	timeoutDefault := defaultTimeout
 	if envTimeout := os.Getenv("RDMA_EXPORTER_SCRAPE_TIMEOUT"); envTimeout != "" {
@@ -68,13 +70,14 @@ func Parse(args []string) (Config, error) {
 	}
 
 	cfg = Config{
-		ListenAddress: *listen,
-		MetricsPath:   *metricsPath,
-		HealthPath:    *healthPath,
-		LogLevel:      level,
-		SysfsRoot:     *sysfsRoot,
-		ScrapeTimeout: *scrapeTimeout,
-		ShowVersion:   *showVersion,
+		ListenAddress:  *listen,
+		MetricsPath:    *metricsPath,
+		HealthPath:     *healthPath,
+		LogLevel:       level,
+		SysfsRoot:      *sysfsRoot,
+		ScrapeTimeout:  *scrapeTimeout,
+		ExcludeDevices: parseDeviceList(*excludeDevices),
+		ShowVersion:    *showVersion,
 	}
 	return cfg, nil
 }
@@ -99,4 +102,18 @@ func parseLogLevel(value string) (slog.Level, error) {
 	default:
 		return slog.LevelInfo, fmt.Errorf("invalid log level %q", value)
 	}
+}
+
+func parseDeviceList(list string) []string {
+	if list == "" {
+		return nil
+	}
+	parts := strings.Split(list, ",")
+	devices := make([]string, 0, len(parts))
+	for _, part := range parts {
+		if trimmed := strings.TrimSpace(part); trimmed != "" {
+			devices = append(devices, trimmed)
+		}
+	}
+	return devices
 }

@@ -79,6 +79,83 @@ func TestVersionFlag(t *testing.T) {
 	}
 }
 
+func TestExcludeDevicesFromFlag(t *testing.T) {
+	t.Parallel()
+
+	cfg, err := Parse([]string{"--exclude-devices", "mlx5_0,mlx5_1"})
+	if err != nil {
+		t.Fatalf("Parse returned error: %v", err)
+	}
+
+	if len(cfg.ExcludeDevices) != 2 {
+		t.Fatalf("expected 2 excluded devices, got %d", len(cfg.ExcludeDevices))
+	}
+	if cfg.ExcludeDevices[0] != "mlx5_0" || cfg.ExcludeDevices[1] != "mlx5_1" {
+		t.Fatalf("expected [mlx5_0 mlx5_1], got %v", cfg.ExcludeDevices)
+	}
+}
+
+func TestExcludeDevicesFromEnv(t *testing.T) {
+	t.Setenv("RDMA_EXPORTER_EXCLUDE_DEVICES", "mlx5_0, mlx5_2 ")
+
+	cfg, err := Parse(nil)
+	if err != nil {
+		t.Fatalf("Parse returned error: %v", err)
+	}
+
+	if len(cfg.ExcludeDevices) != 2 {
+		t.Fatalf("expected 2 excluded devices, got %d", len(cfg.ExcludeDevices))
+	}
+	if cfg.ExcludeDevices[0] != "mlx5_0" || cfg.ExcludeDevices[1] != "mlx5_2" {
+		t.Fatalf("expected [mlx5_0 mlx5_2], got %v", cfg.ExcludeDevices)
+	}
+}
+
+func TestExcludeDevicesEmpty(t *testing.T) {
+	t.Parallel()
+
+	cfg, err := Parse(nil)
+	if err != nil {
+		t.Fatalf("Parse returned error: %v", err)
+	}
+
+	if cfg.ExcludeDevices != nil {
+		t.Fatalf("expected nil excluded devices, got %v", cfg.ExcludeDevices)
+	}
+}
+
+func TestParseDeviceList(t *testing.T) {
+	t.Parallel()
+
+	tests := []struct {
+		name  string
+		input string
+		want  []string
+	}{
+		{"empty", "", nil},
+		{"single", "mlx5_0", []string{"mlx5_0"}},
+		{"multiple", "mlx5_0,mlx5_1", []string{"mlx5_0", "mlx5_1"}},
+		{"with spaces", " mlx5_0 , mlx5_1 ", []string{"mlx5_0", "mlx5_1"}},
+		{"trailing comma", "mlx5_0,", []string{"mlx5_0"}},
+		{"empty parts", "mlx5_0,,mlx5_1", []string{"mlx5_0", "mlx5_1"}},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			got := parseDeviceList(tt.input)
+			if len(got) != len(tt.want) {
+				t.Errorf("parseDeviceList(%q) length = %d, want %d", tt.input, len(got), len(tt.want))
+				return
+			}
+			for i := range got {
+				if got[i] != tt.want[i] {
+					t.Errorf("parseDeviceList(%q)[%d] = %q, want %q", tt.input, i, got[i], tt.want[i])
+				}
+			}
+		})
+	}
+}
+
 func defaultLogLevelValue() slog.Level {
 	lvl, _ := parseLogLevel(defaultLogLevel)
 	return lvl

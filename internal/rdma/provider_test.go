@@ -84,3 +84,57 @@ func TestSysfsProviderDevicesContextCanceled(t *testing.T) {
 		t.Fatalf("expected context canceled, got %v", err)
 	}
 }
+
+func TestSetExcludeDevices(t *testing.T) {
+	t.Parallel()
+
+	provider := NewSysfsProvider()
+
+	devices := []string{"mlx5_0", "mlx5_1", " mlx5_2 "}
+	provider.SetExcludeDevices(devices)
+
+	tests := []struct {
+		device   string
+		excluded bool
+	}{
+		{"mlx5_0", true},
+		{"mlx5_1", true},
+		{" mlx5_2 ", true}, // exact match with spaces
+		{"mlx5_3", false},
+		{"", false},
+	}
+
+	for _, tt := range tests {
+		got := provider.isExcluded(tt.device)
+		if got != tt.excluded {
+			t.Errorf("isExcluded(%q) = %v, want %v", tt.device, got, tt.excluded)
+		}
+	}
+}
+
+func TestInvalidPathCaching(t *testing.T) {
+	t.Parallel()
+
+	provider := NewSysfsProvider()
+
+	path := "/sys/class/infiniband/mlx5_0/ports/1/counters/bad_file"
+
+	// Initially path should not be invalid
+	if provider.isInvalidPath(path) {
+		t.Error("path should not be invalid initially")
+	}
+
+	// Mark as invalid
+	provider.markInvalidPath(path)
+
+	// Should now be cached as invalid
+	if !provider.isInvalidPath(path) {
+		t.Error("path should be marked as invalid")
+	}
+
+	// Other paths should not be affected
+	otherPath := "/sys/class/infiniband/mlx5_0/ports/1/counters/other_file"
+	if provider.isInvalidPath(otherPath) {
+		t.Error("other path should not be invalid")
+	}
+}

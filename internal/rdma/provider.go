@@ -10,6 +10,7 @@ import (
 	"strconv"
 	"strings"
 	"sync"
+	"syscall"
 	"unicode"
 
 	"github.com/Mellanox/rdmamap"
@@ -81,8 +82,10 @@ type PortAttributes struct {
 
 // SysfsProvider implements Provider backed by the node's sysfs.
 type SysfsProvider struct {
-	mu        sync.RWMutex
-	sysfsRoot string
+	mu             sync.RWMutex
+	sysfsRoot      string
+	excludeDevices map[string]bool
+	invalidPaths   sync.Map
 }
 
 // NewSysfsProvider returns a SysfsProvider using the default sysfs root.
@@ -101,6 +104,32 @@ func (p *SysfsProvider) SetSysfsRoot(root string) {
 		return
 	}
 	p.sysfsRoot = filepath.Clean(root)
+}
+
+// SetExcludeDevices configures which devices should be completely skipped.
+func (p *SysfsProvider) SetExcludeDevices(devices []string) {
+	p.mu.Lock()
+	defer p.mu.Unlock()
+
+	p.excludeDevices = make(map[string]bool, len(devices))
+	for _, dev := range devices {
+		p.excludeDevices[dev] = true
+	}
+}
+
+func (p *SysfsProvider) isExcluded(device string) bool {
+	p.mu.RLock()
+	defer p.mu.RUnlock()
+	return p.excludeDevices[device]
+}
+
+func (p *SysfsProvider) isInvalidPath(path string) bool {
+	_, exists := p.invalidPaths.Load(path)
+	return exists
+}
+
+func (p *SysfsProvider) markInvalidPath(path string) {
+	p.invalidPaths.Store(path, struct{}{})
 }
 
 // Devices returns a snapshot of RDMA devices and associated ports.
@@ -124,6 +153,9 @@ func (p *SysfsProvider) devicesWithRdmamap(ctx context.Context) ([]Device, error
 	devices := make([]Device, 0, len(deviceNames))
 
 	for _, name := range deviceNames {
+		if p.isExcluded(name) {
+			continue
+		}
 		if ctx.Err() != nil {
 			return nil, ctx.Err()
 		}
@@ -188,6 +220,9 @@ func (p *SysfsProvider) devicesFromRoot(ctx context.Context, root string) ([]Dev
 		}
 
 		name := entry.Name()
+		if p.isExcluded(name) {
+			continue
+		}
 		ports, err := p.portsFromRoot(ctx, root, name)
 		if err != nil {
 			return nil, fmt.Errorf("collect ports for %s: %w", name, err)
@@ -221,11 +256,11 @@ func (p *SysfsProvider) portsFromRoot(ctx context.Context, root, device string) 
 			continue
 		}
 
-		stats, err := readCounterDir(filepath.Join(dir, entry.Name(), countersDirName))
+		stats, err := p.readCounterDir(filepath.Join(dir, entry.Name(), countersDirName))
 		if err != nil {
 			return nil, fmt.Errorf("read counters for %s port %d: %w", device, portID, err)
 		}
-		hwStats, err := readCounterDir(filepath.Join(dir, entry.Name(), hwCountersDirName))
+		hwStats, err := p.readCounterDir(filepath.Join(dir, entry.Name(), hwCountersDirName))
 		if err != nil && !errors.Is(err, fs.ErrNotExist) {
 			return nil, fmt.Errorf("read hw counters for %s port %d: %w", device, portID, err)
 		}
@@ -355,7 +390,7 @@ func extractFirstNumber(value string) (int, bool) {
 	return 0, false
 }
 
-func readCounterDir(path string) (map[string]uint64, error) {
+func (p *SysfsProvider) readCounterDir(path string) (map[string]uint64, error) {
 	entries, err := os.ReadDir(path)
 	if err != nil {
 		return nil, err
@@ -365,8 +400,20 @@ func readCounterDir(path string) (map[string]uint64, error) {
 		if entry.IsDir() {
 			continue
 		}
-		raw, err := os.ReadFile(filepath.Join(path, entry.Name()))
+		filePath := filepath.Join(path, entry.Name())
+
+		// Check if this path previously returned EINVAL
+		if p.isInvalidPath(filePath) {
+			continue
+		}
+
+		raw, err := os.ReadFile(filePath)
 		if err != nil {
+			// Cache paths that return EINVAL and skip them in future scrapes
+			if errors.Is(err, syscall.EINVAL) {
+				p.markInvalidPath(filePath)
+				continue
+			}
 			return nil, err
 		}
 		value, err := strconv.ParseUint(strings.TrimSpace(string(raw)), 10, 64)
