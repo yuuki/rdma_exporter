@@ -69,6 +69,38 @@ func TestSysfsProviderDevicesFromCustomRoot(t *testing.T) {
 	}
 }
 
+func TestSysfsProviderDevicesFromSymlinkRoot(t *testing.T) {
+	t.Parallel()
+
+	root := filepath.Join("testdata", "sysfs", "symlink")
+	provider := NewSysfsProvider()
+	provider.SetSysfsRoot(root)
+
+	devices, err := provider.Devices(context.Background())
+	if err != nil {
+		t.Fatalf("Devices returned error: %v", err)
+	}
+	if len(devices) != 1 {
+		t.Fatalf("expected 1 device, got %d", len(devices))
+	}
+
+	device := devices[0]
+	if device.Name != "mlx5_0" {
+		t.Fatalf("unexpected device name %q", device.Name)
+	}
+	if len(device.Ports) != 2 {
+		t.Fatalf("expected 2 ports, got %d", len(device.Ports))
+	}
+
+	port1 := device.Ports[0]
+	if got := port1.Stats["port_xmit_data"]; got != 123 {
+		t.Fatalf("expected port_xmit_data=123, got %d", got)
+	}
+	if got := port1.HwStats["symbol_errors"]; got != 11 {
+		t.Fatalf("expected symbol_errors=11, got %d", got)
+	}
+}
+
 func TestSysfsProviderDevicesContextCanceled(t *testing.T) {
 	provider := NewSysfsProvider()
 	provider.SetSysfsRoot(filepath.Join("testdata", "sysfs", "basic"))

@@ -10,7 +10,6 @@ High-performance computing clusters and low-latency trading platforms increasing
 ## 2. Requirements
 - **Platform**: Linux only, running Go 1.22+ binaries.
 - **Dependencies**:
-  - [`github.com/Mellanox/rdmamap`](https://pkg.go.dev/github.com/Mellanox/rdmamap) for sysfs discovery and statistics.
   - [`github.com/prometheus/client_golang`](https://pkg.go.dev/github.com/prometheus/client_golang) for instrumentation and HTTP handlers.
 - **Metrics**:
   - Port-level and hardware counters (`rdma_<counter>_total`) aligned with NVIDIA documentation (e.g. `rdma_port_xmit_data_total`, `rdma_symbol_error_total`, `rdma_duplicate_request_total`).
@@ -52,12 +51,11 @@ High-performance computing clusters and low-latency trading platforms increasing
        │
 ┌──────▼─────────┐
 │ RDMA Provider  │
-│ - rdmamap API  │
 │ - sysfs root   │
 └────────────────┘
 ```
 
-The `cmd/rdma_exporter` package wires configuration, logging, and the HTTP server. The server exposes `/metrics`, `/healthz`, and optional `/readyz` endpoints. The `internal/collector` package implements `prometheus.Collector`, delegating data retrieval to `internal/rdma`, which wraps `rdmamap` for easier mocking and testing.
+The `cmd/rdma_exporter` package wires configuration, logging, and the HTTP server. The server exposes `/metrics`, `/healthz`, and optional `/readyz` endpoints. The `internal/collector` package implements `prometheus.Collector`, delegating data retrieval to `internal/rdma`, which reads sysfs directly for easier mocking and testing.
 
 ## 4. Data Flow
 1. A scrape hits `/metrics`.
@@ -76,7 +74,7 @@ The `cmd/rdma_exporter` package wires configuration, logging, and the HTTP serve
 - **Graceful Shutdown**: The HTTP server listens for SIGINT/SIGTERM, stops accepting new connections, and waits for in-flight scrapes to finish.
 
 ## 6. Performance Considerations
-- `rdmamap` reads sysfs files; the collector avoids additional caching to keep results up to date. For environments with very frequent scrapes, an optional short-lived cache (e.g., 1–2 seconds) can be enabled behind a flag once needed.
+- The provider reads sysfs files directly; the collector avoids additional caching to keep results up to date. For environments with very frequent scrapes, an optional short-lived cache (e.g., 1–2 seconds) can be enabled behind a flag once needed.
 - Concurrency is limited by serializing `Collect` calls using a mutex, preventing overlapping sysfs traversals and avoiding double counting.
 - Profiling hooks (`pprof`) are intentionally excluded by default to reduce attack surface but may be added under a gated build tag if required.
 
@@ -103,7 +101,7 @@ The `cmd/rdma_exporter` package wires configuration, logging, and the HTTP serve
 
 ## 10. Testing Strategy
 - **Unit Tests**:
-  - `internal/rdma`: Mock sysfs directory using fixtures; verify mapping of `rdmamap` structures.
+  - `internal/rdma`: Mock sysfs directory using fixtures; verify sysfs parsing.
   - `internal/collector`: Use `prometheus/testutil` to assert metric contents, including label values.
 - **Integration Tests**:
   - Run exporter against recorded sysfs trees under `testdata/sysfs/<scenario>`.
