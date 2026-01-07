@@ -159,11 +159,22 @@ func (p *SysfsProvider) devicesWithRdmamap(ctx context.Context) ([]Device, error
 		if ctx.Err() != nil {
 			return nil, ctx.Err()
 		}
+
+		// Try rdmamap first for better performance
 		rdmaStats, err := rdmamap.GetRdmaSysfsAllPortsStats(name)
 		if err != nil {
-			return nil, fmt.Errorf("rdma stats for %s: %w", name, err)
+			// If rdmamap fails (likely due to EINVAL on firmware-restricted PFs),
+			// fall back to direct sysfs reading with EINVAL caching
+			device, fallbackErr := p.deviceFromRoot(ctx, defaultSysfsRoot, name)
+			if fallbackErr != nil {
+				// If both rdmamap and fallback fail, return the original error
+				return nil, fmt.Errorf("rdma stats for %s: %w (fallback also failed: %v)", name, err, fallbackErr)
+			}
+			devices = append(devices, device)
+			continue
 		}
 
+		// Successfully got stats from rdmamap
 		ports := make([]Port, 0, len(rdmaStats.PortStats))
 		for _, portStats := range rdmaStats.PortStats {
 			if ctx.Err() != nil {
@@ -199,6 +210,19 @@ func (p *SysfsProvider) devicesWithRdmamap(ctx context.Context) ([]Device, error
 	return devices, nil
 }
 
+func (p *SysfsProvider) deviceFromRoot(ctx context.Context, root, deviceName string) (Device, error) {
+	if ctx.Err() != nil {
+		return Device{}, ctx.Err()
+	}
+
+	ports, err := p.portsFromRoot(ctx, root, deviceName)
+	if err != nil {
+		return Device{}, fmt.Errorf("collect ports for %s: %w", deviceName, err)
+	}
+
+	return Device{Name: deviceName, Ports: ports}, nil
+}
+
 func (p *SysfsProvider) devicesFromRoot(ctx context.Context, root string) ([]Device, error) {
 	classDir := filepath.Join(root, classInfinibandPath)
 	entries, err := os.ReadDir(classDir)
@@ -223,11 +247,12 @@ func (p *SysfsProvider) devicesFromRoot(ctx context.Context, root string) ([]Dev
 		if p.isExcluded(name) {
 			continue
 		}
-		ports, err := p.portsFromRoot(ctx, root, name)
+
+		device, err := p.deviceFromRoot(ctx, root, name)
 		if err != nil {
-			return nil, fmt.Errorf("collect ports for %s: %w", name, err)
+			return nil, err
 		}
-		devices = append(devices, Device{Name: name, Ports: ports})
+		devices = append(devices, device)
 	}
 	return devices, nil
 }
