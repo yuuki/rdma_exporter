@@ -13,6 +13,7 @@ For details on GitHub Actions status badges, see the [official documentation](ht
 - Publishes counters from `/sys/class/infiniband/<dev>/<port>/counters` and `/hw_counters` as `rdma_<counter>_total` metrics that match NVIDIA's *Understanding mlx5 Linux Counters and Status Parameters* guide (e.g. `rdma_port_rcv_data_total`, `rdma_symbol_error_total`, `rdma_duplicate_request_total`).
 - Exposes port metadata (link layer, state, width, speed, etc.) through `rdma_port_info`.
 - Tracks scrape failures with `rdma_scrape_errors_total`.
+- **Supports device exclusion** (`--exclude-devices`) to prevent kernel log flooding on firmware-restricted devices (NVIDIA DGX, Umbriel, GB200 systems).
 - Ships with an HTTP server that serves `/metrics` and `/healthz` and gracefully shuts down on `SIGINT`/`SIGTERM`.
 - Supports an alternative sysfs root (`--sysfs-root`) for testing or chroot environments.
 - Honors a configurable scrape timeout (`--scrape-timeout`) to protect long-running sysfs reads.
@@ -42,6 +43,11 @@ make lint    # runs go vet ./...
   --health-path="/healthz"
 ```
 
+To exclude specific devices that trigger firmware errors (e.g., on NVIDIA DGX/GB200 systems):
+```bash
+./rdma_exporter --exclude-devices=mlx5_0,mlx5_1
+```
+
 To print build information without starting the server, add `--version`.
 
 ## Configuration
@@ -55,6 +61,7 @@ Every CLI flag has an equivalent environment variable. Environment values provid
 | `--log-level` | `RDMA_EXPORTER_LOG_LEVEL` | `info` | Log verbosity (`debug`, `info`, `warn`, `error`) |
 | `--sysfs-root` | `RDMA_EXPORTER_SYSFS_ROOT` | `/sys` | Root directory used to read RDMA sysfs data |
 | `--scrape-timeout` | `RDMA_EXPORTER_SCRAPE_TIMEOUT` | `5s` | Upper bound for metric gathering per scrape |
+| `--exclude-devices` | `RDMA_EXPORTER_EXCLUDE_DEVICES` | `` | Comma-separated list of RDMA devices to exclude (e.g., `mlx5_0,mlx5_1`) |
 
 ## Metrics
 - `rdma_<counter>_total{device,port}` – Port and hardware counters aligned with NVIDIA documentation (e.g. `rdma_port_rcv_data_total`, `rdma_symbol_error_total`, `rdma_duplicate_request_total`).

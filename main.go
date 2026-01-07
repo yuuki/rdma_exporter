@@ -53,6 +53,10 @@ func main() {
 	if cfg.SysfsRoot != "" {
 		provider.SetSysfsRoot(cfg.SysfsRoot)
 	}
+	if len(cfg.ExcludeDevices) > 0 {
+		provider.SetExcludeDevices(cfg.ExcludeDevices)
+		logger.Info("excluding devices from monitoring", "devices", cfg.ExcludeDevices)
+	}
 
 	rdmaCollector := collector.New(provider, logger)
 

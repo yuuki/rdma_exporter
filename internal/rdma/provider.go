@@ -81,8 +81,9 @@ type PortAttributes struct {
 
 // SysfsProvider implements Provider backed by the node's sysfs.
 type SysfsProvider struct {
-	mu        sync.RWMutex
-	sysfsRoot string
+	mu             sync.RWMutex
+	sysfsRoot      string
+	excludeDevices map[string]bool
 }
 
 // NewSysfsProvider returns a SysfsProvider using the default sysfs root.
@@ -101,6 +102,23 @@ func (p *SysfsProvider) SetSysfsRoot(root string) {
 		return
 	}
 	p.sysfsRoot = filepath.Clean(root)
+}
+
+// SetExcludeDevices configures which devices should be completely skipped.
+func (p *SysfsProvider) SetExcludeDevices(devices []string) {
+	p.mu.Lock()
+	defer p.mu.Unlock()
+
+	p.excludeDevices = make(map[string]bool, len(devices))
+	for _, dev := range devices {
+		p.excludeDevices[dev] = true
+	}
+}
+
+func (p *SysfsProvider) isExcluded(device string) bool {
+	p.mu.RLock()
+	defer p.mu.RUnlock()
+	return p.excludeDevices[device]
 }
 
 // Devices returns a snapshot of RDMA devices and associated ports.
@@ -124,6 +142,9 @@ func (p *SysfsProvider) devicesWithRdmamap(ctx context.Context) ([]Device, error
 	devices := make([]Device, 0, len(deviceNames))
 
 	for _, name := range deviceNames {
+		if p.isExcluded(name) {
+			continue
+		}
 		if ctx.Err() != nil {
 			return nil, ctx.Err()
 		}
@@ -167,6 +188,19 @@ func (p *SysfsProvider) devicesWithRdmamap(ctx context.Context) ([]Device, error
 	return devices, nil
 }
 
+func (p *SysfsProvider) deviceFromRoot(ctx context.Context, root, deviceName string) (Device, error) {
+	if ctx.Err() != nil {
+		return Device{}, ctx.Err()
+	}
+
+	ports, err := p.portsFromRoot(ctx, root, deviceName)
+	if err != nil {
+		return Device{}, fmt.Errorf("collect ports for %s: %w", deviceName, err)
+	}
+
+	return Device{Name: deviceName, Ports: ports}, nil
+}
+
 func (p *SysfsProvider) devicesFromRoot(ctx context.Context, root string) ([]Device, error) {
 	classDir := filepath.Join(root, classInfinibandPath)
 	entries, err := os.ReadDir(classDir)
@@ -188,11 +222,15 @@ func (p *SysfsProvider) devicesFromRoot(ctx context.Context, root string) ([]Dev
 		}
 
 		name := entry.Name()
-		ports, err := p.portsFromRoot(ctx, root, name)
-		if err != nil {
-			return nil, fmt.Errorf("collect ports for %s: %w", name, err)
+		if p.isExcluded(name) {
+			continue
 		}
-		devices = append(devices, Device{Name: name, Ports: ports})
+
+		device, err := p.deviceFromRoot(ctx, root, name)
+		if err != nil {
+			return nil, err
+		}
+		devices = append(devices, device)
 	}
 	return devices, nil
 }
@@ -221,11 +259,11 @@ func (p *SysfsProvider) portsFromRoot(ctx context.Context, root, device string) 
 			continue
 		}
 
-		stats, err := readCounterDir(filepath.Join(dir, entry.Name(), countersDirName))
+		stats, err := p.readCounterDir(filepath.Join(dir, entry.Name(), countersDirName))
 		if err != nil {
 			return nil, fmt.Errorf("read counters for %s port %d: %w", device, portID, err)
 		}
-		hwStats, err := readCounterDir(filepath.Join(dir, entry.Name(), hwCountersDirName))
+		hwStats, err := p.readCounterDir(filepath.Join(dir, entry.Name(), hwCountersDirName))
 		if err != nil && !errors.Is(err, fs.ErrNotExist) {
 			return nil, fmt.Errorf("read hw counters for %s port %d: %w", device, portID, err)
 		}
@@ -355,7 +393,7 @@ func extractFirstNumber(value string) (int, bool) {
 	return 0, false
 }
 
-func readCounterDir(path string) (map[string]uint64, error) {
+func (p *SysfsProvider) readCounterDir(path string) (map[string]uint64, error) {
 	entries, err := os.ReadDir(path)
 	if err != nil {
 		return nil, err
