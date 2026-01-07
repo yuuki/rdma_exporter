@@ -11,8 +11,6 @@ import (
 	"strings"
 	"sync"
 	"unicode"
-
-	"github.com/Mellanox/rdmamap"
 )
 
 const (
@@ -131,61 +129,7 @@ func (p *SysfsProvider) Devices(ctx context.Context) ([]Device, error) {
 		return nil, ctx.Err()
 	}
 
-	if root == defaultSysfsRoot {
-		return p.devicesWithRdmamap(ctx)
-	}
 	return p.devicesFromRoot(ctx, root)
-}
-
-func (p *SysfsProvider) devicesWithRdmamap(ctx context.Context) ([]Device, error) {
-	deviceNames := rdmamap.GetRdmaDeviceList()
-	devices := make([]Device, 0, len(deviceNames))
-
-	for _, name := range deviceNames {
-		if p.isExcluded(name) {
-			continue
-		}
-		if ctx.Err() != nil {
-			return nil, ctx.Err()
-		}
-		rdmaStats, err := rdmamap.GetRdmaSysfsAllPortsStats(name)
-		if err != nil {
-			return nil, fmt.Errorf("rdma stats for %s: %w", name, err)
-		}
-
-		ports := make([]Port, 0, len(rdmaStats.PortStats))
-		for _, portStats := range rdmaStats.PortStats {
-			if ctx.Err() != nil {
-				return nil, ctx.Err()
-			}
-
-			portID := portStats.Port
-			stats := make(map[string]uint64, len(portStats.Stats))
-			for _, entry := range portStats.Stats {
-				stats[entry.Name] = entry.Value
-			}
-
-			hwStats := make(map[string]uint64, len(portStats.HwStats))
-			for _, entry := range portStats.HwStats {
-				hwStats[entry.Name] = entry.Value
-			}
-
-			attr, err := p.readPortAttributes(defaultSysfsRoot, name, portID)
-			if err != nil {
-				return nil, err
-			}
-
-			ports = append(ports, Port{
-				ID:         portID,
-				Stats:      stats,
-				HwStats:    hwStats,
-				Attributes: attr,
-			})
-		}
-
-		devices = append(devices, Device{Name: name, Ports: ports})
-	}
-	return devices, nil
 }
 
 func (p *SysfsProvider) deviceFromRoot(ctx context.Context, root, deviceName string) (Device, error) {
@@ -218,7 +162,13 @@ func (p *SysfsProvider) devicesFromRoot(ctx context.Context, root string) ([]Dev
 		}
 
 		if !entry.IsDir() {
-			continue
+			if entry.Type()&fs.ModeSymlink == 0 {
+				continue
+			}
+			info, err := os.Stat(filepath.Join(classDir, entry.Name()))
+			if err != nil || !info.IsDir() {
+				continue
+			}
 		}
 
 		name := entry.Name()
