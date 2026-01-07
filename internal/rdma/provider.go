@@ -10,7 +10,6 @@ import (
 	"strconv"
 	"strings"
 	"sync"
-	"syscall"
 	"unicode"
 
 	"github.com/Mellanox/rdmamap"
@@ -85,7 +84,6 @@ type SysfsProvider struct {
 	mu             sync.RWMutex
 	sysfsRoot      string
 	excludeDevices map[string]bool
-	invalidPaths   sync.Map
 }
 
 // NewSysfsProvider returns a SysfsProvider using the default sysfs root.
@@ -123,15 +121,6 @@ func (p *SysfsProvider) isExcluded(device string) bool {
 	return p.excludeDevices[device]
 }
 
-func (p *SysfsProvider) isInvalidPath(path string) bool {
-	_, exists := p.invalidPaths.Load(path)
-	return exists
-}
-
-func (p *SysfsProvider) markInvalidPath(path string) {
-	p.invalidPaths.Store(path, struct{}{})
-}
-
 // Devices returns a snapshot of RDMA devices and associated ports.
 func (p *SysfsProvider) Devices(ctx context.Context) ([]Device, error) {
 	p.mu.RLock()
@@ -159,22 +148,11 @@ func (p *SysfsProvider) devicesWithRdmamap(ctx context.Context) ([]Device, error
 		if ctx.Err() != nil {
 			return nil, ctx.Err()
 		}
-
-		// Try rdmamap first for better performance
 		rdmaStats, err := rdmamap.GetRdmaSysfsAllPortsStats(name)
 		if err != nil {
-			// If rdmamap fails (likely due to EINVAL on firmware-restricted PFs),
-			// fall back to direct sysfs reading with EINVAL caching
-			device, fallbackErr := p.deviceFromRoot(ctx, defaultSysfsRoot, name)
-			if fallbackErr != nil {
-				// If both rdmamap and fallback fail, return the original error
-				return nil, fmt.Errorf("rdma stats for %s: %w (fallback also failed: %v)", name, err, fallbackErr)
-			}
-			devices = append(devices, device)
-			continue
+			return nil, fmt.Errorf("rdma stats for %s: %w", name, err)
 		}
 
-		// Successfully got stats from rdmamap
 		ports := make([]Port, 0, len(rdmaStats.PortStats))
 		for _, portStats := range rdmaStats.PortStats {
 			if ctx.Err() != nil {
@@ -425,20 +403,8 @@ func (p *SysfsProvider) readCounterDir(path string) (map[string]uint64, error) {
 		if entry.IsDir() {
 			continue
 		}
-		filePath := filepath.Join(path, entry.Name())
-
-		// Check if this path previously returned EINVAL
-		if p.isInvalidPath(filePath) {
-			continue
-		}
-
-		raw, err := os.ReadFile(filePath)
+		raw, err := os.ReadFile(filepath.Join(path, entry.Name()))
 		if err != nil {
-			// Cache paths that return EINVAL and skip them in future scrapes
-			if errors.Is(err, syscall.EINVAL) {
-				p.markInvalidPath(filePath)
-				continue
-			}
 			return nil, err
 		}
 		value, err := strconv.ParseUint(strings.TrimSpace(string(raw)), 10, 64)
