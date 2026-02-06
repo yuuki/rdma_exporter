@@ -18,6 +18,8 @@ const (
 
 	classInfinibandPath = "class/infiniband"
 	portsDirName        = "ports"
+	gidAttrsDirName     = "gid_attrs"
+	ndevsDirName        = "ndevs"
 	countersDirName     = "counters"
 	hwCountersDirName   = "hw_counters"
 	linkLayerFile       = "link_layer"
@@ -75,6 +77,7 @@ type PortAttributes struct {
 	PhysState string
 	LinkWidth string
 	LinkSpeed string
+	NetDev    string
 }
 
 // SysfsProvider implements Provider backed by the node's sysfs.
@@ -254,6 +257,7 @@ func (p *SysfsProvider) readPortAttributes(root, device string, port int) (PortA
 
 	state := normalizePortState(readRaw(stateFile), portStateNames)
 	physState := normalizePortState(readRaw(physStateFile), portPhysStateNames)
+	netDev := readPortNetDev(portDir)
 
 	return PortAttributes{
 		LinkLayer: read(linkLayerFile),
@@ -261,7 +265,31 @@ func (p *SysfsProvider) readPortAttributes(root, device string, port int) (PortA
 		PhysState: physState,
 		LinkWidth: read(linkWidthFile),
 		LinkSpeed: read(rateFile),
+		NetDev:    netDev,
 	}, nil
+}
+
+func readPortNetDev(portDir string) string {
+	ndevsPath := filepath.Join(portDir, gidAttrsDirName, ndevsDirName)
+	entries, err := os.ReadDir(ndevsPath)
+	if err != nil {
+		return ""
+	}
+
+	for _, entry := range entries {
+		if entry.IsDir() {
+			continue
+		}
+		data, err := os.ReadFile(filepath.Join(ndevsPath, entry.Name()))
+		if err != nil {
+			continue
+		}
+		value := strings.TrimSpace(string(data))
+		if value != "" {
+			return value
+		}
+	}
+	return ""
 }
 
 func normalizePortState(value string, names map[int]string) string {

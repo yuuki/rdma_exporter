@@ -17,6 +17,7 @@ For details on GitHub Actions status badges, see the [official documentation](ht
 - Ships with an HTTP server that serves `/metrics` and `/healthz` and gracefully shuts down on `SIGINT`/`SIGTERM`.
 - Supports an alternative sysfs root (`--sysfs-root`) for testing or chroot environments.
 - Honors a configurable scrape timeout (`--scrape-timeout`) to protect long-running sysfs reads.
+- Optionally enriches RoCEv2 visibility with PFC counters from netdev ethtool stats (Linux only, best effort).
 
 ## Requirements
 - Go 1.25 or newer.
@@ -61,12 +62,17 @@ Every CLI flag has an equivalent environment variable. Environment values provid
 | `--log-level` | `RDMA_EXPORTER_LOG_LEVEL` | `info` | Log verbosity (`debug`, `info`, `warn`, `error`) |
 | `--sysfs-root` | `RDMA_EXPORTER_SYSFS_ROOT` | `/sys` | Root directory used to read RDMA sysfs data |
 | `--scrape-timeout` | `RDMA_EXPORTER_SCRAPE_TIMEOUT` | `5s` | Upper bound for metric gathering per scrape |
+| `--enable-roce-pfc-metrics` | `RDMA_EXPORTER_ENABLE_ROCE_PFC_METRICS` | `true` | Enable RoCEv2 PFC metric collection from netdev ethtool stats (Linux only) |
 | `--exclude-devices` | `RDMA_EXPORTER_EXCLUDE_DEVICES` | `` | Comma-separated list of RDMA devices to exclude (e.g., `mlx5_0,mlx5_1`) |
 
 ## Metrics
 - `rdma_<counter>_total{device,port}` – Port and hardware counters aligned with NVIDIA documentation (e.g. `rdma_port_rcv_data_total`, `rdma_symbol_error_total`, `rdma_duplicate_request_total`).
 - `rdma_port_info{device,port,link_layer,state,phys_state,link_width,link_speed}` – Gauge set to `1` with descriptive labels.
 - `rdma_scrape_errors_total{}` – Counter incremented when sysfs collection fails.
+- `rdma_roce_pfc_pause_frames_total{device,port,netdev,direction,priority}` – RoCEv2 PFC pause frame counters from ethtool stats.
+- `rdma_roce_pfc_pause_duration_total{device,port,netdev,direction,priority}` – RoCEv2 PFC pause duration counters from ethtool stats.
+- `rdma_roce_pfc_pause_transitions_total{device,port,netdev,direction,priority}` – RoCEv2 PFC pause transition counters from ethtool stats.
+- `rdma_roce_pfc_scrape_errors_total{}` – Counter incremented when PFC metric collection fails.
 
 The Go and process collectors from `client_golang` are registered automatically.
 

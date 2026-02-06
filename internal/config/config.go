@@ -5,6 +5,7 @@ import (
 	"flag"
 	"fmt"
 	"os"
+	"strconv"
 	"strings"
 	"time"
 
@@ -18,18 +19,20 @@ const (
 	defaultLogLevel      = "info"
 	defaultSysfsRoot     = "/sys"
 	defaultTimeout       = 5 * time.Second
+	defaultEnableRoCEPFC = true
 )
 
 // Config captures runtime configuration options.
 type Config struct {
-	ListenAddress  string
-	MetricsPath    string
-	HealthPath     string
-	LogLevel       slog.Level
-	SysfsRoot      string
-	ScrapeTimeout  time.Duration
-	ExcludeDevices []string
-	ShowVersion    bool
+	ListenAddress        string
+	MetricsPath          string
+	HealthPath           string
+	LogLevel             slog.Level
+	SysfsRoot            string
+	ScrapeTimeout        time.Duration
+	EnableRoCEPFCMetrics bool
+	ExcludeDevices       []string
+	ShowVersion          bool
 }
 
 // Parse constructs a Config from command-line flags and environment variables.
@@ -45,6 +48,16 @@ func Parse(args []string) (Config, error) {
 	logLevel := fs.String("log-level", envOrDefault("RDMA_EXPORTER_LOG_LEVEL", defaultLogLevel), "Log level (debug, info, warn, error).")
 	sysfsRoot := fs.String("sysfs-root", envOrDefault("RDMA_EXPORTER_SYSFS_ROOT", defaultSysfsRoot), "Root of the sysfs tree to read RDMA data from.")
 	excludeDevices := fs.String("exclude-devices", envOrDefault("RDMA_EXPORTER_EXCLUDE_DEVICES", ""), "Comma-separated list of RDMA devices to exclude from monitoring (e.g., mlx5_0,mlx5_1).")
+
+	enableRoCEPFCDefault := defaultEnableRoCEPFC
+	if raw := strings.TrimSpace(os.Getenv("RDMA_EXPORTER_ENABLE_ROCE_PFC_METRICS")); raw != "" {
+		parsed, err := strconv.ParseBool(raw)
+		if err != nil {
+			return cfg, fmt.Errorf("invalid RDMA_EXPORTER_ENABLE_ROCE_PFC_METRICS: %w", err)
+		}
+		enableRoCEPFCDefault = parsed
+	}
+	enableRoCEPFCMetrics := fs.Bool("enable-roce-pfc-metrics", enableRoCEPFCDefault, "Enable collection of RoCEv2 PFC metrics from netdev ethtool stats.")
 
 	timeoutDefault := defaultTimeout
 	if envTimeout := os.Getenv("RDMA_EXPORTER_SCRAPE_TIMEOUT"); envTimeout != "" {
@@ -70,14 +83,15 @@ func Parse(args []string) (Config, error) {
 	}
 
 	cfg = Config{
-		ListenAddress:  *listen,
-		MetricsPath:    *metricsPath,
-		HealthPath:     *healthPath,
-		LogLevel:       level,
-		SysfsRoot:      *sysfsRoot,
-		ScrapeTimeout:  *scrapeTimeout,
-		ExcludeDevices: parseDeviceList(*excludeDevices),
-		ShowVersion:    *showVersion,
+		ListenAddress:        *listen,
+		MetricsPath:          *metricsPath,
+		HealthPath:           *healthPath,
+		LogLevel:             level,
+		SysfsRoot:            *sysfsRoot,
+		ScrapeTimeout:        *scrapeTimeout,
+		EnableRoCEPFCMetrics: *enableRoCEPFCMetrics,
+		ExcludeDevices:       parseDeviceList(*excludeDevices),
+		ShowVersion:          *showVersion,
 	}
 	return cfg, nil
 }

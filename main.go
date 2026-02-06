@@ -16,6 +16,7 @@ import (
 
 	"github.com/yuuki/rdma_exporter/internal/collector"
 	"github.com/yuuki/rdma_exporter/internal/config"
+	"github.com/yuuki/rdma_exporter/internal/netdev"
 	"github.com/yuuki/rdma_exporter/internal/rdma"
 	"github.com/yuuki/rdma_exporter/internal/server"
 )
@@ -47,6 +48,7 @@ func main() {
 		"health_path", cfg.HealthPath,
 		"scrape_timeout", cfg.ScrapeTimeout.String(),
 		"sysfs_root", cfg.SysfsRoot,
+		"enable_roce_pfc_metrics", cfg.EnableRoCEPFCMetrics,
 	)
 
 	provider := rdma.NewSysfsProvider()
@@ -58,7 +60,19 @@ func main() {
 		logger.Info("excluding devices from monitoring", "devices", cfg.ExcludeDevices)
 	}
 
-	rdmaCollector := collector.New(provider, logger)
+	collectorOpts := make([]collector.Option, 0, 1)
+	var ethtoolProvider *netdev.EthtoolStatsProvider
+	if cfg.EnableRoCEPFCMetrics {
+		ethtoolStatsProvider, err := netdev.NewEthtoolStatsProvider()
+		if err != nil {
+			logger.Warn("failed to initialize RoCE PFC stats provider; PFC metrics are disabled", "err", err)
+		} else {
+			ethtoolProvider = ethtoolStatsProvider
+			collectorOpts = append(collectorOpts, collector.WithNetDevStatsProvider(ethtoolStatsProvider))
+		}
+	}
+
+	rdmaCollector := collector.New(provider, logger, collectorOpts...)
 
 	registry := prometheus.NewRegistry()
 	registry.MustRegister(
@@ -98,6 +112,11 @@ func main() {
 	if err := srv.Shutdown(ctx); err != nil {
 		logger.Error("graceful shutdown failed", "err", err)
 		os.Exit(1)
+	}
+	if ethtoolProvider != nil {
+		if err := ethtoolProvider.Close(); err != nil {
+			logger.Warn("failed to close RoCE PFC stats provider", "err", err)
+		}
 	}
 
 	logger.Info("shutdown complete")

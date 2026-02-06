@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"hash/fnv"
 	"log/slog"
+	"regexp"
 	"slices"
 	"strconv"
 	"strings"
@@ -23,6 +24,14 @@ type Provider interface {
 	Devices(ctx context.Context) ([]rdma.Device, error)
 }
 
+// NetDevStatsProvider fetches ethtool-like statistics for a network device.
+type NetDevStatsProvider interface {
+	Stats(ctx context.Context, netDev string) (map[string]uint64, error)
+}
+
+// Option configures collector behavior.
+type Option func(*RdmaCollector)
+
 // RdmaCollector implements prometheus.Collector for RDMA device metrics.
 type RdmaCollector struct {
 	provider Provider
@@ -35,7 +44,14 @@ type RdmaCollector struct {
 	portHwMetrics    map[string]metricEntry
 	portHwStatLookup map[string]string
 
-	scrapeErrors prometheus.Counter
+	rocePFCPauseFramesDesc      *prometheus.Desc
+	rocePFCPauseDurationDesc    *prometheus.Desc
+	rocePFCPauseTransitionsDesc *prometheus.Desc
+
+	scrapeErrors        prometheus.Counter
+	rocePFCScrapeErrors prometheus.Counter
+
+	netDevStatsProvider NetDevStatsProvider
 
 	collectMu sync.Mutex
 	ctxValue  atomic.Value // stores contextHolder
@@ -58,6 +74,8 @@ type metricSpec struct {
 }
 
 var (
+	rocePFCStatPattern = regexp.MustCompile(`^(rx|tx)_prio([0-7])_pause(?:_(duration|transition))?$`)
+
 	// ref. "Understanding mlx5 Linux Counters and Status Parameters", https://enterprise-support.nvidia.com/s/article/understanding-mlx5-linux-counters-and-status-parameters
 	metricSpecs = map[string]metricSpec{
 		"port_rcv_data": {
@@ -265,6 +283,19 @@ var (
 	metricHelpByDocName = buildMetricHelpByDocName()
 )
 
+type rocePFCMetricKind int
+
+const (
+	rocePFCMetricKindFrames rocePFCMetricKind = iota
+	rocePFCMetricKindDuration
+	rocePFCMetricKindTransitions
+)
+
+type netDevStatsCacheEntry struct {
+	stats map[string]uint64
+	err   error
+}
+
 func buildMetricHelpByDocName() map[string]string {
 	help := make(map[string]string, len(metricSpecs))
 	for _, spec := range metricSpecs {
@@ -388,7 +419,7 @@ func canonicalDocName(stat string) string {
 }
 
 // New creates a new RDMA collector with the provided provider and logger.
-func New(provider Provider, logger *slog.Logger) *RdmaCollector {
+func New(provider Provider, logger *slog.Logger, opts ...Option) *RdmaCollector {
 	if logger == nil {
 		logger = slog.Default()
 	}
@@ -402,18 +433,55 @@ func New(provider Provider, logger *slog.Logger) *RdmaCollector {
 			[]string{"device", "port", "link_layer", "state", "phys_state", "link_width", "link_speed"},
 			nil,
 		),
+		rocePFCPauseFramesDesc: prometheus.NewDesc(
+			"rdma_roce_pfc_pause_frames_total",
+			"RoCEv2 PFC pause frame counter sourced from ethtool stats.",
+			[]string{"device", "port", "netdev", "direction", "priority"},
+			nil,
+		),
+		rocePFCPauseDurationDesc: prometheus.NewDesc(
+			"rdma_roce_pfc_pause_duration_total",
+			"RoCEv2 PFC pause duration counter sourced from ethtool stats.",
+			[]string{"device", "port", "netdev", "direction", "priority"},
+			nil,
+		),
+		rocePFCPauseTransitionsDesc: prometheus.NewDesc(
+			"rdma_roce_pfc_pause_transitions_total",
+			"RoCEv2 PFC pause transition counter sourced from ethtool stats.",
+			[]string{"device", "port", "netdev", "direction", "priority"},
+			nil,
+		),
 		scrapeErrors: prometheus.NewCounter(prometheus.CounterOpts{
 			Name: "rdma_scrape_errors_total",
 			Help: "Total number of errors encountered while scraping RDMA sysfs.",
+		}),
+		rocePFCScrapeErrors: prometheus.NewCounter(prometheus.CounterOpts{
+			Name: "rdma_roce_pfc_scrape_errors_total",
+			Help: "Total number of errors encountered while scraping RoCEv2 PFC ethtool stats.",
 		}),
 		portStatMetrics:  make(map[string]metricEntry),
 		portStatLookup:   make(map[string]string),
 		portHwMetrics:    make(map[string]metricEntry),
 		portHwStatLookup: make(map[string]string),
 	}
+
+	for _, opt := range opts {
+		if opt != nil {
+			opt(c)
+		}
+	}
+
 	c.ctxValue.Store(contextHolder{ctx: context.Background()})
 
 	return c
+}
+
+// WithNetDevStatsProvider configures a provider used to fetch netdev statistics
+// for RoCEv2 PFC-related metrics.
+func WithNetDevStatsProvider(provider NetDevStatsProvider) Option {
+	return func(c *RdmaCollector) {
+		c.netDevStatsProvider = provider
+	}
 }
 
 // SetContext updates the context used by the next Collect invocation.
@@ -432,7 +500,11 @@ func (c *RdmaCollector) ResetContext() {
 // Describe implements prometheus.Collector.
 func (c *RdmaCollector) Describe(ch chan<- *prometheus.Desc) {
 	ch <- c.portInfoDesc
+	ch <- c.rocePFCPauseFramesDesc
+	ch <- c.rocePFCPauseDurationDesc
+	ch <- c.rocePFCPauseTransitionsDesc
 	c.scrapeErrors.Describe(ch)
+	c.rocePFCScrapeErrors.Describe(ch)
 
 	c.collectMu.Lock()
 	statDescs := make([]*prometheus.Desc, 0, len(c.portStatMetrics))
@@ -476,6 +548,8 @@ func (c *RdmaCollector) Collect(ch chan<- prometheus.Metric) {
 		return
 	}
 
+	netDevStatsCache := make(map[string]netDevStatsCacheEntry)
+
 	for _, device := range devices {
 		deviceStart := time.Now()
 		portIDStrings := make([]string, len(device.Ports))
@@ -514,6 +588,8 @@ func (c *RdmaCollector) Collect(ch chan<- prometheus.Metric) {
 			}
 
 			attr := port.Attributes
+			c.collectRoCEPFCMetrics(ctx, ch, device.Name, portID, attr, netDevStatsCache)
+
 			ch <- prometheus.MustNewConstMetric(
 				c.portInfoDesc,
 				prometheus.GaugeValue,
@@ -534,6 +610,7 @@ func (c *RdmaCollector) Collect(ch chan<- prometheus.Metric) {
 	}
 
 	c.scrapeErrors.Collect(ch)
+	c.rocePFCScrapeErrors.Collect(ch)
 }
 
 // ScrapeErrors returns the scrape error counter collector for external registration.
@@ -551,4 +628,95 @@ func sortedKeys(m map[string]uint64) []string {
 	}
 	slices.Sort(keys)
 	return keys
+}
+
+func (c *RdmaCollector) collectRoCEPFCMetrics(
+	ctx context.Context,
+	ch chan<- prometheus.Metric,
+	deviceName, portID string,
+	attr rdma.PortAttributes,
+	cache map[string]netDevStatsCacheEntry,
+) {
+	if c.netDevStatsProvider == nil {
+		return
+	}
+	if attr.LinkLayer != "Ethernet" || attr.NetDev == "" {
+		return
+	}
+
+	stats, err := c.readNetDevStatsWithCache(ctx, attr.NetDev, cache)
+	if err != nil {
+		if ctx.Err() != nil {
+			c.logger.Warn("roce pfc scrape aborted by context", "device", deviceName, "port", portID, "netdev", attr.NetDev, "err", ctx.Err())
+			return
+		}
+		c.logger.Warn("roce pfc scrape failed", "device", deviceName, "port", portID, "netdev", attr.NetDev, "err", err)
+		return
+	}
+
+	names := sortedKeys(stats)
+	for _, name := range names {
+		direction, priority, kind, ok := parseRoCEPFCMetricName(name)
+		if !ok {
+			continue
+		}
+		desc := c.rocePFCPauseFramesDesc
+		switch kind {
+		case rocePFCMetricKindDuration:
+			desc = c.rocePFCPauseDurationDesc
+		case rocePFCMetricKindTransitions:
+			desc = c.rocePFCPauseTransitionsDesc
+		}
+
+		ch <- prometheus.MustNewConstMetric(
+			desc,
+			prometheus.CounterValue,
+			float64(stats[name]),
+			deviceName,
+			portID,
+			attr.NetDev,
+			direction,
+			priority,
+		)
+	}
+}
+
+func (c *RdmaCollector) readNetDevStatsWithCache(
+	ctx context.Context,
+	netDev string,
+	cache map[string]netDevStatsCacheEntry,
+) (map[string]uint64, error) {
+	if entry, ok := cache[netDev]; ok {
+		return entry.stats, entry.err
+	}
+
+	stats, err := c.netDevStatsProvider.Stats(ctx, netDev)
+	if err != nil {
+		c.rocePFCScrapeErrors.Inc()
+	}
+	cache[netDev] = netDevStatsCacheEntry{
+		stats: stats,
+		err:   err,
+	}
+	return stats, err
+}
+
+func parseRoCEPFCMetricName(name string) (direction, priority string, kind rocePFCMetricKind, ok bool) {
+	matches := rocePFCStatPattern.FindStringSubmatch(name)
+	if matches == nil {
+		return "", "", rocePFCMetricKindFrames, false
+	}
+
+	direction = matches[1]
+	priority = matches[2]
+	switch matches[3] {
+	case "":
+		return direction, priority, rocePFCMetricKindFrames, true
+	case "duration":
+		return direction, priority, rocePFCMetricKindDuration, true
+	case "transition":
+		return direction, priority, rocePFCMetricKindTransitions, true
+	default:
+		return "", "", rocePFCMetricKindFrames, false
+	}
 }

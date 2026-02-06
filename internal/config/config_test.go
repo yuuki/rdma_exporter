@@ -26,6 +26,9 @@ func TestParseDefaults(t *testing.T) {
 	if cfg.ScrapeTimeout != defaultTimeout {
 		t.Fatalf("expected scrape timeout %v, got %v", defaultTimeout, cfg.ScrapeTimeout)
 	}
+	if !cfg.EnableRoCEPFCMetrics {
+		t.Fatalf("expected RoCE PFC metrics to be enabled by default")
+	}
 	if cfg.ShowVersion {
 		t.Fatalf("expected show version to be false by default")
 	}
@@ -58,6 +61,38 @@ func TestFlagsOverrideEnv(t *testing.T) {
 
 	if cfg.ListenAddress != "0.0.0.0:1234" {
 		t.Fatalf("expected listen address from flag, got %q", cfg.ListenAddress)
+	}
+}
+
+func TestRoCEPFCMetricsToggleFromEnv(t *testing.T) {
+	t.Setenv("RDMA_EXPORTER_ENABLE_ROCE_PFC_METRICS", "false")
+
+	cfg, err := Parse(nil)
+	if err != nil {
+		t.Fatalf("Parse returned error: %v", err)
+	}
+	if cfg.EnableRoCEPFCMetrics {
+		t.Fatalf("expected RoCE PFC metrics to be disabled by env")
+	}
+}
+
+func TestRoCEPFCMetricsToggleFromFlag(t *testing.T) {
+	t.Setenv("RDMA_EXPORTER_ENABLE_ROCE_PFC_METRICS", "false")
+
+	cfg, err := Parse([]string{"--enable-roce-pfc-metrics=true"})
+	if err != nil {
+		t.Fatalf("Parse returned error: %v", err)
+	}
+	if !cfg.EnableRoCEPFCMetrics {
+		t.Fatalf("expected RoCE PFC metrics to be enabled by flag")
+	}
+}
+
+func TestRoCEPFCMetricsToggleRejectsInvalidEnv(t *testing.T) {
+	t.Setenv("RDMA_EXPORTER_ENABLE_ROCE_PFC_METRICS", "notabool")
+
+	if _, err := Parse(nil); err == nil {
+		t.Fatalf("expected error for invalid RDMA_EXPORTER_ENABLE_ROCE_PFC_METRICS")
 	}
 }
 
