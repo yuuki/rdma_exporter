@@ -56,6 +56,9 @@ func TestSysfsProviderDevicesFromCustomRoot(t *testing.T) {
 	if want, got := "100 Gb/sec", port1.Attributes.LinkSpeed; got != want {
 		t.Fatalf("expected link_speed %q, got %q", want, got)
 	}
+	if want, got := "ens1f0np0", port1.Attributes.NetDev; got != want {
+		t.Fatalf("expected netdev %q, got %q", want, got)
+	}
 
 	port2 := device.Ports[1]
 	if port2.ID != 2 {
@@ -63,6 +66,9 @@ func TestSysfsProviderDevicesFromCustomRoot(t *testing.T) {
 	}
 	if port2.Attributes.State != "DOWN" {
 		t.Fatalf("expected state DOWN, got %q", port2.Attributes.State)
+	}
+	if got := port2.Attributes.NetDev; got != "" {
+		t.Fatalf("expected empty netdev, got %q", got)
 	}
 	if port2.HwStats != nil && len(port2.HwStats) != 0 {
 		t.Fatalf("expected empty hw counters, got %v", port2.HwStats)
@@ -98,6 +104,9 @@ func TestSysfsProviderDevicesFromSymlinkRoot(t *testing.T) {
 	}
 	if got := port1.HwStats["symbol_errors"]; got != 11 {
 		t.Fatalf("expected symbol_errors=11, got %d", got)
+	}
+	if want, got := "ens1f0np0", port1.Attributes.NetDev; got != want {
+		t.Fatalf("expected netdev %q, got %q", want, got)
 	}
 }
 
