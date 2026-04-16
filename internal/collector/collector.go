@@ -62,10 +62,9 @@ type contextHolder struct {
 }
 
 type metricEntry struct {
-	desc       *prometheus.Desc
-	metricName string
-	stat       string
-	docName    string
+	desc    *prometheus.Desc
+	stat    string
+	docName string
 }
 
 type metricSpec struct {
@@ -334,10 +333,9 @@ func (c *RdmaCollector) metricDesc(stat, docName, fallback string, entries map[s
 	)
 
 	entries[metricName] = metricEntry{
-		desc:       desc,
-		metricName: metricName,
-		stat:       stat,
-		docName:    docName,
+		desc:    desc,
+		stat:    stat,
+		docName: docName,
 	}
 	lookup[stat] = metricName
 
