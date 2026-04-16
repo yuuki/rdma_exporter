@@ -613,11 +613,6 @@ func (c *RdmaCollector) Collect(ch chan<- prometheus.Metric) {
 	c.rocePFCScrapeErrors.Collect(ch)
 }
 
-// ScrapeErrors returns the scrape error counter collector for external registration.
-func (c *RdmaCollector) ScrapeErrors() prometheus.Counter {
-	return c.scrapeErrors
-}
-
 func sortedKeys(m map[string]uint64) []string {
 	if len(m) == 0 {
 		return nil
