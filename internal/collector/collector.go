@@ -54,11 +54,7 @@ type RdmaCollector struct {
 	netDevStatsProvider NetDevStatsProvider
 
 	collectMu sync.Mutex
-	ctxValue  atomic.Value // stores contextHolder
-}
-
-type contextHolder struct {
-	ctx context.Context
+	ctxValue  atomic.Pointer[context.Context]
 }
 
 type metricEntry struct {
@@ -469,9 +465,13 @@ func New(provider Provider, logger *slog.Logger, opts ...Option) *RdmaCollector 
 		}
 	}
 
-	c.ctxValue.Store(contextHolder{ctx: context.Background()})
+	c.storeContext(context.Background())
 
 	return c
+}
+
+func (c *RdmaCollector) storeContext(ctx context.Context) {
+	c.ctxValue.Store(&ctx)
 }
 
 // WithNetDevStatsProvider configures a provider used to fetch netdev statistics
@@ -487,12 +487,12 @@ func (c *RdmaCollector) SetContext(ctx context.Context) {
 	if ctx == nil {
 		ctx = context.Background()
 	}
-	c.ctxValue.Store(contextHolder{ctx: ctx})
+	c.storeContext(ctx)
 }
 
 // ResetContext resets the collector back to the background context.
 func (c *RdmaCollector) ResetContext() {
-	c.ctxValue.Store(contextHolder{ctx: context.Background()})
+	c.storeContext(context.Background())
 }
 
 // Describe implements prometheus.Collector.
@@ -528,10 +528,9 @@ func (c *RdmaCollector) Collect(ch chan<- prometheus.Metric) {
 	c.collectMu.Lock()
 	defer c.collectMu.Unlock()
 
-	holder, _ := c.ctxValue.Load().(contextHolder)
-	ctx := holder.ctx
-	if ctx == nil {
-		ctx = context.Background()
+	ctx := context.Background()
+	if stored := c.ctxValue.Load(); stored != nil {
+		ctx = *stored
 	}
 
 	devices, err := c.provider.Devices(ctx)
