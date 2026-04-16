@@ -1,6 +1,6 @@
 module github.com/yuuki/rdma_exporter
 
-go 1.25.1
+go 1.26.2
 
 require (
 	github.com/prometheus/client_golang v1.20.2
