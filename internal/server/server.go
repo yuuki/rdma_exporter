@@ -47,22 +47,13 @@ func New(opts Options, registry *prometheus.Registry, col *collector.RdmaCollect
 
 	mux := http.NewServeMux()
 
-	metricsPath := opts.MetricsPath
-	if metricsPath == "" {
-		metricsPath = "/metrics"
-	}
-	healthPath := opts.HealthPath
-	if healthPath == "" {
-		healthPath = "/healthz"
-	}
-
 	metricsHandler := promhttp.InstrumentMetricHandler(
 		registry,
 		http.HandlerFunc(s.handleMetrics),
 	)
 
-	mux.Handle(metricsPath, metricsHandler)
-	mux.HandleFunc(healthPath, s.handleHealth)
+	mux.Handle(opts.MetricsPath, metricsHandler)
+	mux.HandleFunc(opts.HealthPath, s.handleHealth)
 
 	s.httpServer = &http.Server{
 		Addr:              opts.ListenAddress,
