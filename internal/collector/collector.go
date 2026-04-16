@@ -343,7 +343,9 @@ func buildMetricName(docName string, existing map[string]metricEntry) string {
 	metricName := fmt.Sprintf("rdma_%s_total", base)
 
 	if entry, ok := existing[metricName]; ok && entry.docName != docName {
-		metricName = fmt.Sprintf("rdma_%s_%x_total", base, fnv32(docName))
+		h := fnv.New32a()
+		_, _ = h.Write([]byte(docName))
+		metricName = fmt.Sprintf("rdma_%s_%x_total", base, h.Sum32())
 	}
 
 	return metricName
@@ -390,12 +392,6 @@ func sanitizeStatName(stat string) string {
 	}
 
 	return res
-}
-
-func fnv32(s string) uint32 {
-	h := fnv.New32a()
-	_, _ = h.Write([]byte(s))
-	return h.Sum32()
 }
 
 func canonicalDocName(stat string) string {
