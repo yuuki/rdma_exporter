@@ -79,7 +79,10 @@ func TestCollectorExportsMetrics(t *testing.T) {
 	provider := &stubProvider{
 		devices: []rdma.Device{
 			{
-				Name: "mlx5_0",
+				Name:     "mlx5_0",
+				PCIAddr:  "0000:1a:00.0",
+				IsVF:     false,
+				PFDevice: "",
 				Ports: []rdma.Port{
 					{
 						ID: 1,
@@ -113,7 +116,7 @@ func TestCollectorExportsMetrics(t *testing.T) {
 	expected := `
 # HELP rdma_port_info RDMA port metadata exported as labels.
 # TYPE rdma_port_info gauge
-rdma_port_info{device="mlx5_0",link_layer="InfiniBand",link_speed="100 Gb/sec",link_width="4X",phys_state="LinkUp",port="1",state="ACTIVE"} 1
+rdma_port_info{device="mlx5_0",is_vf="false",link_layer="InfiniBand",link_speed="100 Gb/sec",link_width="4X",pci_addr="0000:1a:00.0",pf_device="",phys_state="LinkUp",port="1",state="ACTIVE"} 1
 # HELP rdma_port_rcv_data_total The total number of data octets, divided by 4 (counting in double words, 32 bits), received on all VLs from the port.
 # TYPE rdma_port_rcv_data_total counter
 rdma_port_rcv_data_total{device="mlx5_0",port="1"} 5

@@ -418,7 +418,18 @@ func New(provider Provider, logger *slog.Logger, opts ...Option) *RdmaCollector 
 		portInfoDesc: prometheus.NewDesc(
 			"rdma_port_info",
 			"RDMA port metadata exported as labels.",
-			[]string{"device", "port", "link_layer", "state", "phys_state", "link_width", "link_speed"},
+			[]string{
+				"device", "port",
+				"link_layer", "state", "phys_state", "link_width", "link_speed",
+				// SR-IOV VF/PF identification labels.
+				// pci_addr matches the pciAddr label in sriov_kubepoddevice, enabling join queries.
+				"pci_addr",
+				// is_vf is "true" for Virtual Functions, "false" for Physical Functions.
+				"is_vf",
+				// pf_device is the IB device name of the parent PF (e.g. "mlx5_0").
+				// Empty for PF devices.
+				"pf_device",
+			},
 			nil,
 		),
 		rocePFCPauseFramesDesc: prometheus.NewDesc(
@@ -592,6 +603,9 @@ func (c *RdmaCollector) Collect(ch chan<- prometheus.Metric) {
 				attr.PhysState,
 				attr.LinkWidth,
 				attr.LinkSpeed,
+				device.PCIAddr,                      // pci_addr
+				strconv.FormatBool(device.IsVF),     // is_vf
+				device.PFDevice,                     // pf_device
 			)
 		}
 		c.logger.Debug("rdma device scraped",
