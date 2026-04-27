@@ -27,6 +27,12 @@ const (
 	physStateFile       = "phys_state"
 	linkWidthFile       = "link_width"
 	rateFile            = "rate"
+
+	// SR-IOV PF/VF detection paths.
+	deviceDirName    = "device"       // symlink under class/infiniband/<dev>/device → PCI addr
+	physfnLinkName   = "physfn"       // symlink present only on VFs: device/physfn → PF PCI addr
+	infinibandSubDir = "infiniband"   // under /sys/bus/pci/devices/<pci>/infiniband/
+	busPCIDevicesDir = "bus/pci/devices" // /sys/bus/pci/devices/<pci>/
 )
 
 var (
@@ -58,8 +64,18 @@ type Provider interface {
 
 // Device represents a single RDMA Host Channel Adapter.
 type Device struct {
-	Name  string
-	Ports []Port
+	Name string
+	// PCIAddr is the PCI bus address of this device (e.g. "0000:1a:00.1").
+	// Derived from the device symlink under /sys/class/infiniband/<dev>/device.
+	// Empty string when the symlink cannot be resolved.
+	PCIAddr string
+	// IsVF is true when this device is a SR-IOV Virtual Function.
+	// Detected by the presence of /sys/class/infiniband/<dev>/device/physfn.
+	IsVF bool
+	// PFDevice is the IB device name of the parent Physical Function (e.g. "mlx5_0").
+	// Only populated when IsVF is true; empty for PFs.
+	PFDevice string
+	Ports    []Port
 }
 
 // Port contains counters and metadata for a single HCA port.
@@ -140,12 +156,59 @@ func (p *SysfsProvider) deviceFromRoot(ctx context.Context, root, deviceName str
 		return Device{}, ctx.Err()
 	}
 
+	// Resolve PCI address and PF/VF relationship via sysfs device symlink.
+	devicePath := filepath.Join(root, classInfinibandPath, deviceName, deviceDirName)
+	pciAddr, isVF, pfDevice := p.readDevicePCIInfo(root, devicePath)
+
 	ports, err := p.portsFromRoot(ctx, root, deviceName)
 	if err != nil {
 		return Device{}, fmt.Errorf("collect ports for %s: %w", deviceName, err)
 	}
 
-	return Device{Name: deviceName, Ports: ports}, nil
+	return Device{
+		Name:     deviceName,
+		PCIAddr:  pciAddr,
+		IsVF:     isVF,
+		PFDevice: pfDevice,
+		Ports:    ports,
+	}, nil
+}
+
+// readDevicePCIInfo returns the PCI address, whether the device is a SR-IOV VF,
+// and (for VFs) the IB device name of the parent PF.
+//
+// Detection algorithm:
+//  1. Read the device symlink to extract the PCI address
+//     e.g. /sys/class/infiniband/mlx5_12/device → ../../../0000:1a:00.1
+//  2. Check for the physfn symlink (present only on VFs)
+//     e.g. /sys/class/infiniband/mlx5_12/device/physfn → ../0000:1a:00.0
+//  3. For VFs, resolve the PF PCI address and look up its IB device name
+//     e.g. /sys/bus/pci/devices/0000:1a:00.0/infiniband/ → mlx5_0
+func (p *SysfsProvider) readDevicePCIInfo(root, devicePath string) (pciAddr string, isVF bool, pfDevice string) {
+	// Step 1: extract PCI address from device symlink target basename.
+	if link, err := os.Readlink(devicePath); err == nil {
+		pciAddr = filepath.Base(link) // e.g. "0000:1a:00.1"
+	}
+
+	// Step 2: physfn symlink exists only on VFs.
+	physfnPath := filepath.Join(devicePath, physfnLinkName)
+	physfnLink, err := os.Readlink(physfnPath)
+	if err != nil {
+		// No physfn → this is a PF (or symlink resolution failed; treat as PF).
+		return pciAddr, false, ""
+	}
+
+	// Step 3: resolve PF PCI address and find the corresponding IB device name.
+	isVF = true
+	pfPCIAddr := filepath.Base(physfnLink) // e.g. "0000:1a:00.0"
+
+	// /sys/bus/pci/devices/<pfPCIAddr>/infiniband/ lists the PF IB device.
+	pfIBDir := filepath.Join(root, busPCIDevicesDir, pfPCIAddr, infinibandSubDir)
+	if entries, err := os.ReadDir(pfIBDir); err == nil && len(entries) > 0 {
+		pfDevice = entries[0].Name() // e.g. "mlx5_0"
+	}
+
+	return pciAddr, true, pfDevice
 }
 
 func (p *SysfsProvider) devicesFromRoot(ctx context.Context, root string) ([]Device, error) {
