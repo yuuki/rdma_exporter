@@ -48,7 +48,7 @@ dockers:
       - --platform=linux/amd64
       - --build-arg=VERSION={{ .Version }}
       - --build-arg=COMMIT={{ .FullCommit }}
-    dockerfile: Dockerfile
+    dockerfile: Dockerfile.goreleaser
     goarch: amd64
     goos: linux
   - id: rdma_exporter_arm64
@@ -61,7 +61,7 @@ dockers:
       - --platform=linux/arm64
       - --build-arg=VERSION={{ .Version }}
       - --build-arg=COMMIT={{ .FullCommit }}
-    dockerfile: Dockerfile
+    dockerfile: Dockerfile.goreleaser
     goarch: arm64
     goos: linux
 
