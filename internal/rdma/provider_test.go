@@ -126,6 +126,55 @@ func TestSysfsProviderDevicesContextCanceled(t *testing.T) {
 	}
 }
 
+func TestSysfsProviderVFDetection(t *testing.T) {
+	t.Parallel()
+
+	root := filepath.Join("testdata", "sysfs", "vf")
+	provider := NewSysfsProvider()
+	provider.SetSysfsRoot(root)
+
+	devices, err := provider.Devices(context.Background())
+	if err != nil {
+		t.Fatalf("Devices returned error: %v", err)
+	}
+
+	if len(devices) != 2 {
+		t.Fatalf("expected 2 devices (1 PF + 1 VF), got %d", len(devices))
+	}
+
+	// devices are returned in directory-read order (alphabetical): mlx5_0, mlx5_4
+	pf := devices[0]
+	vf := devices[1]
+
+	// --- PF assertions ---
+	if pf.Name != "mlx5_0" {
+		t.Errorf("PF name: want mlx5_0, got %q", pf.Name)
+	}
+	if pf.PCIAddr != "0000:1a:00.0" {
+		t.Errorf("PF PCIAddr: want 0000:1a:00.0, got %q", pf.PCIAddr)
+	}
+	if pf.IsVF {
+		t.Errorf("PF IsVF: want false, got true")
+	}
+	if pf.PFDevice != "" {
+		t.Errorf("PF PFDevice: want empty, got %q", pf.PFDevice)
+	}
+
+	// --- VF assertions ---
+	if vf.Name != "mlx5_4" {
+		t.Errorf("VF name: want mlx5_4, got %q", vf.Name)
+	}
+	if vf.PCIAddr != "0000:1a:00.1" {
+		t.Errorf("VF PCIAddr: want 0000:1a:00.1, got %q", vf.PCIAddr)
+	}
+	if !vf.IsVF {
+		t.Errorf("VF IsVF: want true, got false")
+	}
+	if vf.PFDevice != "mlx5_0" {
+		t.Errorf("VF PFDevice: want mlx5_0, got %q", vf.PFDevice)
+	}
+}
+
 func TestSetExcludeDevices(t *testing.T) {
 	t.Parallel()
 
