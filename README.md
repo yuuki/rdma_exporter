@@ -94,7 +94,7 @@ GOCACHE=$(pwd)/.gocache GOMODCACHE=$(pwd)/.gomodcache go test ./...
 
 ## Deployment
 - A systemd unit file is available under `deploy/systemd/rdma_exporter.service`.
-- A multi-stage Dockerfile lives in `deploy/docker/Dockerfile`; see `docs/deployment.md` for build and run instructions.
+- A multi-stage Dockerfile lives at the repository root; see `docs/deployment.md` for build and run instructions.
 
 ## Development Notes
 - Architectural decisions and future work are documented in `docs/design.md`.

@@ -1,18 +1,20 @@
 # syntax=docker/dockerfile:1.7
-ARG GO_VERSION=1.25
+ARG GO_VERSION=1.26
 ARG ALPINE_VERSION=3.20
 
 FROM golang:${GO_VERSION}-alpine AS builder
-RUN apk add --no-cache build-base git
+RUN apk add --no-cache git
 WORKDIR /src
 COPY go.mod go.sum ./
 RUN go mod download
 COPY . .
 ARG TARGETOS=linux
 ARG TARGETARCH
+ARG VERSION=dev
+ARG COMMIT=unknown
 RUN CGO_ENABLED=0 GOOS=${TARGETOS} GOARCH=${TARGETARCH:-amd64} go build \
   -trimpath \
-  -ldflags="-s -w" \
+  -ldflags="-s -w -X main.version=${VERSION} -X main.commit=${COMMIT}" \
   -o /out/rdma_exporter ./
 
 FROM alpine:${ALPINE_VERSION}

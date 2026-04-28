@@ -51,11 +51,11 @@ The unit ships with conservative hardening defaults (`ProtectSystem=strict`, `No
 
 ## Docker image
 
-The repository includes a multi-stage Dockerfile in `deploy/docker/Dockerfile`.
+The repository includes a multi-stage Dockerfile at the repository root.
 
 1. **Build the image**
    ```bash
-   docker build -t rdma-exporter:latest -f deploy/docker/Dockerfile .
+   docker build -t rdma-exporter:latest .
    ```
 
 2. **Run the exporter**

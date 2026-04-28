@@ -46,7 +46,9 @@ dockers:
     use: buildx
     build_flag_templates:
       - --platform=linux/amd64
-    dockerfile: deploy/docker/Dockerfile.binary
+      - --build-arg=VERSION={{ .Version }}
+      - --build-arg=COMMIT={{ .FullCommit }}
+    dockerfile: Dockerfile
     goarch: amd64
     goos: linux
   - id: rdma_exporter_arm64
@@ -57,7 +59,9 @@ dockers:
     use: buildx
     build_flag_templates:
       - --platform=linux/arm64
-    dockerfile: deploy/docker/Dockerfile.binary
+      - --build-arg=VERSION={{ .Version }}
+      - --build-arg=COMMIT={{ .FullCommit }}
+    dockerfile: Dockerfile
     goarch: arm64
     goos: linux
 
