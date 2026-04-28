@@ -603,9 +603,9 @@ func (c *RdmaCollector) Collect(ch chan<- prometheus.Metric) {
 				attr.PhysState,
 				attr.LinkWidth,
 				attr.LinkSpeed,
-				device.PCIAddr,                      // pci_addr
-				strconv.FormatBool(device.IsVF),     // is_vf
-				device.PFDevice,                     // pf_device
+				device.PCIAddr,
+				strconv.FormatBool(device.IsVF),
+				device.PFDevice,
 			)
 		}
 		c.logger.Debug("rdma device scraped",

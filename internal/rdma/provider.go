@@ -70,7 +70,6 @@ type Device struct {
 	// Empty string when the symlink cannot be resolved.
 	PCIAddr string
 	// IsVF is true when this device is a SR-IOV Virtual Function.
-	// Detected by the presence of /sys/class/infiniband/<dev>/device/physfn.
 	IsVF bool
 	// PFDevice is the IB device name of the parent Physical Function (e.g. "mlx5_0").
 	// Only populated when IsVF is true; empty for PFs.
