@@ -315,6 +315,44 @@ func TestCollectorIncrementsRoCEPFCErrorCounter(t *testing.T) {
 	}
 }
 
+func TestCollectorSkipsRoCEPFCForVirtualFunction(t *testing.T) {
+	t.Parallel()
+
+	provider := &stubProvider{
+		devices: []rdma.Device{
+			{
+				Name:  "mlx5_12",
+				IsVF:  true,
+				Ports: []rdma.Port{
+					{
+						ID: 1,
+						Attributes: rdma.PortAttributes{
+							LinkLayer: "Ethernet",
+							NetDev:    "enp26s0v0",
+						},
+					},
+				},
+			},
+		},
+	}
+	netDevProvider := newStubNetDevStatsProvider()
+	netDevProvider.stats["enp26s0v0"] = map[string]uint64{
+		"rx_prio3_pause": 99,
+	}
+
+	c := New(provider, newDiscardLogger(), WithNetDevStatsProvider(netDevProvider))
+	reg := prometheus.NewRegistry()
+	reg.MustRegister(c)
+
+	if _, err := reg.Gather(); err != nil {
+		t.Fatalf("unexpected gather error: %v", err)
+	}
+
+	if got := netDevProvider.CallCount("enp26s0v0"); got != 0 {
+		t.Fatalf("expected netdev provider not to be called for VF, got %d calls", got)
+	}
+}
+
 func TestCollectorFetchesNetDevStatsOncePerScrape(t *testing.T) {
 	t.Parallel()
 
