@@ -590,7 +590,7 @@ func (c *RdmaCollector) Collect(ch chan<- prometheus.Metric) {
 			}
 
 			attr := port.Attributes
-			c.collectRoCEPFCMetrics(ctx, ch, device.Name, portID, attr, netDevStatsCache)
+			c.collectRoCEPFCMetrics(ctx, ch, device.Name, portID, attr, device.IsVF, netDevStatsCache)
 
 			ch <- prometheus.MustNewConstMetric(
 				c.portInfoDesc,
@@ -635,9 +635,17 @@ func (c *RdmaCollector) collectRoCEPFCMetrics(
 	ch chan<- prometheus.Metric,
 	deviceName, portID string,
 	attr rdma.PortAttributes,
+	isVF bool,
 	cache map[string]netDevStatsCacheEntry,
 ) {
 	if c.netDevStatsProvider == nil {
+		return
+	}
+	// PFC PAUSE frames are exchanged at the physical port level (PF only).
+	// VFs do not independently send/receive PFC frames; skip to avoid
+	// meaningless stats and blocking ethtool ioctls on VF interfaces.
+	if isVF {
+		c.logger.Debug("skipping PFC collection for VF device", "device", deviceName, "port", portID)
 		return
 	}
 	if attr.LinkLayer != "Ethernet" || attr.NetDev == "" {
