@@ -645,6 +645,7 @@ func (c *RdmaCollector) collectRoCEPFCMetrics(
 	// VFs do not independently send/receive PFC frames; skip to avoid
 	// meaningless stats and blocking ethtool ioctls on VF interfaces.
 	if isVF {
+		c.logger.Debug("skipping PFC collection for VF device", "device", deviceName, "port", portID)
 		return
 	}
 	if attr.LinkLayer != "Ethernet" || attr.NetDev == "" {

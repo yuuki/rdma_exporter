@@ -353,6 +353,67 @@ func TestCollectorSkipsRoCEPFCForVirtualFunction(t *testing.T) {
 	}
 }
 
+func TestCollectorPFCMixedPFAndVF(t *testing.T) {
+	t.Parallel()
+
+	provider := &stubProvider{
+		devices: []rdma.Device{
+			{
+				Name: "mlx5_0",
+				IsVF: false,
+				Ports: []rdma.Port{
+					{
+						ID: 1,
+						Attributes: rdma.PortAttributes{
+							LinkLayer: "Ethernet",
+							NetDev:    "enp26s0np0",
+						},
+					},
+				},
+			},
+			{
+				Name: "mlx5_12",
+				IsVF: true,
+				Ports: []rdma.Port{
+					{
+						ID: 1,
+						Attributes: rdma.PortAttributes{
+							LinkLayer: "Ethernet",
+							NetDev:    "enp26s0v0",
+						},
+					},
+				},
+			},
+		},
+	}
+
+	netDevProvider := newStubNetDevStatsProvider()
+	netDevProvider.stats["enp26s0np0"] = map[string]uint64{
+		"tx_prio3_pause": 7,
+	}
+	netDevProvider.stats["enp26s0v0"] = map[string]uint64{
+		"tx_prio3_pause": 99,
+	}
+
+	c := New(provider, newDiscardLogger(), WithNetDevStatsProvider(netDevProvider))
+	reg := prometheus.NewRegistry()
+	reg.MustRegister(c)
+
+	expected := `
+# HELP rdma_roce_pfc_pause_frames_total RoCEv2 PFC pause frame counter sourced from ethtool stats.
+# TYPE rdma_roce_pfc_pause_frames_total counter
+rdma_roce_pfc_pause_frames_total{device="mlx5_0",direction="tx",netdev="enp26s0np0",port="1",priority="3"} 7
+`
+	if err := testutil.GatherAndCompare(reg, strings.NewReader(expected),
+		"rdma_roce_pfc_pause_frames_total"); err != nil {
+		t.Fatalf("unexpected pfc metrics output: %v", err)
+	}
+
+	if got := netDevProvider.CallCount("enp26s0v0"); got != 0 {
+		t.Fatalf("expected VF netdev provider not to be called, got %d calls", got)
+	}
+}
+
 func TestCollectorFetchesNetDevStatsOncePerScrape(t *testing.T) {
 	t.Parallel()
 
