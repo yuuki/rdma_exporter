@@ -146,6 +146,38 @@ func TestExcludeDevicesFromEnv(t *testing.T) {
 	}
 }
 
+func TestExtraHwCountersPathsFromFlag(t *testing.T) {
+	t.Parallel()
+
+	cfg, err := Parse([]string{"--extra-hw-counters-paths", "/sys/class/infiniband/roce_rail*/hw_counters,/custom/*/hw_counters"})
+	if err != nil {
+		t.Fatalf("Parse returned error: %v", err)
+	}
+
+	want := []string{"/sys/class/infiniband/roce_rail*/hw_counters", "/custom/*/hw_counters"}
+	if len(cfg.ExtraHwCountersPaths) != len(want) {
+		t.Fatalf("expected %d extra hw counter paths, got %d: %v", len(want), len(cfg.ExtraHwCountersPaths), cfg.ExtraHwCountersPaths)
+	}
+	for i := range want {
+		if cfg.ExtraHwCountersPaths[i] != want[i] {
+			t.Fatalf("extra hw counter path %d: expected %q, got %q", i, want[i], cfg.ExtraHwCountersPaths[i])
+		}
+	}
+}
+
+func TestExtraHwCountersPathsFromEnv(t *testing.T) {
+	t.Setenv("RDMA_EXPORTER_EXTRA_HW_COUNTERS_PATHS", "/sys/class/infiniband/roce_rail*/hw_counters")
+
+	cfg, err := Parse(nil)
+	if err != nil {
+		t.Fatalf("Parse returned error: %v", err)
+	}
+
+	if len(cfg.ExtraHwCountersPaths) != 1 || cfg.ExtraHwCountersPaths[0] != "/sys/class/infiniband/roce_rail*/hw_counters" {
+		t.Fatalf("unexpected extra hw counter paths: %v", cfg.ExtraHwCountersPaths)
+	}
+}
+
 func TestExcludeDevicesEmpty(t *testing.T) {
 	t.Parallel()
 

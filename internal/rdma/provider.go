@@ -97,9 +97,10 @@ type PortAttributes struct {
 
 // SysfsProvider implements Provider backed by the node's sysfs.
 type SysfsProvider struct {
-	mu             sync.RWMutex
-	sysfsRoot      string
-	excludeDevices map[string]bool
+	mu                   sync.RWMutex
+	sysfsRoot            string
+	extraHwCountersPaths []string
+	excludeDevices       map[string]bool
 }
 
 // NewSysfsProvider returns a SysfsProvider using the default sysfs root.
@@ -118,6 +119,23 @@ func (p *SysfsProvider) SetSysfsRoot(root string) {
 		return
 	}
 	p.sysfsRoot = filepath.Clean(root)
+}
+
+// SetExtraHwCountersPaths 配置额外的 hw_counters 目录 glob。
+//
+// 默认采集逻辑只读取:
+//
+//	/sys/class/infiniband/<device>/ports/<port>/hw_counters
+//
+// 该参数用于补充采集不同环境下的非标准目录，例如:
+//
+//	/sys/class/infiniband/roce_rail*/hw_counters
+//	/sys/class/infiniband/mlx5_1*/ports/1/hw_counters
+func (p *SysfsProvider) SetExtraHwCountersPaths(paths []string) {
+	p.mu.Lock()
+	defer p.mu.Unlock()
+
+	p.extraHwCountersPaths = append([]string(nil), paths...)
 }
 
 // SetExcludeDevices configures which devices should be completely skipped.
@@ -141,13 +159,18 @@ func (p *SysfsProvider) isExcluded(device string) bool {
 func (p *SysfsProvider) Devices(ctx context.Context) ([]Device, error) {
 	p.mu.RLock()
 	root := p.sysfsRoot
+	extraHwCountersPaths := append([]string(nil), p.extraHwCountersPaths...)
 	p.mu.RUnlock()
 
 	if ctx.Err() != nil {
 		return nil, ctx.Err()
 	}
 
-	return p.devicesFromRoot(ctx, root)
+	devices, err := p.devicesFromRoot(ctx, root)
+	if err != nil {
+		return nil, err
+	}
+	return p.addExtraHwCounters(ctx, root, devices, extraHwCountersPaths)
 }
 
 func (p *SysfsProvider) deviceFromRoot(ctx context.Context, root, deviceName string) (Device, error) {
@@ -296,6 +319,106 @@ func (p *SysfsProvider) portsFromRoot(ctx context.Context, root, device string) 
 		})
 	}
 	return ports, nil
+}
+
+func (p *SysfsProvider) addExtraHwCounters(ctx context.Context, root string, devices []Device, patterns []string) ([]Device, error) {
+	if len(patterns) == 0 {
+		return devices, nil
+	}
+
+	deviceIndexes := make(map[string]int, len(devices))
+	for i := range devices {
+		deviceIndexes[devices[i].Name] = i
+	}
+
+	for _, pattern := range patterns {
+		if ctx.Err() != nil {
+			return nil, ctx.Err()
+		}
+
+		if !filepath.IsAbs(pattern) {
+			pattern = filepath.Join(root, pattern)
+		}
+		matches, err := filepath.Glob(filepath.Clean(pattern))
+		if err != nil {
+			return nil, fmt.Errorf("expand extra hw counter path %q: %w", pattern, err)
+		}
+
+		for _, match := range matches {
+			if ctx.Err() != nil {
+				return nil, ctx.Err()
+			}
+
+			deviceName, portID, ok := parseHwCountersPath(match)
+			if !ok || p.isExcluded(deviceName) {
+				continue
+			}
+
+			hwStats, err := p.readCounterDir(match)
+			if err != nil {
+				return nil, fmt.Errorf("read extra hw counters for %s port %d: %w", deviceName, portID, err)
+			}
+
+			idx, exists := deviceIndexes[deviceName]
+			if !exists {
+				devices = append(devices, Device{Name: deviceName})
+				idx = len(devices) - 1
+				deviceIndexes[deviceName] = idx
+			}
+			mergeHwStats(&devices[idx], portID, hwStats)
+		}
+	}
+
+	return devices, nil
+}
+
+// parseHwCountersPath 从 hw_counters 目录路径中解析 device 和 port。
+//
+// 支持两种路径:
+//  1. device-level: <device>/hw_counters
+//     用 port=0 表示没有端口层级，例如 bx 的 roce_rail0/hw_counters。
+//  2. port-level: <device>/ports/<port>/hw_counters
+//     保留真实端口号，例如 st2 的 mlx5_10/ports/1/hw_counters。
+func parseHwCountersPath(path string) (string, int, bool) {
+	clean := filepath.Clean(path)
+	if filepath.Base(clean) != hwCountersDirName {
+		return "", 0, false
+	}
+
+	parent := filepath.Dir(clean)
+	if filepath.Base(filepath.Dir(parent)) == portsDirName {
+		portID, err := strconv.Atoi(filepath.Base(parent))
+		if err != nil {
+			return "", 0, false
+		}
+		deviceName := filepath.Base(filepath.Dir(filepath.Dir(parent)))
+		return deviceName, portID, deviceName != ""
+	}
+
+	deviceName := filepath.Base(parent)
+	return deviceName, 0, deviceName != ""
+}
+
+// mergeHwStats 将额外采集到的 hw_counters 合并到对应 device/port。
+// 如果默认采集已经包含该 port，则只补充/覆盖 HwStats；否则新增一个端口记录。
+func mergeHwStats(device *Device, portID int, hwStats map[string]uint64) {
+	for i := range device.Ports {
+		if device.Ports[i].ID != portID {
+			continue
+		}
+		if device.Ports[i].HwStats == nil {
+			device.Ports[i].HwStats = make(map[string]uint64, len(hwStats))
+		}
+		for name, value := range hwStats {
+			device.Ports[i].HwStats[name] = value
+		}
+		return
+	}
+
+	device.Ports = append(device.Ports, Port{
+		ID:      portID,
+		HwStats: hwStats,
+	})
 }
 
 func (p *SysfsProvider) readPortAttributes(root, device string, port int) (PortAttributes, error) {

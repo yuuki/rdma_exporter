@@ -6,6 +6,8 @@ FROM golang:${GO_VERSION}-alpine AS builder
 RUN apk add --no-cache git
 WORKDIR /src
 COPY go.mod go.sum ./
+ARG GOPROXY=https://goproxy.cn,direct
+ENV GOPROXY=${GOPROXY}
 RUN go mod download
 COPY . .
 ARG TARGETOS=linux

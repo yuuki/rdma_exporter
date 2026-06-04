@@ -29,6 +29,7 @@ type Config struct {
 	HealthPath           string
 	LogLevel             slog.Level
 	SysfsRoot            string
+	ExtraHwCountersPaths []string
 	ScrapeTimeout        time.Duration
 	EnableRoCEPFCMetrics bool
 	ExcludeDevices       []string
@@ -47,6 +48,7 @@ func Parse(args []string) (Config, error) {
 	healthPath := fs.String("health-path", envOrDefault("RDMA_EXPORTER_HEALTH_PATH", defaultHealthPath), "HTTP path for health checks.")
 	logLevel := fs.String("log-level", envOrDefault("RDMA_EXPORTER_LOG_LEVEL", defaultLogLevel), "Log level (debug, info, warn, error).")
 	sysfsRoot := fs.String("sysfs-root", envOrDefault("RDMA_EXPORTER_SYSFS_ROOT", defaultSysfsRoot), "Root of the sysfs tree to read RDMA data from.")
+	extraHwCountersPaths := fs.String("extra-hw-counters-paths", envOrDefault("RDMA_EXPORTER_EXTRA_HW_COUNTERS_PATHS", ""), "Comma-separated glob paths to additional hw_counters directories.")
 	excludeDevices := fs.String("exclude-devices", envOrDefault("RDMA_EXPORTER_EXCLUDE_DEVICES", ""), "Comma-separated list of RDMA devices to exclude from monitoring (e.g., mlx5_0,mlx5_1).")
 
 	enableRoCEPFCDefault := defaultEnableRoCEPFC
@@ -88,6 +90,7 @@ func Parse(args []string) (Config, error) {
 		HealthPath:           *healthPath,
 		LogLevel:             level,
 		SysfsRoot:            *sysfsRoot,
+		ExtraHwCountersPaths: parseDeviceList(*extraHwCountersPaths),
 		ScrapeTimeout:        *scrapeTimeout,
 		EnableRoCEPFCMetrics: *enableRoCEPFCMetrics,
 		ExcludeDevices:       parseDeviceList(*excludeDevices),

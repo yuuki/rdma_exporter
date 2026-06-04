@@ -55,6 +55,10 @@ func main() {
 	if cfg.SysfsRoot != "" {
 		provider.SetSysfsRoot(cfg.SysfsRoot)
 	}
+	if len(cfg.ExtraHwCountersPaths) > 0 {
+		provider.SetExtraHwCountersPaths(cfg.ExtraHwCountersPaths)
+		logger.Info("collecting extra hw counter paths", "paths", cfg.ExtraHwCountersPaths)
+	}
 	if len(cfg.ExcludeDevices) > 0 {
 		provider.SetExcludeDevices(cfg.ExcludeDevices)
 		logger.Info("excluding devices from monitoring", "devices", cfg.ExcludeDevices)
