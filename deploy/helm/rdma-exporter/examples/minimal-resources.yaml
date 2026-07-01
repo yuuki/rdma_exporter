@@ -1,0 +1,20 @@
+exporter:
+  logLevel: warn
+  scrapeTimeout: 5s
+  enableRoCEPFCMetrics: false
+
+resources:
+  limits:
+    cpu: 100m
+    memory: 64Mi
+  requests:
+    cpu: 25m
+    memory: 32Mi
+
+updateStrategy:
+  type: RollingUpdate
+  rollingUpdate:
+    maxUnavailable: 1
+
+serviceMonitor:
+  enabled: false

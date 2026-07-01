@@ -1,0 +1,19 @@
+apiVersion: v2
+name: rdma-exporter
+description: Prometheus exporter for RDMA (InfiniBand/RoCE) network interface statistics
+type: application
+version: 0.4.1
+appVersion: "0.4.1"
+keywords:
+  - rdma
+  - infiniband
+  - roce
+  - prometheus
+  - monitoring
+  - metrics
+home: https://github.com/yuuki/rdma_exporter
+sources:
+  - https://github.com/yuuki/rdma_exporter
+maintainers:
+  - name: yuuki
+    url: https://github.com/yuuki

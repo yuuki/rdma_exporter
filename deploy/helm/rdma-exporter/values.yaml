@@ -1,0 +1,91 @@
+image:
+  repository: ghcr.io/yuuki/rdma_exporter
+  pullPolicy: IfNotPresent
+  tag: ""
+
+imagePullSecrets: []
+nameOverride: ""
+fullnameOverride: ""
+
+serviceAccount:
+  create: true
+  annotations: {}
+  name: ""
+
+podAnnotations:
+  prometheus.io/scrape: "true"
+  prometheus.io/port: "9879"
+  prometheus.io/path: "/metrics"
+
+podSecurityContext:
+  runAsNonRoot: true
+  runAsUser: 65534
+  runAsGroup: 65534
+  fsGroup: 65534
+  seccompProfile:
+    type: RuntimeDefault
+
+securityContext:
+  allowPrivilegeEscalation: false
+  readOnlyRootFilesystem: true
+  capabilities:
+    drop:
+    - ALL
+
+hostNetwork: true
+hostPID: false
+
+service:
+  enabled: true
+  type: ClusterIP
+  port: 9879
+  targetPort: 9879
+  annotations: {}
+
+resources:
+  limits:
+    cpu: 200m
+    memory: 128Mi
+  requests:
+    cpu: 50m
+    memory: 64Mi
+
+nodeSelector: {}
+
+tolerations:
+  - effect: NoSchedule
+    operator: Exists
+
+affinity: {}
+
+priorityClassName: ""
+
+updateStrategy:
+  type: RollingUpdate
+  rollingUpdate:
+    maxUnavailable: 1
+
+exporter:
+  listenAddress: ":9879"
+  metricsPath: "/metrics"
+  healthPath: "/healthz"
+  logLevel: "info"
+  sysfsRoot: "/sys"
+  scrapeTimeout: "5s"
+  enableRoCEPFCMetrics: true
+  excludeDevices: []
+
+extraEnv: []
+
+extraVolumes: []
+
+extraVolumeMounts: []
+
+serviceMonitor:
+  enabled: false
+  interval: 30s
+  scrapeTimeout: 10s
+  honorLabels: true
+  additionalLabels: {}
+  relabelings: []
+  metricRelabelings: []

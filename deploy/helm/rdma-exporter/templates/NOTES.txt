@@ -1,0 +1,46 @@
+RDMA Exporter has been deployed as a DaemonSet!
+
+📊 Monitor RDMA/InfiniBand/RoCE network interfaces across your cluster.
+
+To verify the deployment:
+
+  kubectl get daemonset -n {{ .Release.Namespace }} {{ include "rdma-exporter.fullname" . }}
+  kubectl get pods -n {{ .Release.Namespace }} -l app.kubernetes.io/name={{ include "rdma-exporter.name" . }}
+
+To view metrics from a specific node:
+
+  export POD_NAME=$(kubectl get pods -n {{ .Release.Namespace }} -l app.kubernetes.io/name={{ include "rdma-exporter.name" . }} -o jsonpath="{.items[0].metadata.name}")
+  kubectl port-forward -n {{ .Release.Namespace }} $POD_NAME 9879:9879
+
+  Then access metrics at: http://localhost:9879{{ .Values.exporter.metricsPath }}
+  Health check at: http://localhost:9879{{ .Values.exporter.healthPath }}
+
+{{- if .Values.serviceMonitor.enabled }}
+
+✓ ServiceMonitor is enabled - Prometheus Operator will automatically scrape metrics.
+{{- else }}
+
+To enable Prometheus Operator integration, set:
+
+  serviceMonitor.enabled=true
+
+Or configure Prometheus to scrape pods with these annotations:
+  prometheus.io/scrape: "true"
+  prometheus.io/port: "9879"
+  prometheus.io/path: "{{ .Values.exporter.metricsPath }}"
+{{- end }}
+
+{{- if .Values.exporter.excludeDevices }}
+
+⚠ Excluded devices: {{ join ", " .Values.exporter.excludeDevices }}
+{{- end }}
+
+📚 For more information:
+  - GitHub: https://github.com/yuuki/rdma_exporter
+  - Grafana Dashboard: https://grafana.com/grafana/dashboards/24241
+
+⚙️  Configuration:
+  - Listen Address: {{ .Values.exporter.listenAddress }}
+  - Scrape Timeout: {{ .Values.exporter.scrapeTimeout }}
+  - Log Level: {{ .Values.exporter.logLevel }}
+  - RoCE PFC Metrics: {{ .Values.exporter.enableRoCEPFCMetrics }}
