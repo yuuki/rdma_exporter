@@ -3,6 +3,7 @@ package rdma
 import (
 	"context"
 	"errors"
+	"os"
 	"path/filepath"
 	"testing"
 )
@@ -200,4 +201,58 @@ func TestSetExcludeDevices(t *testing.T) {
 			t.Errorf("isExcluded(%q) = %v, want %v", tt.device, got, tt.excluded)
 		}
 	}
+}
+
+func TestSysfsProvider_ReadCounterDirSkipsUnreadableCounters(t *testing.T) {
+	t.Parallel()
+
+	dir := t.TempDir()
+	writeCounter(t, dir, "port_xmit_data", "123")
+	writeCounter(t, dir, "port_rcv_data", "456")
+	// Non-numeric contents are skipped rather than failing the whole port.
+	writeCounter(t, dir, "not_a_number", "N/A")
+	// A permission-denied read is one of the tolerated errors, like the EINVAL
+	// that mlx5 returns for some legacy counters.
+	unreadable := writeCounter(t, dir, "unreadable", "789")
+	if err := os.Chmod(unreadable, 0); err != nil {
+		t.Fatalf("chmod: %v", err)
+	}
+	// Non-regular entries such as subdirectories are ignored.
+	if err := os.Mkdir(filepath.Join(dir, "subdir"), 0o755); err != nil {
+		t.Fatalf("mkdir: %v", err)
+	}
+
+	provider := NewSysfsProvider()
+	counters, err := provider.readCounterDir(dir)
+	if err != nil {
+		t.Fatalf("readCounterDir returned error: %v", err)
+	}
+
+	if got := counters["port_xmit_data"]; got != 123 {
+		t.Fatalf("expected port_xmit_data=123, got %d", got)
+	}
+	if got := counters["port_rcv_data"]; got != 456 {
+		t.Fatalf("expected port_rcv_data=456, got %d", got)
+	}
+	if _, ok := counters["not_a_number"]; ok {
+		t.Fatalf("expected non-numeric counter to be skipped")
+	}
+	if _, ok := counters["subdir"]; ok {
+		t.Fatalf("expected subdirectory to be ignored")
+	}
+	// Running as root bypasses mode bits, so the read never fails there.
+	if os.Geteuid() != 0 {
+		if _, ok := counters["unreadable"]; ok {
+			t.Fatalf("expected unreadable counter to be skipped")
+		}
+	}
+}
+
+func writeCounter(t *testing.T, dir, name, contents string) string {
+	t.Helper()
+	path := filepath.Join(dir, name)
+	if err := os.WriteFile(path, []byte(contents), 0o644); err != nil {
+		t.Fatalf("write counter %s: %v", name, err)
+	}
+	return path
 }
