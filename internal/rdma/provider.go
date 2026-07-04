@@ -10,6 +10,7 @@ import (
 	"strconv"
 	"strings"
 	"sync"
+	"syscall"
 	"unicode"
 )
 
@@ -29,9 +30,9 @@ const (
 	rateFile            = "rate"
 
 	// SR-IOV PF/VF detection paths.
-	deviceDirName    = "device"       // symlink under class/infiniband/<dev>/device → PCI addr
-	physfnLinkName   = "physfn"       // symlink present only on VFs: device/physfn → PF PCI addr
-	infinibandSubDir = "infiniband"   // under /sys/bus/pci/devices/<pci>/infiniband/
+	deviceDirName    = "device"          // symlink under class/infiniband/<dev>/device → PCI addr
+	physfnLinkName   = "physfn"          // symlink present only on VFs: device/physfn → PF PCI addr
+	infinibandSubDir = "infiniband"      // under /sys/bus/pci/devices/<pci>/infiniband/
 	busPCIDevicesDir = "bus/pci/devices" // /sys/bus/pci/devices/<pci>/
 )
 
@@ -440,16 +441,20 @@ func (p *SysfsProvider) readCounterDir(path string) (map[string]uint64, error) {
 	}
 	counters := make(map[string]uint64, len(entries))
 	for _, entry := range entries {
-		if entry.IsDir() {
+		if !entry.Type().IsRegular() {
 			continue
 		}
 		raw, err := os.ReadFile(filepath.Join(path, entry.Name()))
 		if err != nil {
+			if errors.Is(err, syscall.EINVAL) || errors.Is(err, syscall.EOPNOTSUPP) ||
+				os.IsNotExist(err) || os.IsPermission(err) {
+				continue
+			}
 			return nil, err
 		}
 		value, err := strconv.ParseUint(strings.TrimSpace(string(raw)), 10, 64)
 		if err != nil {
-			return nil, fmt.Errorf("parse counter %s: %w", entry.Name(), err)
+			continue
 		}
 		counters[entry.Name()] = value
 	}
