@@ -97,8 +97,28 @@ GOCACHE=$(pwd)/.gocache GOMODCACHE=$(pwd)/.gomodcache go test ./...
 `internal/rdma/testdata/sysfs` contains fixture trees used in unit tests to emulate sysfs layouts.
 
 ## Deployment
-- A systemd unit file is available under `deploy/systemd/rdma_exporter.service`.
-- A multi-stage Dockerfile lives at the repository root; see `docs/deployment.md` for build and run instructions.
+
+### Kubernetes (Helm Chart)
+Deploy as a DaemonSet with proper security context and read-only access to `/sys/class/infiniband`:
+
+```bash
+helm install rdma-exporter ./deploy/helm/rdma-exporter -n monitoring --create-namespace
+```
+
+For Prometheus Operator integration:
+```bash
+helm install rdma-exporter ./deploy/helm/rdma-exporter \
+  -n monitoring \
+  --set serviceMonitor.enabled=true
+```
+
+See [`deploy/helm/rdma-exporter/README.md`](deploy/helm/rdma-exporter/README.md) for detailed configuration options and examples.
+
+### Systemd
+A systemd unit file is available under `deploy/systemd/rdma_exporter.service`.
+
+### Container
+A multi-stage Dockerfile lives at the repository root; see `docs/deployment.md` for build and run instructions.
 
 ## Development Notes
 - Architectural decisions and future work are documented in `docs/design.md`.

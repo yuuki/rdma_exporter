@@ -1,0 +1,24 @@
+exporter:
+  excludeDevices:
+    - mlx5_0
+    - mlx5_1
+  logLevel: info
+  enableRoCEPFCMetrics: true
+
+nodeSelector:
+  nvidia.com/gpu.present: "true"
+
+resources:
+  limits:
+    cpu: 300m
+    memory: 256Mi
+  requests:
+    cpu: 100m
+    memory: 128Mi
+
+tolerations:
+  - effect: NoSchedule
+    operator: Exists
+  - key: nvidia.com/gpu
+    operator: Exists
+    effect: NoSchedule

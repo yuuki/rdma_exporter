@@ -1,0 +1,18 @@
+serviceMonitor:
+  enabled: true
+  interval: 30s
+  scrapeTimeout: 10s
+  additionalLabels:
+    prometheus: kube-prometheus
+
+exporter:
+  logLevel: info
+  scrapeTimeout: 5s
+
+resources:
+  limits:
+    cpu: 200m
+    memory: 128Mi
+  requests:
+    cpu: 50m
+    memory: 64Mi
