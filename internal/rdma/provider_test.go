@@ -256,3 +256,32 @@ func writeCounter(t *testing.T, dir, name, contents string) string {
 	}
 	return path
 }
+
+func TestSysfsProvider_PortWithoutCountersDir(t *testing.T) {
+	t.Parallel()
+
+	// EFA devices (rdmap*) expose only hw_counters/, no counters/ directory.
+	// A missing counters/ dir must not fail the whole scrape.
+	root := filepath.Join("testdata", "sysfs", "efa")
+	provider := NewSysfsProvider()
+	provider.SetSysfsRoot(root)
+
+	devices, err := provider.Devices(context.Background())
+	if err != nil {
+		t.Fatalf("Devices returned error: %v", err)
+	}
+	if len(devices) != 1 {
+		t.Fatalf("expected 1 device, got %d", len(devices))
+	}
+
+	port := devices[0].Ports[0]
+	if len(port.Stats) != 0 {
+		t.Fatalf("expected empty counters, got %v", port.Stats)
+	}
+	if got := port.HwStats["rx_bytes"]; got != 123 {
+		t.Fatalf("expected hw_counters rx_bytes=123, got %d", got)
+	}
+	if got := port.HwStats["tx_bytes"]; got != 456 {
+		t.Fatalf("expected hw_counters tx_bytes=456, got %d", got)
+	}
+}
