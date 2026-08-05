@@ -4,6 +4,7 @@ import (
 	"errors"
 	"flag"
 	"fmt"
+	"io"
 	"os"
 	"strings"
 	"time"
@@ -54,7 +55,10 @@ func Parse(args []string) (Config, error) {
 	var cfg Config
 
 	fs := flag.NewFlagSet("mlxlink_exporter", flag.ContinueOnError)
-	fs.SetOutput(os.Stderr)
+	// Reporting failures is the caller's job: letting the flag package print
+	// too would show syntax errors twice while validation errors below are
+	// printed once. Help is reprinted explicitly when it is asked for.
+	fs.SetOutput(io.Discard)
 
 	listen := fs.String("listen-address", envOrDefault("MLXLINK_EXPORTER_LISTEN_ADDRESS", defaultListenAddress), "Address to listen on for HTTP requests.")
 	metricsPath := fs.String("metrics-path", envOrDefault("MLXLINK_EXPORTER_METRICS_PATH", defaultMetricsPath), "HTTP path under which metrics are served.")
@@ -89,6 +93,10 @@ func Parse(args []string) (Config, error) {
 
 	if err := fs.Parse(args); err != nil {
 		if errors.Is(err, flag.ErrHelp) {
+			// The usage text was discarded above; a user who asked for help
+			// still expects it, on stdout.
+			fs.SetOutput(os.Stdout)
+			fs.Usage()
 			return cfg, err
 		}
 		return cfg, fmt.Errorf("parse flags: %w", err)
