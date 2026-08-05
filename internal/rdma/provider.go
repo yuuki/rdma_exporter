@@ -276,7 +276,7 @@ func (p *SysfsProvider) portsFromRoot(ctx context.Context, root, device string) 
 		}
 
 		stats, err := p.readCounterDir(filepath.Join(dir, entry.Name(), countersDirName))
-		if err != nil {
+		if err != nil && !errors.Is(err, fs.ErrNotExist) {
 			return nil, fmt.Errorf("read counters for %s port %d: %w", device, portID, err)
 		}
 		hwStats, err := p.readCounterDir(filepath.Join(dir, entry.Name(), hwCountersDirName))
