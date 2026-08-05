@@ -80,6 +80,136 @@ Every CLI flag has an equivalent environment variable. Environment values provid
 
 The Go and process collectors from `client_golang` are registered automatically.
 
+## mlxlink_exporter
+
+This repository also ships a second exporter, `mlxlink_exporter`, which publishes the physical link and optical module telemetry that NVIDIA's `mlxlink` reports: bit error ratios, per-lane raw errors, transceiver diagnostics (temperature, voltage, bias current, optical power) and module inventory.
+
+It is a separate binary because `mlxlink` is expensive: one invocation costs roughly 0.77 s of wall time, almost all of it fixed firmware-access overhead, which is far too slow to run inside a Prometheus scrape. Instead, a background poller runs `mlxlink -d <device> -m -c --json` once per device per `--poll-interval` and publishes the decoded result into an immutable in-memory snapshot; `/metrics` only reads that snapshot. Scrape frequency therefore has no effect on how often `mlxlink` runs, and the two exporters stay in separate processes so that a firmware hang or an extra privilege never affects `rdma_exporter`.
+
+The default listen address is `:9880`.
+
+### Requirements
+- Linux only.
+- [NVIDIA MFT](https://network.nvidia.com/products/adapter-software/firmware-tools/) installed, providing the `mlxlink` binary (`--mlxlink-path`, default `/usr/bin/mlxlink`). The exporter exits with status 1 at start-up if that path does not exist.
+- Devices are addressed by their IB device name (`mlxlink -d mlx5_0`), so `mst start` and `/dev/mst/*` device nodes are **not** required.
+- Read access to `/sys/class/infiniband` for device discovery.
+- Verified against MFT 4.34.1 output; the captured response used by the decoder tests is `internal/mlxlink/testdata/mlxlink/mft-4.34.1-400g-dr4.json`.
+
+### Build and run
+```bash
+make build   # compiles ./rdma_exporter and ./mlxlink_exporter
+```
+
+```bash
+./mlxlink_exporter \
+  --listen-address=":9880" \
+  --mlxlink-path="/usr/bin/mlxlink" \
+  --poll-interval=30s
+```
+
+Recommended settings: keep `--poll-interval=30s` and scrape every 15–30 s. Scraping more often is free, because a scrape never executes `mlxlink`; only `--poll-interval` controls how often the tool runs. A sweep visits every device sequentially, so with N devices one sweep costs about N × 0.8 s.
+
+To print build information without starting the server, add `--version`.
+
+### Configuration
+Every flag except `--version` has an equivalent environment variable, ten in total. Environment values provide defaults; explicit CLI flags take precedence.
+
+| Flag | Environment | Default | Description |
+| ---- | ----------- | ------- | ----------- |
+| `--listen-address` | `MLXLINK_EXPORTER_LISTEN_ADDRESS` | `:9880` | HTTP listen address |
+| `--metrics-path` | `MLXLINK_EXPORTER_METRICS_PATH` | `/metrics` | Metrics endpoint path |
+| `--health-path` | `MLXLINK_EXPORTER_HEALTH_PATH` | `/healthz` | Liveness endpoint path, always `200 OK` |
+| `--ready-path` | `MLXLINK_EXPORTER_READY_PATH` | `/readyz` | Readiness endpoint path, `503` until one device has been collected |
+| `--log-level` | `MLXLINK_EXPORTER_LOG_LEVEL` | `info` | Log verbosity (`debug`, `info`, `warn`, `error`) |
+| `--mlxlink-path` | `MLXLINK_EXPORTER_MLXLINK_PATH` | `/usr/bin/mlxlink` | Path to the `mlxlink` binary |
+| `--sysfs-root` | `MLXLINK_EXPORTER_SYSFS_ROOT` | `/sys` | Root directory used to discover RDMA devices |
+| `--poll-interval` | `MLXLINK_EXPORTER_POLL_INTERVAL` | `30s` | Interval between background sweeps over all devices |
+| `--command-timeout` | `MLXLINK_EXPORTER_COMMAND_TIMEOUT` | `3s` | Maximum duration of a single `mlxlink` invocation |
+| `--exclude-devices` | `MLXLINK_EXPORTER_EXCLUDE_DEVICES` | `` | Comma-separated list of RDMA devices to skip (e.g., `mlx5_0,mlx5_1`) |
+| `--version` | – | `false` | Print build information and exit |
+
+### Metrics
+All families carry the labels `device`, `port` and `pci_addr`; per-lane families add `lane`. **Lane numbers start at 0**: a lane number is the index of the value within the list `mlxlink` reports.
+
+Link and inventory:
+- `mlxlink_link_info{device,port,pci_addr,state,physical_state,speed,width,fec,auto_negotiation}` – Gauge set to `1` with the port's operational attributes as labels. Not published when every attribute is empty.
+- `mlxlink_module_info{device,port,pci_addr,identifier,vendor,part_number,serial_number,revision,firmware_version,active_host_compliance,active_media_compliance,cable_type}` – Gauge set to `1` with the transceiver inventory as labels. `firmware_version` is the module firmware, not the adapter firmware. Not published when every attribute is empty.
+
+Physical layer counters:
+- `mlxlink_effective_physical_errors_total{device,port,pci_addr}` – Effective physical errors.
+- `mlxlink_raw_physical_errors_total{device,port,pci_addr,lane}` – Raw physical errors per lane.
+- `mlxlink_link_down_total{device,port,pci_addr}` – Link down events.
+- `mlxlink_link_error_recovery_total{device,port,pci_addr}` – Link error recovery events.
+
+Bit error ratios (gauges, dimensionless):
+- `mlxlink_effective_physical_ber{device,port,pci_addr}` – Effective physical BER.
+- `mlxlink_raw_physical_ber{device,port,pci_addr}` – Raw physical BER.
+- `mlxlink_raw_physical_ber_lane{device,port,pci_addr,lane}` – Raw physical BER per lane.
+
+Digital diagnostic monitoring (gauges). Only the two units `mlxlink` reports with a milli prefix are converted; temperature and optical power are exported exactly as reported:
+- `mlxlink_module_temperature_celsius{device,port,pci_addr}` – Module temperature in degrees Celsius.
+- `mlxlink_module_voltage_volts{device,port,pci_addr}` – Module supply voltage in volts, converted from the millivolts `mlxlink` reports.
+- `mlxlink_module_bias_current_amperes{device,port,pci_addr,lane}` – Laser bias current in amperes, converted from milliamperes.
+- `mlxlink_module_rx_power_dbm{device,port,pci_addr,lane}` – Received optical power in dBm.
+- `mlxlink_module_tx_power_dbm{device,port,pci_addr,lane}` – Transmitted optical power in dBm.
+
+Fault and state flags (gauges, `0` or `1`):
+- `mlxlink_module_fw_fault{device,port,pci_addr}` – Module firmware fault.
+- `mlxlink_datapath_fw_fault{device,port,pci_addr}` – Datapath firmware fault.
+- `mlxlink_tx_fault{device,port,pci_addr,lane}` – Transmitter fault.
+- `mlxlink_tx_los{device,port,pci_addr,lane}` – Transmitter loss of signal.
+- `mlxlink_rx_los{device,port,pci_addr,lane}` – Receiver loss of signal.
+- `mlxlink_tx_cdr_loss_of_lock{device,port,pci_addr,lane}` – Transmitter CDR loss of lock.
+- `mlxlink_rx_cdr_loss_of_lock{device,port,pci_addr,lane}` – Receiver CDR loss of lock.
+- `mlxlink_datapath_active{device,port,pci_addr,lane}` – `1` only when the lane reports `DPActivated`.
+
+Exporter self-monitoring:
+- `mlxlink_collector_up{device,port,pci_addr}` – `1` when the most recent poll of that device succeeded, `0` otherwise.
+- `mlxlink_collection_duration_seconds{device,port,pci_addr}` – Duration of the most recent `mlxlink` invocation.
+- `mlxlink_collection_last_success_timestamp_seconds{device,port,pci_addr}` – Unix timestamp of the last successful collection. Not published for a device that has never succeeded, so the series never reports 1970.
+- `mlxlink_collection_errors_total{device,port,pci_addr,reason}` – Failed collection attempts. `reason` is one of `timeout`, `command_not_found`, `permission_denied`, `exit_error`, `invalid_json`, `output_too_large`, `overlapping`, `unknown`.
+
+A value that `mlxlink` reports as `N/A` produces no sample at all rather than a zero. For the measurement families (BER, temperature, voltage, bias current, optical power, raw errors) only the affected lane is dropped. The flag families above are all-or-nothing: if any lane of `mlxlink_tx_fault` and friends is unreadable, or reports anything other than `0`/`1`, the whole family is omitted for that port rather than published with renumbered lanes.
+
+### Operational notes
+- **Counters can be cleared.** `mlxlink` counters live in the adapter firmware and are reset by other tooling (`mlxlink --clear_counters`, firmware resets, link training). `mlxlink` reports how long ago that happened as `Time Since Last Clear [Min]`, which this exporter does not export. `rate()` and `increase()` detect the reset, but a clear inside an evaluation window still hides the errors that preceded it, so treat a sudden return to zero as "counters were cleared", not "errors stopped".
+- **Stale data is suppressed.** If a device has not been collected successfully for longer than `--poll-interval` × 5 (150 s by default), its measurement series stop being exported while the self-monitoring series continue. This is what distinguishes "the link is fine" from "we stopped being able to ask".
+- **Overlap accounting is approximate.** If a sweep takes longer than `--poll-interval`, the skipped tick is recorded as `mlxlink_collection_errors_total{reason="overlapping"}`. Go tickers coalesce missed ticks, so a sweep that overruns several intervals is still counted once: use the metric to detect that the interval is too short, not to count exactly how many sweeps were lost.
+- **Containers are not supported.** `mlxlink` is part of MFT and talks to the adapter firmware, so it is deliberately absent from the published container images (`dockers` in `.goreleaser.yaml` builds only `rdma_exporter`). Run `mlxlink_exporter` on the host.
+- **Multi-port adapters.** `mlxlink` is invoked once per device without `-p`, so only the lowest port number of a device is collected.
+- **A host with no RDMA devices** stays at `503` on `/readyz` forever, by design: there is nothing to collect. `/healthz` remains `200`.
+- Running unprivileged, and how to grant only the privileges your host actually needs, is covered in [docs/deployment.md](docs/deployment.md).
+
+### Joining with rdma_exporter metrics
+The two exporters are separate scrape targets (`:9879` and `:9880`), so their `instance` labels never match and the default vector matching cannot be used. Join on the identity labels both sides carry, `device`, `port` and `pci_addr`, with `on(...)` so that `instance` and `job` are ignored:
+
+```promql
+# Raw BER annotated with link layer and PF/VF identity from rdma_port_info.
+mlxlink_raw_physical_ber
+  * on(device, port, pci_addr) group_left(link_layer, link_speed, is_vf, pf_device)
+  rdma_port_info
+```
+
+Across more than one host this form is wrong: the same `device`/`port`/`pci_addr` exists on every machine, so it would match series from other hosts. Either add a host label to both jobs with `relabel_configs`, or derive one in the query:
+
+```promql
+label_replace(mlxlink_module_temperature_celsius, "host", "$1", "instance", "([^:]+):.*")
+  * on(host, device, port, pci_addr) group_left(link_layer, is_vf, pf_device)
+label_replace(rdma_port_info, "host", "$1", "instance", "([^:]+):.*")
+```
+
+Be careful about which labels `group_left` carries over. `rdma_port_info` exposes `link_layer`, `state`, `phys_state`, `link_width`, `link_speed`, `is_vf` and `pf_device`; of these, `state` also exists on `mlxlink_link_info`. Carrying it does not raise an error — the value from `rdma_port_info` silently replaces the mlxlink one, so the result claims a sysfs port state under a metric named for the mlxlink state. Leave `state` out, or rename it first:
+
+```promql
+mlxlink_link_info
+  * on(device, port, pci_addr) group_left(sysfs_state)
+  label_replace(rdma_port_info, "sysfs_state", "$1", "state", "(.*)")
+```
+
+The value families (`mlxlink_raw_physical_ber`, `mlxlink_module_*`, …) only carry `device`, `port`, `pci_addr` and `lane`, so any of the labels above are safe there.
+
+The `instance` regex above assumes a `host:port` target. Targets written as bracketed IPv6 (`[2001:db8::1]:9880`) need a different pattern, for example `(\[.*\]|[^:]+):.*`.
+
 ## Dashboards
 - Grafana dashboard: [RDMA/RoCE NIC Telemetry](https://grafana.com/grafana/dashboards/24241-rdma-roce-nic-telemetry/) – Prebuilt panels for visualizing the exporter metrics, helpful for quick validation and long-term monitoring.
 

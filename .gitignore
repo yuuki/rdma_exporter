@@ -1,4 +1,5 @@
 /rdma_exporter
+/mlxlink_exporter
 bin/
 .gocache/
 .gomodcache/

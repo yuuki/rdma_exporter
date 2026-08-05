@@ -84,6 +84,90 @@ The repository includes a multi-stage Dockerfile at the repository root.
 
 The image runs as the unprivileged `rdma_exporter` user by default and contains only the exporter binary plus CA certificates.
 
+## mlxlink_exporter (systemd service)
+
+`mlxlink_exporter` is a second binary that polls NVIDIA's `mlxlink` in the background and serves the result from a cache. It is deployed on the host only: `mlxlink` is part of MFT and talks to the adapter firmware, so it is deliberately absent from the container images and **there is no supported container deployment**. See [mlxlink_exporter_design.md](mlxlink_exporter_design.md) for the reasoning.
+
+### Prerequisites
+
+- NVIDIA MFT installed, providing `mlxlink` (default path `/usr/bin/mlxlink`). The exporter refuses to start if that path does not exist. Devices are addressed by IB device name, so `mst start` is not required.
+- A dedicated, unprivileged user account (the examples use `mlxlink_exporter`). Do not start from `root`; see "Verify the privileges" below.
+
+### Install
+
+1. **Install the binary**
+   ```bash
+   sudo install -Dm0755 mlxlink_exporter /usr/local/bin/mlxlink_exporter
+   ```
+
+2. **Create the service user**
+   ```bash
+   sudo useradd --system --home /var/lib/mlxlink_exporter --shell /usr/sbin/nologin mlxlink_exporter
+   ```
+
+3. **Optional: set configuration**
+   ```bash
+   sudo install -Dm0644 /dev/null /etc/mlxlink_exporter.env
+   echo 'MLXLINK_EXPORTER_LISTEN_ADDRESS=:9880' | sudo tee -a /etc/mlxlink_exporter.env
+   echo 'MLXLINK_EXPORTER_POLL_INTERVAL=30s'    | sudo tee -a /etc/mlxlink_exporter.env
+   echo 'MLXLINK_EXPORTER_LOG_LEVEL=info'       | sudo tee -a /etc/mlxlink_exporter.env
+   ```
+   Every flag except `--version` has a `MLXLINK_EXPORTER_*` counterpart and a built-in default, so an empty file is a valid configuration.
+
+   All configuration goes in this file rather than in `ExecStart`. systemd does not run `ExecStart` through a shell and expands only `$VAR` and `${VAR}`; shell-style defaults such as `${MLXLINK_EXPORTER_LISTEN_ADDRESS:-:9880}` are not interpreted and would leave the service failing to start. The shipped unit therefore calls the binary with no flags at all.
+
+4. **Install the unit file**
+   ```bash
+   sudo install -Dm0644 deploy/systemd/mlxlink_exporter.service \
+     /etc/systemd/system/mlxlink_exporter.service
+   ```
+
+5. **Reload systemd and start the service**
+   ```bash
+   sudo systemctl daemon-reload
+   sudo systemctl enable --now mlxlink_exporter.service
+   ```
+
+6. **Verify the service**
+   ```bash
+   systemctl status mlxlink_exporter.service
+   curl -f http://localhost:9880/healthz
+   curl -s http://localhost:9880/metrics | grep '^mlxlink_'
+   ```
+
+### Verify the privileges
+
+What `mlxlink` needs differs between hosts: MFT packaging, the ownership of the device nodes and the kernel lockdown state all matter. The unit therefore starts unprivileged with an empty capability bounding set, and you grant only what your host turns out to require.
+
+1. **Start unprivileged** with the unit as shipped, then read the error counter:
+   ```bash
+   curl -s http://localhost:9880/metrics | grep mlxlink_collection_errors_total
+   ```
+
+2. **Read the `reason` label**:
+   - `reason="permission_denied"` — the process may not execute `/usr/bin/mlxlink` at all. Check the file mode and ownership first.
+   - `reason="exit_error"` — `mlxlink` ran but exited non-zero. **A privilege problem usually appears here, not as `permission_denied`**, because `mlxlink` reports insufficient access by failing at run time and explaining itself on stderr. Read that message:
+     ```bash
+     sudo systemctl stop mlxlink_exporter.service
+     sudo -u mlxlink_exporter /usr/bin/mlxlink -d mlx5_0 -m -c --json
+     ```
+     Running it by hand as the service user is the fastest way to see the exact complaint; the exporter itself logs the truncated stderr only at `--log-level=debug`.
+   - `reason="command_not_found"` — the path is wrong; the service would also have refused to start.
+   - No error series and `mlxlink_collector_up` at `1` — nothing more is needed. Stop here.
+
+3. **Grant the smallest thing that fixes it**, in this order:
+   1. **Device access**: give the service user read/write access to the device nodes `mlxlink` opens, through group ownership or a udev rule, rather than through capabilities.
+   2. **Capabilities**: if a capability is genuinely required, add exactly that one to both `CapabilityBoundingSet=` and `AmbientCapabilities=` in the unit. Keep the set explicit; do not clear the bounding set.
+   3. **`User=root`**: the last resort. If you get here, record why in your configuration management, because it is the largest privilege in this deployment and the metric that justified it is worth keeping.
+
+4. **Re-check after every change**: `mlxlink_collection_errors_total` should stop increasing and `mlxlink_collector_up` should report `1` for each device.
+
+### Operational notes
+
+- **A host with no RDMA devices never becomes ready.** `/readyz` returns `503` for the lifetime of the process because there is nothing to collect, while `/healthz` stays `200`. Use `/healthz` for liveness and `/readyz` only where "has data" is the question you mean to ask.
+- **Scrape interval and poll interval are independent.** A scrape reads a cache, so scraping every 15 s costs nothing extra; `--poll-interval` alone decides how often `mlxlink` runs.
+- **Both exporters can run side by side** on the same host (`:9879` and `:9880`) as separate scrape targets. See the join examples in the README before writing queries that combine them.
+
 ## Updating deployment manifests
 
 Whenever new flags or metrics are introduced, update both the systemd unit (if flags are required at start-up) and the Docker instructions accordingly. Tests should continue to pass via `go test ./...` before re-deploying.
