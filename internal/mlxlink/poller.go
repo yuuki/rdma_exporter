@@ -2,6 +2,7 @@ package mlxlink
 
 import (
 	"context"
+	"errors"
 	"log/slog"
 	"slices"
 	"strings"
@@ -314,10 +315,20 @@ func (p *Poller) recordFailure(snapshot *DeviceSnapshot, reason ErrorReason, err
 	snapshot.LastError = reason
 	p.countError(snapshot.Target, reason)
 
+	// Only the underlying cause is logged here. A *RunError renders its
+	// captured stderr, which would put up to 4 KiB of tool output into the
+	// warning of every failed sweep; the runner already records it at debug
+	// level, where the volume is asked for.
+	logErr := err
+	var runErr *RunError
+	if errors.As(err, &runErr) {
+		logErr = runErr.Err
+	}
+
 	p.logger.Warn("mlxlink collection failed",
 		"device", snapshot.Target.Device, "port", snapshot.Target.Port,
 		"pci_addr", snapshot.Target.PCIAddr, "reason", reason.String(),
-		"duration", snapshot.LastDuration, "err", err)
+		"duration", snapshot.LastDuration, "err", logErr)
 }
 
 func (p *Poller) countError(target Target, reason ErrorReason) {

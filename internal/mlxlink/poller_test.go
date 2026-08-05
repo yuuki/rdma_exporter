@@ -1,9 +1,11 @@
 package mlxlink
 
 import (
+	"bytes"
 	"context"
 	"errors"
 	"log/slog"
+	"strings"
 	"sync"
 	"testing"
 	"time"
@@ -428,6 +430,40 @@ func TestPoller_RunnerErrorKeepsLastSuccessAndCountsReason(t *testing.T) {
 	}
 	if got := testutil.CollectAndCount(poller.errors); got != 1 {
 		t.Fatalf("expected a single error series, got %d", got)
+	}
+}
+
+func TestPoller_FailureWarningOmitsStderr(t *testing.T) {
+	t.Parallel()
+
+	// The captured stderr belongs in the debug log the runner writes. Repeating
+	// it in the warning would put up to 4 KiB of tool output into every failed
+	// sweep of an operator running at info level.
+	const captured = "mlxlink: E- Cannot open device, permission denied"
+
+	var logged bytes.Buffer
+	logger := slog.New(slog.NewTextHandler(&logged, &slog.HandlerOptions{Level: slog.LevelWarn}))
+
+	clk := newFakeClock(1)
+	runner := newFakeRunner(nil)
+	runner.setResult(nil, &RunError{
+		Reason: ReasonExitError,
+		Err:    errors.New("exit status 1"),
+		Stderr: captured,
+	})
+	poller := newPoller(newFakeDiscoverer([]Target{targetMlx0}), runner, testPollInterval,
+		logger, withClock(clk))
+
+	poller.sweep(context.Background())
+
+	if strings.Contains(logged.String(), captured) {
+		t.Fatalf("expected the captured stderr to stay out of the warning, got %q", logged.String())
+	}
+	if !strings.Contains(logged.String(), "exit status 1") {
+		t.Fatalf("expected the underlying cause to be logged, got %q", logged.String())
+	}
+	if !strings.Contains(logged.String(), ReasonExitError.String()) {
+		t.Fatalf("expected the reason to be logged, got %q", logged.String())
 	}
 }
 
