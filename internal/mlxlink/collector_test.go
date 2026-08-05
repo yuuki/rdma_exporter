@@ -1,6 +1,7 @@
 package mlxlink
 
 import (
+	"context"
 	"strconv"
 	"strings"
 	"testing"
@@ -502,4 +503,89 @@ mlxlink_tx_fault{device="mlx5_0",lane="2",pci_addr="0000:1a:00.0",port="1"} 0
 mlxlink_tx_los{device="mlx5_0",lane="0",pci_addr="0000:1a:00.0",port="1"} 0
 mlxlink_tx_los{device="mlx5_0",lane="1",pci_addr="0000:1a:00.0",port="1"} 1
 mlxlink_tx_los{device="mlx5_0",lane="2",pci_addr="0000:1a:00.0",port="1"} 0
+`
+
+// TestCollectorWithPoller_ExportsRealCapture runs the whole path a scrape takes:
+// the runner returns the captured mlxlink response, the poller decodes and
+// publishes it, and the collector turns it into metrics. The values below are
+// the fixture's, converted where the decoder converts.
+func TestCollectorWithPoller_ExportsRealCapture(t *testing.T) {
+	t.Parallel()
+
+	clk := newFakeClock(1)
+	runner := newFakeRunner(mlxlinkFixture(t, "mft-4.34.1-400g-dr4.json"))
+	poller := newTestPoller(t, newFakeDiscoverer([]Target{collectorTarget}), runner, clk)
+
+	poller.sweep(context.Background())
+
+	collector := newCollector(poller, collectorStaleAfter, newDiscardLogger(), WithNow(clk.Now))
+
+	if err := testutil.CollectAndCompare(collector, strings.NewReader(expositionRealCapture),
+		"mlxlink_collector_up",
+		"mlxlink_datapath_active",
+		"mlxlink_effective_physical_ber",
+		"mlxlink_link_info",
+		"mlxlink_module_bias_current_amperes",
+		"mlxlink_module_info",
+		"mlxlink_module_rx_power_dbm",
+		"mlxlink_module_temperature_celsius",
+		"mlxlink_module_voltage_volts",
+		"mlxlink_raw_physical_ber_lane",
+		"mlxlink_raw_physical_errors_total",
+	); err != nil {
+		t.Fatalf("unexpected metrics: %v", err)
+	}
+}
+
+// expositionRealCapture is the metric output for the captured MFT 4.34.1
+// response, decoded through the poller.
+const expositionRealCapture = `
+# HELP mlxlink_collector_up Whether the most recent mlxlink poll for this device succeeded.
+# TYPE mlxlink_collector_up gauge
+mlxlink_collector_up{device="mlx5_0",pci_addr="0000:1a:00.0",port="1"} 1
+# HELP mlxlink_datapath_active Optical module datapath state per lane, 1 when active.
+# TYPE mlxlink_datapath_active gauge
+mlxlink_datapath_active{device="mlx5_0",lane="0",pci_addr="0000:1a:00.0",port="1"} 1
+mlxlink_datapath_active{device="mlx5_0",lane="1",pci_addr="0000:1a:00.0",port="1"} 1
+mlxlink_datapath_active{device="mlx5_0",lane="2",pci_addr="0000:1a:00.0",port="1"} 1
+mlxlink_datapath_active{device="mlx5_0",lane="3",pci_addr="0000:1a:00.0",port="1"} 1
+# HELP mlxlink_effective_physical_ber Effective physical bit error ratio reported by mlxlink.
+# TYPE mlxlink_effective_physical_ber gauge
+mlxlink_effective_physical_ber{device="mlx5_0",pci_addr="0000:1a:00.0",port="1"} 1.5e-254
+# HELP mlxlink_link_info Physical link attributes reported by mlxlink, exported as labels with a constant value of 1.
+# TYPE mlxlink_link_info gauge
+mlxlink_link_info{auto_negotiation="ON",device="mlx5_0",fec="Standard_RS-FEC - (544,514)",pci_addr="0000:1a:00.0",physical_state="ETH_AN_FSM_ENABLE",port="1",speed="400G",state="Active",width="4x"} 1
+# HELP mlxlink_module_bias_current_amperes Optical module laser bias current per lane in amperes.
+# TYPE mlxlink_module_bias_current_amperes gauge
+mlxlink_module_bias_current_amperes{device="mlx5_0",lane="0",pci_addr="0000:1a:00.0",port="1"} 0.265504
+mlxlink_module_bias_current_amperes{device="mlx5_0",lane="1",pci_addr="0000:1a:00.0",port="1"} 0.265504
+mlxlink_module_bias_current_amperes{device="mlx5_0",lane="2",pci_addr="0000:1a:00.0",port="1"} 0.248416
+mlxlink_module_bias_current_amperes{device="mlx5_0",lane="3",pci_addr="0000:1a:00.0",port="1"} 0.248416
+# HELP mlxlink_module_info Optical module inventory reported by mlxlink, exported as labels with a constant value of 1.
+# TYPE mlxlink_module_info gauge
+mlxlink_module_info{active_host_compliance="IB NDR",active_media_compliance="400GBASE-DR4",cable_type="Optical Module (separated)",device="mlx5_0",firmware_version="40.242.17",identifier="OSFP",part_number="OSFP-400G-DR4",pci_addr="0000:1a:00.0",port="1",revision="1A",serial_number="S00XXX000000",vendor="EXAMPLE"} 1
+# HELP mlxlink_module_rx_power_dbm Optical module received power per lane in dBm.
+# TYPE mlxlink_module_rx_power_dbm gauge
+mlxlink_module_rx_power_dbm{device="mlx5_0",lane="0",pci_addr="0000:1a:00.0",port="1"} 3.583
+mlxlink_module_rx_power_dbm{device="mlx5_0",lane="1",pci_addr="0000:1a:00.0",port="1"} 3.253
+mlxlink_module_rx_power_dbm{device="mlx5_0",lane="2",pci_addr="0000:1a:00.0",port="1"} 3.233
+mlxlink_module_rx_power_dbm{device="mlx5_0",lane="3",pci_addr="0000:1a:00.0",port="1"} 2.658
+# HELP mlxlink_module_temperature_celsius Optical module temperature in degrees Celsius.
+# TYPE mlxlink_module_temperature_celsius gauge
+mlxlink_module_temperature_celsius{device="mlx5_0",pci_addr="0000:1a:00.0",port="1"} 61
+# HELP mlxlink_module_voltage_volts Optical module supply voltage in volts.
+# TYPE mlxlink_module_voltage_volts gauge
+mlxlink_module_voltage_volts{device="mlx5_0",pci_addr="0000:1a:00.0",port="1"} 3.2355
+# HELP mlxlink_raw_physical_ber_lane Raw physical bit error ratio per lane reported by mlxlink.
+# TYPE mlxlink_raw_physical_ber_lane gauge
+mlxlink_raw_physical_ber_lane{device="mlx5_0",lane="0",pci_addr="0000:1a:00.0",port="1"} 1e-10
+mlxlink_raw_physical_ber_lane{device="mlx5_0",lane="1",pci_addr="0000:1a:00.0",port="1"} 1e-09
+mlxlink_raw_physical_ber_lane{device="mlx5_0",lane="2",pci_addr="0000:1a:00.0",port="1"} 4e-10
+mlxlink_raw_physical_ber_lane{device="mlx5_0",lane="3",pci_addr="0000:1a:00.0",port="1"} 5e-10
+# HELP mlxlink_raw_physical_errors_total Raw physical errors per lane reported by mlxlink. mlxlink counters can be cleared by other tooling, so this counter may reset.
+# TYPE mlxlink_raw_physical_errors_total counter
+mlxlink_raw_physical_errors_total{device="mlx5_0",lane="0",pci_addr="0000:1a:00.0",port="1"} 3.017647e+06
+mlxlink_raw_physical_errors_total{device="mlx5_0",lane="1",pci_addr="0000:1a:00.0",port="1"} 1.5132549e+07
+mlxlink_raw_physical_errors_total{device="mlx5_0",lane="2",pci_addr="0000:1a:00.0",port="1"} 7.368641e+06
+mlxlink_raw_physical_errors_total{device="mlx5_0",lane="3",pci_addr="0000:1a:00.0",port="1"} 9.233545e+06
 `

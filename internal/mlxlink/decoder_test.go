@@ -1,6 +1,8 @@
 package mlxlink
 
 import (
+	"os"
+	"path/filepath"
 	"reflect"
 	"strings"
 	"testing"
@@ -64,29 +66,28 @@ func TestParseFloatSafe_ParsesScalars(t *testing.T) {
 	}
 }
 
-func TestDecode_EmptyObject(t *testing.T) {
-	t.Parallel()
-
-	data, err := Decode([]byte(`{}`))
-	if err != nil {
-		t.Fatalf("Decode returned error: %v", err)
-	}
-	if !reflect.DeepEqual(data, PortData{}) {
-		t.Fatalf("expected empty PortData, got %+v", data)
-	}
-}
-
 func TestDecode_UnknownFieldsIgnored(t *testing.T) {
 	t.Parallel()
 
-	raw := []byte(`{"result":{"output":{"Physical state":"LinkUp","lanes":[1,2,3]}},"status":0}`)
+	// Unknown sections and unknown fields inside a known section are skipped,
+	// and the one field that is understood still decodes.
+	raw := []byte(`{
+		"result": {"output": {
+			"Operational Info": {"State": "Active", "Loopback Mode": "No Loopback"},
+			"Serdes Info": {"anything": {"values": ["1", "2"]}}
+		}},
+		"status": {"code": 0, "message": "success"}
+	}`)
 
 	data, err := Decode(raw)
 	if err != nil {
 		t.Fatalf("Decode returned error: %v", err)
 	}
-	if !reflect.DeepEqual(data, PortData{}) {
-		t.Fatalf("expected empty PortData until the schema is mapped, got %+v", data)
+	if data.Link.State != "Active" {
+		t.Fatalf("expected the known field to decode, got %q", data.Link.State)
+	}
+	if !reflect.DeepEqual(data.Counters, (Counters{})) || !reflect.DeepEqual(data.Module, (Module{})) {
+		t.Fatalf("expected absent sections to stay empty, got %+v", data)
 	}
 }
 
@@ -104,6 +105,11 @@ func TestDecode_MalformedJSON(t *testing.T) {
 		{"top level null", `null`},
 		{"top level string", `"mlxlink"`},
 		{"top level number", `42`},
+		// A response without result.output carries no data at all, which is a
+		// different failure from a section this decoder does not know.
+		{"empty object", `{}`},
+		{"result without output", `{"result":{}}`},
+		{"output is not an object", `{"result":{"output":[]}}`},
 	}
 
 	for _, tt := range tests {
@@ -148,13 +154,402 @@ func TestDecode_DeeplyNestedInput(t *testing.T) {
 	}
 }
 
-func TestFieldAliases_EmptyUntilFixtureArrives(t *testing.T) {
+// mlxlinkFixture reads a captured mlxlink response.
+func mlxlinkFixture(t *testing.T, name string) []byte {
+	t.Helper()
+
+	raw, err := os.ReadFile(filepath.Join("testdata", "mlxlink", name))
+	if err != nil {
+		t.Fatalf("read fixture: %v", err)
+	}
+	return raw
+}
+
+func decodeFixture(t *testing.T, name string) PortData {
+	t.Helper()
+
+	data, err := Decode(mlxlinkFixture(t, name))
+	if err != nil {
+		t.Fatalf("Decode(%s) returned error: %v", name, err)
+	}
+	return data
+}
+
+func lanes(values ...float64) []LaneValue {
+	lanes := make([]LaneValue, 0, len(values))
+	for i, value := range values {
+		lanes = append(lanes, LaneValue{Lane: i, Value: value})
+	}
+	return lanes
+}
+
+// TestDecode_GoldenRealCapture pins every field against the real MFT 4.34.1
+// response. Unit conversions are exact here: dividing the parsed millivolts and
+// milliamperes by 1000 rounds to the same float64 as the decimal literal.
+func TestDecode_GoldenRealCapture(t *testing.T) {
 	t.Parallel()
 
-	// Tripwire: the alias table stays empty until the MFT 4.34.1 fixture lands.
-	// Filling it belongs together with golden tests over testdata/mlxlink/, so
-	// this expectation is meant to be replaced in the same change.
-	if len(fieldAliases) != 0 {
-		t.Fatalf("expected no aliases before the fixture arrives, got %d", len(fieldAliases))
+	got := decodeFixture(t, "mft-4.34.1-400g-dr4.json")
+
+	want := PortData{
+		Link: LinkInfo{
+			State:           "Active",
+			PhysicalState:   "ETH_AN_FSM_ENABLE",
+			Speed:           "400G",
+			Width:           "4x",
+			FEC:             "Standard_RS-FEC - (544,514)",
+			AutoNegotiation: "ON",
+		},
+		Counters: Counters{
+			EffectivePhysicalErrors: Value{Float: 0, Valid: true},
+			LinkDown:                Value{Float: 0, Valid: true},
+			LinkErrorRecovery:       Value{Float: 0, Valid: true},
+			// "15E-255" is 15 * 10^-255, which is 1.5e-254.
+			EffectiveBER: Value{Float: 1.5e-254, Valid: true},
+			RawBER:       Value{Float: 5e-10, Valid: true},
+
+			RawPhysicalErrorsLane: lanes(3017647, 15132549, 7368641, 9233545),
+			RawBERLane:            lanes(1e-10, 1e-9, 4e-10, 5e-10),
+		},
+		Module: Module{
+			// "61 [-10..80]" keeps the reading and drops the range.
+			TemperatureCelsius: Value{Float: 61, Valid: true},
+			// 3235.5 mV / 1000.
+			VoltageVolts: Value{Float: 3.2355, Valid: true},
+			// 265.504 mA and 248.416 mA / 1000.
+			BiasCurrentAmperes: lanes(0.265504, 0.265504, 0.248416, 0.248416),
+			RxPowerDBm:         lanes(3.583, 3.253, 3.233, 2.658),
+			TxPowerDBm:         lanes(2.193, 1.202, 1.708, 1.274),
+
+			ModuleFWFault:   Value{Float: 0, Valid: true},
+			DatapathFWFault: Value{Float: 0, Valid: true},
+
+			TxFault:        lanes(0, 0, 0, 0),
+			TxLOS:          lanes(0, 0, 0, 0),
+			RxLOS:          lanes(0, 0, 0, 0),
+			TxCDRLOL:       lanes(0, 0, 0, 0),
+			RxCDRLOL:       lanes(0, 0, 0, 0),
+			DatapathActive: lanes(1, 1, 1, 1),
+
+			Info: ModuleInfo{
+				Identifier:            "OSFP",
+				Vendor:                "EXAMPLE",
+				PartNumber:            "OSFP-400G-DR4",
+				SerialNumber:          "S00XXX000000",
+				Revision:              "1A",
+				FirmwareVersion:       "40.242.17",
+				ActiveHostCompliance:  "IB NDR",
+				ActiveMediaCompliance: "400GBASE-DR4",
+				CableType:             "Optical Module (separated)",
+			},
+		},
+	}
+
+	if !reflect.DeepEqual(got, want) {
+		t.Fatalf("decoded PortData mismatch\n got: %+v\nwant: %+v", got, want)
+	}
+}
+
+func TestDecode_NotAvailableFields(t *testing.T) {
+	t.Parallel()
+
+	// na-fields.json marks the analog scalars and the BER fields "N/A" and
+	// replaces one lane of the comma separated bias current with "N/A".
+	got := decodeFixture(t, "na-fields.json")
+
+	for name, value := range map[string]Value{
+		"temperature":      got.Module.TemperatureCelsius,
+		"voltage":          got.Module.VoltageVolts,
+		"effective errors": got.Counters.EffectivePhysicalErrors,
+		"effective ber":    got.Counters.EffectiveBER,
+		"raw ber":          got.Counters.RawBER,
+	} {
+		if value.Valid {
+			t.Errorf("expected %s to be unreadable, got %+v", name, value)
+		}
+	}
+	for name, values := range map[string][]LaneValue{
+		"rx power":     got.Module.RxPowerDBm,
+		"tx power":     got.Module.TxPowerDBm,
+		"raw ber lane": got.Counters.RawBERLane,
+		"raw err lane": got.Counters.RawPhysicalErrorsLane,
+	} {
+		if values != nil {
+			t.Errorf("expected %s to have no lanes, got %+v", name, values)
+		}
+	}
+
+	// Only the unreadable lane drops out; its neighbours keep their numbers.
+	wantBias := []LaneValue{
+		{Lane: 0, Value: 0.265504},
+		{Lane: 2, Value: 0.248416},
+		{Lane: 3, Value: 0.248416},
+	}
+	if !reflect.DeepEqual(got.Module.BiasCurrentAmperes, wantBias) {
+		t.Fatalf("expected %+v, got %+v", wantBias, got.Module.BiasCurrentAmperes)
+	}
+
+	// Fields that were left alone still decode.
+	if got.Link.State != "Active" {
+		t.Fatalf("expected the link state to survive, got %q", got.Link.State)
+	}
+	if !reflect.DeepEqual(got.Module.DatapathActive, lanes(1, 1, 1, 1)) {
+		t.Fatalf("expected the datapath lanes to survive, got %+v", got.Module.DatapathActive)
+	}
+}
+
+func TestDecode_LaneCounts(t *testing.T) {
+	t.Parallel()
+
+	tests := []struct {
+		name    string
+		fixture string
+		lanes   int
+		width   string
+	}{
+		// The same capture rewritten to one and to eight lanes, in both the
+		// "values" array and the comma separated form.
+		{"single lane", "lanes-1x.json", 1, "1x"},
+		{"eight lanes", "lanes-8x.json", 8, "8x"},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+
+			got := decodeFixture(t, tt.fixture)
+
+			if got.Link.Width != tt.width {
+				t.Fatalf("expected width %q, got %q", tt.width, got.Link.Width)
+			}
+			for name, values := range map[string][]LaneValue{
+				"bias current": got.Module.BiasCurrentAmperes,
+				"rx power":     got.Module.RxPowerDBm,
+				"tx power":     got.Module.TxPowerDBm,
+				"tx fault":     got.Module.TxFault,
+				"datapath":     got.Module.DatapathActive,
+				"raw ber lane": got.Counters.RawBERLane,
+				"raw err lane": got.Counters.RawPhysicalErrorsLane,
+			} {
+				if len(values) != tt.lanes {
+					t.Errorf("expected %d %s lanes, got %d (%+v)", tt.lanes, name, len(values), values)
+				}
+				for i, value := range values {
+					if value.Lane != i {
+						t.Errorf("expected %s lane numbers to start at 0 and be dense, got %+v", name, values)
+						break
+					}
+				}
+			}
+			// The first lane is the same reading whatever the lane count.
+			if len(got.Module.BiasCurrentAmperes) == 0 {
+				t.Fatalf("expected bias current lanes, got none")
+			}
+			if got := got.Module.BiasCurrentAmperes[0].Value; got != 0.265504 {
+				t.Fatalf("expected lane 0 bias current 0.265504, got %v", got)
+			}
+		})
+	}
+}
+
+func TestDecode_FaultsActive(t *testing.T) {
+	t.Parallel()
+
+	// faults-active.json raises every fault, deactivates the datapath lanes and
+	// takes the link down.
+	got := decodeFixture(t, "faults-active.json")
+
+	if got.Link.State != "Down" || got.Link.PhysicalState != "Disabled" {
+		t.Fatalf("expected a down link, got %+v", got.Link)
+	}
+	if got.Module.ModuleFWFault != (Value{Float: 1, Valid: true}) {
+		t.Fatalf("expected the module fw fault to be raised, got %+v", got.Module.ModuleFWFault)
+	}
+	if got.Module.DatapathFWFault != (Value{Float: 1, Valid: true}) {
+		t.Fatalf("expected the datapath fw fault to be raised, got %+v", got.Module.DatapathFWFault)
+	}
+	for name, values := range map[string][]LaneValue{
+		"tx fault":   got.Module.TxFault,
+		"tx los":     got.Module.TxLOS,
+		"rx los":     got.Module.RxLOS,
+		"tx cdr lol": got.Module.TxCDRLOL,
+		"rx cdr lol": got.Module.RxCDRLOL,
+	} {
+		if !reflect.DeepEqual(values, lanes(1, 1, 1, 1)) {
+			t.Errorf("expected %s raised on every lane, got %+v", name, values)
+		}
+	}
+	// Only DPActivated counts as active, so every other state reads as 0.
+	if !reflect.DeepEqual(got.Module.DatapathActive, lanes(0, 0, 0, 0)) {
+		t.Fatalf("expected no active datapath lane, got %+v", got.Module.DatapathActive)
+	}
+}
+
+func TestDecode_MissingModuleSection(t *testing.T) {
+	t.Parallel()
+
+	// missing-module-section.json drops "Module Info" entirely: the module
+	// values disappear while the link and counters keep working.
+	got := decodeFixture(t, "missing-module-section.json")
+
+	if !reflect.DeepEqual(got.Module, (Module{})) {
+		t.Fatalf("expected no module data, got %+v", got.Module)
+	}
+	if got.Link.State != "Active" || got.Link.Speed != "400G" {
+		t.Fatalf("expected the link section to survive, got %+v", got.Link)
+	}
+	if got.Counters.RawBER != (Value{Float: 5e-10, Valid: true}) {
+		t.Fatalf("expected the counters to survive, got %+v", got.Counters.RawBER)
+	}
+}
+
+func TestDecode_StatusError(t *testing.T) {
+	t.Parallel()
+
+	// status-error.json reports a failure, which must not be read as data even
+	// though the output section is still present.
+	data, err := Decode(mlxlinkFixture(t, "status-error.json"))
+	if err == nil {
+		t.Fatal("expected an error for a non-zero status")
+	}
+	if !strings.Contains(err.Error(), "Failed to open device") {
+		t.Fatalf("expected the mlxlink message to be reported, got %v", err)
+	}
+	if !reflect.DeepEqual(data, PortData{}) {
+		t.Fatalf("expected no data alongside the error, got %+v", data)
+	}
+}
+
+// moduleDocument wraps a handful of Module Info fields in the envelope Decode
+// expects, for anomalies too specific to belong in a captured response.
+func moduleDocument(fields string) []byte {
+	return []byte(`{"result":{"output":{"Module Info":{` + fields + `}}},"status":{"code":0,"message":"success"}}`)
+}
+
+func TestDecode_ScalarFlagsMustBeBinary(t *testing.T) {
+	t.Parallel()
+
+	// These feed 0/1 gauges, so a value outside the contract is dropped rather
+	// than exported verbatim.
+	for _, value := range []string{"2", "-1", "0.0", "N/A", "yes", ""} {
+		data, err := Decode(moduleDocument(`"Module FW Fault":"` + value + `","DataPath FW Fault":"` + value + `"`))
+		if err != nil {
+			t.Fatalf("Decode(%q) returned error: %v", value, err)
+		}
+		if data.Module.ModuleFWFault.Valid || data.Module.DatapathFWFault.Valid {
+			t.Errorf("expected %q to be unreadable, got %+v / %+v",
+				value, data.Module.ModuleFWFault, data.Module.DatapathFWFault)
+		}
+	}
+
+	data, err := Decode(moduleDocument(`"Module FW Fault":"1","DataPath FW Fault":"0"`))
+	if err != nil {
+		t.Fatalf("Decode returned error: %v", err)
+	}
+	if data.Module.ModuleFWFault != (Value{Float: 1, Valid: true}) {
+		t.Fatalf("expected the raised fault, got %+v", data.Module.ModuleFWFault)
+	}
+	if data.Module.DatapathFWFault != (Value{Float: 0, Valid: true}) {
+		t.Fatalf("expected the cleared fault, got %+v", data.Module.DatapathFWFault)
+	}
+}
+
+func TestDecode_LaneFlagFamilyIsAllOrNothing(t *testing.T) {
+	t.Parallel()
+
+	// One unreadable lane drops the family: a sparse family would renumber the
+	// lanes relative to every other per lane family of the same port.
+	data, err := Decode(moduleDocument(`"Tx Fault [per lane]":{"values":["0","N/A","1"]}`))
+	if err != nil {
+		t.Fatalf("Decode returned error: %v", err)
+	}
+	if data.Module.TxFault != nil {
+		t.Fatalf("expected no lanes for a partially unreadable family, got %+v", data.Module.TxFault)
+	}
+
+	data, err = Decode(moduleDocument(`"Tx Fault [per lane]":{"values":["0","1","0"]}`))
+	if err != nil {
+		t.Fatalf("Decode returned error: %v", err)
+	}
+	if !reflect.DeepEqual(data.Module.TxFault, lanes(0, 1, 0)) {
+		t.Fatalf("expected every lane, got %+v", data.Module.TxFault)
+	}
+
+	// A value outside the 0/1 contract is treated the same way.
+	data, err = Decode(moduleDocument(`"Rx LOS [per lane]":{"values":["0","2"]}`))
+	if err != nil {
+		t.Fatalf("Decode returned error: %v", err)
+	}
+	if data.Module.RxLOS != nil {
+		t.Fatalf("expected no lanes for a non binary family, got %+v", data.Module.RxLOS)
+	}
+}
+
+func TestDecode_DatapathStateMatchIsExact(t *testing.T) {
+	t.Parallel()
+
+	// Only the literal state counts: a differently cased spelling is a state
+	// this decoder does not know, not an activation.
+	data, err := Decode(moduleDocument(`"DataPath state [per lane]":{"values":["DPActivated","dpactivated","DPDeactivated"]}`))
+	if err != nil {
+		t.Fatalf("Decode returned error: %v", err)
+	}
+	if !reflect.DeepEqual(data.Module.DatapathActive, lanes(1, 0, 0)) {
+		t.Fatalf("expected only the exact match to be active, got %+v", data.Module.DatapathActive)
+	}
+
+	// A lane without a state makes the family unreadable rather than inactive.
+	data, err = Decode(moduleDocument(`"DataPath state [per lane]":{"values":["DPActivated","N/A"]}`))
+	if err != nil {
+		t.Fatalf("Decode returned error: %v", err)
+	}
+	if data.Module.DatapathActive != nil {
+		t.Fatalf("expected no lanes when a state is unknown, got %+v", data.Module.DatapathActive)
+	}
+}
+
+func TestDecode_StatusErrorOutranksPayloadShape(t *testing.T) {
+	t.Parallel()
+
+	// The payload is the wrong shape, but mlxlink already said why: reporting a
+	// type error here would throw that explanation away.
+	raw := []byte(`{"result":{"output":[]},"status":{"code":7,"message":"device failed"}}`)
+
+	data, err := Decode(raw)
+	if err == nil {
+		t.Fatal("expected an error for a non-zero status")
+	}
+	if !strings.Contains(err.Error(), "device failed") || !strings.Contains(err.Error(), "7") {
+		t.Fatalf("expected the mlxlink status to be reported, got %v", err)
+	}
+	if !reflect.DeepEqual(data, PortData{}) {
+		t.Fatalf("expected no data alongside the error, got %+v", data)
+	}
+}
+
+func TestFieldAliases_CoverEveryCanonicalName(t *testing.T) {
+	t.Parallel()
+
+	// Every canonical name the decoder asks for must have at least one spelling
+	// in the table; a typo here would silently blank a field.
+	canonical := []string{
+		sectionModule, sectionOperational, sectionCounters,
+		fieldState, fieldPhysicalState, fieldSpeed, fieldWidth, fieldFEC, fieldAutoNegotiation,
+		fieldEffectivePhysicalErrors, fieldLinkDown, fieldLinkErrorRecovery,
+		fieldEffectiveBER, fieldRawBER, fieldRawBERPerLane, fieldRawErrorsPerLane,
+		fieldTemperature, fieldVoltage, fieldBiasCurrent, fieldRxPower, fieldTxPower,
+		fieldModuleFWFault, fieldDatapathFWFault, fieldTxFault, fieldTxLOS, fieldRxLOS,
+		fieldTxCDRLOL, fieldRxCDRLOL, fieldDatapathState,
+		fieldIdentifier, fieldVendor, fieldPartNumber, fieldSerialNumber, fieldRevision,
+		fieldFirmwareVersion, fieldActiveHostCompliance, fieldActiveMediaCompliance, fieldCableType,
+	}
+
+	for _, name := range canonical {
+		if len(fieldAliases[name]) == 0 {
+			t.Errorf("canonical name %q has no alias", name)
+		}
+	}
+	if len(fieldAliases) != len(canonical) {
+		t.Errorf("expected %d entries in the alias table, got %d", len(canonical), len(fieldAliases))
 	}
 }

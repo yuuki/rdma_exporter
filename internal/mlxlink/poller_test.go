@@ -36,6 +36,10 @@ func (h *notifyHandler) WithGroup(string) slog.Handler { return h }
 
 const testPollInterval = 30 * time.Second
 
+// minimalMlxlinkJSON is the smallest response Decode accepts. The poller tests
+// exercise sweep mechanics, so an output without any section is enough.
+var minimalMlxlinkJSON = []byte(`{"result":{"output":{}},"status":{"code":0,"message":"success"}}`)
+
 var (
 	targetMlx0 = Target{Device: "mlx5_0", Port: "1", PCIAddr: "0000:1a:00.0", NetDev: "ens1f0np0"}
 	targetMlx1 = Target{Device: "mlx5_1", Port: "1", PCIAddr: "0000:1a:00.1", NetDev: "ens1f1np1"}
@@ -241,7 +245,7 @@ func TestPoller_InitialSweepPopulatesSnapshotsAndReady(t *testing.T) {
 	t.Parallel()
 
 	clk := newFakeClock(1)
-	runner := newFakeRunner([]byte(`{}`))
+	runner := newFakeRunner(minimalMlxlinkJSON)
 	// Discovery deliberately reports the devices out of order.
 	poller := newTestPoller(t, newFakeDiscoverer([]Target{targetMlx1, targetMlx0}), runner, clk)
 
@@ -289,7 +293,7 @@ func TestPoller_ReadyOnlyAfterSnapshotIsPublished(t *testing.T) {
 	t.Parallel()
 
 	clk := newFakeClock(1)
-	runner := newFakeRunner([]byte(`{}`))
+	runner := newFakeRunner(minimalMlxlinkJSON)
 	poller := newTestPoller(t, newFakeDiscoverer([]Target{targetMlx0}), runner, clk)
 
 	ctx := context.Background()
@@ -321,7 +325,7 @@ func TestPoller_PartialSweepStaysVisible(t *testing.T) {
 	t.Parallel()
 
 	clk := newFakeClock(1)
-	runner := newFakeRunner([]byte(`{}`))
+	runner := newFakeRunner(minimalMlxlinkJSON)
 	poller := newTestPoller(t, newFakeDiscoverer([]Target{targetMlx0, targetMlx1}), runner, clk)
 
 	ctx := context.Background()
@@ -360,7 +364,7 @@ func TestPoller_ReaddedDeviceAdoptsNewPCIAddr(t *testing.T) {
 
 	moved := Target{Device: "mlx5_0", Port: "1", PCIAddr: "0000:2b:00.0", NetDev: "ens2f0np0"}
 	clk := newFakeClock(1)
-	runner := newFakeRunner([]byte(`{}`))
+	runner := newFakeRunner(minimalMlxlinkJSON)
 	discovery := newFakeDiscoverer(
 		[]Target{targetMlx0},
 		[]Target{},
@@ -395,7 +399,7 @@ func TestPoller_RunnerErrorKeepsLastSuccessAndCountsReason(t *testing.T) {
 	t.Parallel()
 
 	clk := newFakeClock(1)
-	runner := newFakeRunner([]byte(`{}`))
+	runner := newFakeRunner(minimalMlxlinkJSON)
 	runner.clk, runner.step = clk, 700*time.Millisecond
 	poller := newTestPoller(t, newFakeDiscoverer([]Target{targetMlx0}), runner, clk)
 
@@ -455,7 +459,7 @@ func TestPoller_HotplugAddAndRemove(t *testing.T) {
 	t.Parallel()
 
 	clk := newFakeClock(1)
-	runner := newFakeRunner([]byte(`{}`))
+	runner := newFakeRunner(minimalMlxlinkJSON)
 	discovery := newFakeDiscoverer(
 		[]Target{targetMlx0},
 		[]Target{targetMlx0, targetMlx1},
@@ -483,7 +487,7 @@ func TestPoller_DiscoveryErrorKeepsPreviousSet(t *testing.T) {
 	t.Parallel()
 
 	clk := newFakeClock(1)
-	runner := newFakeRunner([]byte(`{}`))
+	runner := newFakeRunner(minimalMlxlinkJSON)
 	discovery := newFakeDiscoverer([]Target{targetMlx0})
 	poller := newTestPoller(t, discovery, runner, clk)
 
@@ -509,7 +513,7 @@ func TestPoller_OverlappingTickCountsErrors(t *testing.T) {
 	// end of a drain, so driving it through Run could only be synchronised by
 	// coupling the test to the select structure of the sweep loop.
 	clk := newFakeClock(2)
-	runner := newFakeRunner([]byte(`{}`))
+	runner := newFakeRunner(minimalMlxlinkJSON)
 	poller := newTestPoller(t, newFakeDiscoverer([]Target{targetMlx0, targetMlx1}), runner, clk)
 
 	ctx := context.Background()
@@ -569,7 +573,7 @@ func TestPoller_DrainTakesAtMostOneTick(t *testing.T) {
 	t.Parallel()
 
 	clk := newFakeClock(1)
-	runner := newFakeRunner([]byte(`{}`))
+	runner := newFakeRunner(minimalMlxlinkJSON)
 	poller := newTestPoller(t, newFakeDiscoverer([]Target{targetMlx0}), runner, clk)
 
 	ctx := context.Background()
@@ -606,7 +610,7 @@ func TestPoller_DrainCountsPendingRealTicker(t *testing.T) {
 	t.Parallel()
 
 	clk := newFakeClock(1)
-	runner := newFakeRunner([]byte(`{}`))
+	runner := newFakeRunner(minimalMlxlinkJSON)
 	poller := newTestPoller(t, newFakeDiscoverer([]Target{targetMlx0}), runner, clk)
 
 	ctx := context.Background()
@@ -633,7 +637,7 @@ func TestPoller_RunDrainsPendingTicks(t *testing.T) {
 	// second is the backlog that sweep must account for. This pins the wiring
 	// between the sweep loop and the drain.
 	clk := newFakeClock(2)
-	runner := newFakeRunner([]byte(`{}`))
+	runner := newFakeRunner(minimalMlxlinkJSON)
 	warnings := make(chan string, 8)
 	poller := newPoller(newFakeDiscoverer([]Target{targetMlx0}), runner, testPollInterval,
 		slog.New(&notifyHandler{records: warnings}), withClock(clk))
@@ -673,7 +677,7 @@ func TestPoller_OverlappingTickIgnoredDuringShutdown(t *testing.T) {
 	t.Parallel()
 
 	clk := newFakeClock(1)
-	runner := newFakeRunner([]byte(`{}`))
+	runner := newFakeRunner(minimalMlxlinkJSON)
 	poller := newTestPoller(t, newFakeDiscoverer([]Target{targetMlx0}), runner, clk)
 
 	poller.sweep(context.Background())
@@ -693,7 +697,7 @@ func TestPoller_ShutdownDoesNotCountErrors(t *testing.T) {
 	t.Parallel()
 
 	clk := newFakeClock(1)
-	runner := newFakeRunner([]byte(`{}`))
+	runner := newFakeRunner(minimalMlxlinkJSON)
 	poller := newTestPoller(t, newFakeDiscoverer([]Target{targetMlx0, targetMlx1}), runner, clk)
 
 	poller.sweep(context.Background())
@@ -721,7 +725,7 @@ func TestPoller_ContextCancelStopsRun(t *testing.T) {
 	t.Parallel()
 
 	clk := newFakeClock(1)
-	runner := newFakeRunner([]byte(`{}`))
+	runner := newFakeRunner(minimalMlxlinkJSON)
 	poller := newTestPoller(t, newFakeDiscoverer([]Target{targetMlx0}), runner, clk)
 
 	ctx, cancel := context.WithCancel(context.Background())

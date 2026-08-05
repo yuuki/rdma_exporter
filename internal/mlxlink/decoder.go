@@ -9,48 +9,395 @@ import (
 	"strings"
 )
 
-// errNotAnObject reports a document whose top level is not a JSON object, which
-// mlxlink --json never produces.
-var errNotAnObject = errors.New("top level value is not an object")
+// Canonical names used by the mapping below. Every MFT specific spelling lives
+// in fieldAliases, so a renamed key is a one line change there.
+const (
+	sectionModule      = "module_info"
+	sectionOperational = "operational_info"
+	sectionCounters    = "counters_info"
 
-// fieldAliases maps a canonical field name to the mlxlink JSON keys that may
-// carry it. Keeping every alias here makes key renames between MFT releases a
-// one-line change instead of a hunt through the decoder.
+	fieldState           = "state"
+	fieldPhysicalState   = "physical_state"
+	fieldSpeed           = "speed"
+	fieldWidth           = "width"
+	fieldFEC             = "fec"
+	fieldAutoNegotiation = "auto_negotiation"
+
+	fieldEffectivePhysicalErrors = "effective_physical_errors"
+	fieldLinkDown                = "link_down"
+	fieldLinkErrorRecovery       = "link_error_recovery"
+	fieldEffectiveBER            = "effective_ber"
+	fieldRawBER                  = "raw_ber"
+	fieldRawBERPerLane           = "raw_ber_per_lane"
+	fieldRawErrorsPerLane        = "raw_errors_per_lane"
+
+	fieldTemperature     = "temperature"
+	fieldVoltage         = "voltage"
+	fieldBiasCurrent     = "bias_current"
+	fieldRxPower         = "rx_power"
+	fieldTxPower         = "tx_power"
+	fieldModuleFWFault   = "module_fw_fault"
+	fieldDatapathFWFault = "datapath_fw_fault"
+	fieldTxFault         = "tx_fault"
+	fieldTxLOS           = "tx_los"
+	fieldRxLOS           = "rx_los"
+	fieldTxCDRLOL        = "tx_cdr_lol"
+	fieldRxCDRLOL        = "rx_cdr_lol"
+	fieldDatapathState   = "datapath_state"
+
+	fieldIdentifier            = "identifier"
+	fieldVendor                = "vendor"
+	fieldPartNumber            = "part_number"
+	fieldSerialNumber          = "serial_number"
+	fieldRevision              = "revision"
+	fieldFirmwareVersion       = "firmware_version"
+	fieldActiveHostCompliance  = "active_host_compliance"
+	fieldActiveMediaCompliance = "active_media_compliance"
+	fieldCableType             = "cable_type"
+)
+
+// datapathActivated is the per lane state mlxlink reports for a lane that is
+// carrying traffic; every other state counts as inactive.
+const datapathActivated = "DPActivated"
+
+// millisPerUnit converts the milli prefixed units mlxlink reports (mV, mA) into
+// the base units the metrics use.
+const millisPerUnit = 1000
+
+// fieldAliases maps a canonical name to the mlxlink JSON keys that may carry
+// it, section names included. Keys are tried in order, so a newer spelling can
+// be listed first without breaking older MFT releases.
 //
-// The table is intentionally empty: the real keys come from a captured MFT
-// 4.34.1 response (Phase B). Guessing paths before the fixture exists would
-// bake in assumptions nothing can verify.
-var fieldAliases = map[string][]string{}
+// Verified against MFT 4.34.1, see testdata/mlxlink/mft-4.34.1-400g-dr4.json.
+var fieldAliases = map[string][]string{
+	sectionModule:      {"Module Info"},
+	sectionOperational: {"Operational Info"},
+	sectionCounters:    {"Physical Counters and BER Info"},
+
+	fieldState:           {"State"},
+	fieldPhysicalState:   {"Physical state"},
+	fieldSpeed:           {"Speed"},
+	fieldWidth:           {"Width"},
+	fieldFEC:             {"FEC"},
+	fieldAutoNegotiation: {"Auto Negotiation"},
+
+	fieldEffectivePhysicalErrors: {"Effective Physical Errors"},
+	fieldLinkDown:                {"Link Down Counter"},
+	fieldLinkErrorRecovery:       {"Link Error Recovery Counter"},
+	fieldEffectiveBER:            {"Effective Physical BER"},
+	fieldRawBER:                  {"Raw Physical BER"},
+	fieldRawBERPerLane:           {"Raw Physical BER Per Lane"},
+	fieldRawErrorsPerLane:        {"Raw Physical Errors Per Lane"},
+
+	fieldTemperature:     {"Temperature [C]"},
+	fieldVoltage:         {"Voltage [mV]"},
+	fieldBiasCurrent:     {"Bias Current [mA]"},
+	fieldRxPower:         {"Rx Power Current [dBm]"},
+	fieldTxPower:         {"Tx Power Current [dBm]"},
+	fieldModuleFWFault:   {"Module FW Fault"},
+	fieldDatapathFWFault: {"DataPath FW Fault"},
+	fieldTxFault:         {"Tx Fault [per lane]"},
+	fieldTxLOS:           {"Tx LOS [per lane]"},
+	fieldRxLOS:           {"Rx LOS [per lane]"},
+	fieldTxCDRLOL:        {"Tx CDR LOL [per lane]"},
+	fieldRxCDRLOL:        {"Rx CDR LOL [per lane]"},
+	fieldDatapathState:   {"DataPath state [per lane]"},
+
+	fieldIdentifier:   {"Identifier"},
+	fieldVendor:       {"Vendor Name"},
+	fieldPartNumber:   {"Vendor Part Number"},
+	fieldSerialNumber: {"Vendor Serial Number"},
+	fieldRevision:     {"Rev"},
+	// The module firmware. The "Firmware Version" of Tool Information is the
+	// adapter firmware and belongs to a different device.
+	fieldFirmwareVersion:       {"FW Version"},
+	fieldActiveHostCompliance:  {"Active Set Host Compliance Code"},
+	fieldActiveMediaCompliance: {"Active Set Media Compliance Code"},
+	fieldCableType:             {"Cable Type"},
+}
+
+var errNoOutput = errors.New("missing result.output")
+
+// document is the envelope every mlxlink --json response uses. The result stays
+// raw so that the status can be read even when the payload has an unexpected
+// shape: when mlxlink fails, its own message is the useful one.
+type document struct {
+	Result json.RawMessage `json:"result"`
+	Status *struct {
+		Code    int    `json:"code"`
+		Message string `json:"message"`
+	} `json:"status"`
+}
+
+// section is one group of fields under result.output.
+type section map[string]json.RawMessage
 
 // Decode converts raw mlxlink JSON into a PortData.
 //
-// Only document validation is implemented so far. The mlxlink schema (section
-// names, per-lane representation, unit suffixes) is unverified until a real
-// capture lands, and an empty PortData exports nothing rather than exporting
-// guesses.
+// Lane numbers are zero based: a lane number is the index within the reported
+// lane list, for both shapes mlxlink uses (a "values" array and a comma
+// separated string).
+//
+// Only a response that cannot be trusted as a whole fails: malformed JSON, a
+// non-zero status, or a missing result.output. A missing section or field
+// leaves the values it would have filled invalid instead, so one renamed key
+// cannot cost a device every metric. Unknown fields are ignored.
 //
 // The returned error is a plain error on purpose: turning a failure into an
-// ErrorReason is the caller's job, which keeps this package's parsing layer
-// free of metric concerns.
-//
-// Phase B, once the fixture lands:
-//   - fill fieldAliases and add golden tests over testdata/mlxlink/
-//   - add per-lane parsing; its input type depends on whether lanes arrive as
-//     an array or an object, and that shape also settles whether lane numbers
-//     start at 0 or 1
-//   - normalise units (mV to V, mA to A) here, so the collector only ever sees
-//     base units
+// ErrorReason is the caller's job, which keeps this parsing layer free of
+// metric concerns.
 func Decode(raw []byte) (PortData, error) {
-	var root map[string]json.RawMessage
-	if err := json.Unmarshal(raw, &root); err != nil {
+	var doc document
+	if err := json.Unmarshal(raw, &doc); err != nil {
 		return PortData{}, fmt.Errorf("decode mlxlink json: %w", err)
 	}
-	// A top level "null" unmarshals into a nil map without error.
-	if root == nil {
-		return PortData{}, fmt.Errorf("decode mlxlink json: %w", errNotAnObject)
+	// Judged before the payload is even shaped: a failing mlxlink explains
+	// itself here, and losing that message to a type error would leave the
+	// operator with nothing to act on.
+	if doc.Status != nil && doc.Status.Code != 0 {
+		return PortData{}, fmt.Errorf("mlxlink returned status %d: %s", doc.Status.Code, doc.Status.Message)
 	}
 
-	return PortData{}, nil
+	var result struct {
+		Output map[string]json.RawMessage `json:"output"`
+	}
+	if len(doc.Result) > 0 {
+		if err := json.Unmarshal(doc.Result, &result); err != nil {
+			return PortData{}, fmt.Errorf("decode mlxlink json: %w", err)
+		}
+	}
+	if result.Output == nil {
+		return PortData{}, fmt.Errorf("decode mlxlink json: %w", errNoOutput)
+	}
+
+	return PortData{
+		Link:     decodeLink(sectionOf(result.Output, sectionOperational)),
+		Counters: decodeCounters(sectionOf(result.Output, sectionCounters)),
+		Module:   decodeModule(sectionOf(result.Output, sectionModule)),
+	}, nil
+}
+
+func decodeLink(sec section) LinkInfo {
+	return LinkInfo{
+		State:           stringField(sec, fieldState),
+		PhysicalState:   stringField(sec, fieldPhysicalState),
+		Speed:           stringField(sec, fieldSpeed),
+		Width:           stringField(sec, fieldWidth),
+		FEC:             stringField(sec, fieldFEC),
+		AutoNegotiation: stringField(sec, fieldAutoNegotiation),
+	}
+}
+
+func decodeCounters(sec section) Counters {
+	return Counters{
+		EffectivePhysicalErrors: parseFloatSafe(stringField(sec, fieldEffectivePhysicalErrors)),
+		LinkDown:                parseFloatSafe(stringField(sec, fieldLinkDown)),
+		LinkErrorRecovery:       parseFloatSafe(stringField(sec, fieldLinkErrorRecovery)),
+		EffectiveBER:            parseFloatSafe(stringField(sec, fieldEffectiveBER)),
+		RawBER:                  parseFloatSafe(stringField(sec, fieldRawBER)),
+
+		RawPhysicalErrorsLane: laneValues(valuesField(sec, fieldRawErrorsPerLane), 1),
+		RawBERLane:            laneValues(valuesField(sec, fieldRawBERPerLane), 1),
+	}
+}
+
+func decodeModule(sec section) Module {
+	return Module{
+		TemperatureCelsius: parseFloatSafe(stringField(sec, fieldTemperature)),
+		VoltageVolts:       divideValue(parseFloatSafe(stringField(sec, fieldVoltage)), millisPerUnit),
+
+		BiasCurrentAmperes: commaLaneValues(stringField(sec, fieldBiasCurrent), millisPerUnit),
+		RxPowerDBm:         commaLaneValues(stringField(sec, fieldRxPower), 1),
+		TxPowerDBm:         commaLaneValues(stringField(sec, fieldTxPower), 1),
+
+		ModuleFWFault:   parseFlag(stringField(sec, fieldModuleFWFault)),
+		DatapathFWFault: parseFlag(stringField(sec, fieldDatapathFWFault)),
+
+		TxFault:        laneFlags(valuesField(sec, fieldTxFault)),
+		TxLOS:          laneFlags(valuesField(sec, fieldTxLOS)),
+		RxLOS:          laneFlags(valuesField(sec, fieldRxLOS)),
+		TxCDRLOL:       laneFlags(valuesField(sec, fieldTxCDRLOL)),
+		RxCDRLOL:       laneFlags(valuesField(sec, fieldRxCDRLOL)),
+		DatapathActive: laneStates(valuesField(sec, fieldDatapathState), datapathActivated),
+
+		Info: ModuleInfo{
+			Identifier:            stringField(sec, fieldIdentifier),
+			Vendor:                stringField(sec, fieldVendor),
+			PartNumber:            stringField(sec, fieldPartNumber),
+			SerialNumber:          stringField(sec, fieldSerialNumber),
+			Revision:              stringField(sec, fieldRevision),
+			FirmwareVersion:       stringField(sec, fieldFirmwareVersion),
+			ActiveHostCompliance:  stringField(sec, fieldActiveHostCompliance),
+			ActiveMediaCompliance: stringField(sec, fieldActiveMediaCompliance),
+			CableType:             stringField(sec, fieldCableType),
+		},
+	}
+}
+
+// sectionOf resolves a section by its canonical name. A section that is absent
+// or not an object yields a nil section, which reads as all fields missing.
+func sectionOf(output map[string]json.RawMessage, canonical string) section {
+	for _, key := range fieldAliases[canonical] {
+		raw, ok := output[key]
+		if !ok {
+			continue
+		}
+		var sec section
+		if err := json.Unmarshal(raw, &sec); err != nil {
+			return nil
+		}
+		return sec
+	}
+	return nil
+}
+
+func lookupField(sec section, canonical string) (json.RawMessage, bool) {
+	for _, key := range fieldAliases[canonical] {
+		if raw, ok := sec[key]; ok {
+			return raw, true
+		}
+	}
+	return nil, false
+}
+
+// stringField reads a scalar field. A value mlxlink reports as an object (the
+// per lane form) reads as empty here rather than as an error.
+func stringField(sec section, canonical string) string {
+	raw, ok := lookupField(sec, canonical)
+	if !ok {
+		return ""
+	}
+
+	var value string
+	if err := json.Unmarshal(raw, &value); err != nil {
+		return ""
+	}
+	return strings.TrimSpace(value)
+}
+
+// valuesField reads the per lane form, {"values": ["0", "0", ...]}.
+func valuesField(sec section, canonical string) []string {
+	raw, ok := lookupField(sec, canonical)
+	if !ok {
+		return nil
+	}
+
+	var container struct {
+		Values []string `json:"values"`
+	}
+	if err := json.Unmarshal(raw, &container); err != nil {
+		return nil
+	}
+	return container.Values
+}
+
+// laneValues converts per lane readings, using the position in the list as the
+// lane number. Unreadable entries, "N/A" among them, are left out entirely so
+// that lane carries no sample instead of a made up one.
+func laneValues(values []string, divisor float64) []LaneValue {
+	lanes := make([]LaneValue, 0, len(values))
+	for i, value := range values {
+		parsed := parseFloatSafe(value)
+		if !parsed.Valid {
+			continue
+		}
+		lanes = append(lanes, LaneValue{Lane: i, Value: parsed.Float / divisor})
+	}
+	if len(lanes) == 0 {
+		return nil
+	}
+	return lanes
+}
+
+// parseFlag reads a flag field, which mlxlink reports as "0" or "1". Any other
+// text, a number outside that contract included, is unreadable: these feed
+// gauges that may only ever be 0 or 1, and a "2" would be exported verbatim.
+func parseFlag(s string) Value {
+	switch strings.TrimSpace(s) {
+	case "0":
+		return Value{Float: 0, Valid: true}
+	case "1":
+		return Value{Float: 1, Valid: true}
+	default:
+		return Value{}
+	}
+}
+
+// laneFlags reads a per lane 0/1 family, all of it or none of it. Dropping only
+// the unreadable lanes would leave a family whose lane numbers no longer line
+// up with the ones its neighbouring families report.
+func laneFlags(values []string) []LaneValue {
+	if len(values) == 0 {
+		return nil
+	}
+
+	lanes := make([]LaneValue, 0, len(values))
+	for i, value := range values {
+		flag := parseFlag(value)
+		if !flag.Valid {
+			return nil
+		}
+		lanes = append(lanes, LaneValue{Lane: i, Value: flag.Float})
+	}
+	return lanes
+}
+
+// laneStates turns a per lane state into a 0/1 gauge, all of it or none of it.
+// The comparison is exact: only the literal active state reads as active, so a
+// state this decoder has not seen reads as inactive rather than as activity.
+// A lane that carries no state at all makes the family unreadable instead,
+// because "unknown" is not the same claim as "not active".
+func laneStates(values []string, active string) []LaneValue {
+	if len(values) == 0 {
+		return nil
+	}
+
+	lanes := make([]LaneValue, 0, len(values))
+	for i, value := range values {
+		state := strings.TrimSpace(value)
+		if state == "" || strings.EqualFold(state, "n/a") {
+			return nil
+		}
+		flag := 0.0
+		if state == active {
+			flag = 1
+		}
+		lanes = append(lanes, LaneValue{Lane: i, Value: flag})
+	}
+	return lanes
+}
+
+// commaLaneValues reads the comma separated per lane form mlxlink uses for
+// analog measurements, for example "265.504,265.504,248.416,248.416 [40..480]".
+func commaLaneValues(raw string, divisor float64) []LaneValue {
+	trimmed := trimRangeSuffix(raw)
+	if trimmed == "" {
+		return nil
+	}
+	return laneValues(strings.Split(trimmed, ","), divisor)
+}
+
+// trimRangeSuffix removes the bracketed range mlxlink appends to measured
+// values, the " [40..480]" of "265.504,265.504,248.416,248.416 [40..480]".
+func trimRangeSuffix(s string) string {
+	s = strings.TrimSpace(s)
+	if !strings.HasSuffix(s, "]") {
+		return s
+	}
+
+	open := strings.LastIndex(s, "[")
+	if open <= 0 {
+		return s
+	}
+	return strings.TrimSpace(s[:open])
+}
+
+// divideValue applies a unit conversion, keeping an invalid value invalid.
+func divideValue(value Value, divisor float64) Value {
+	if !value.Valid {
+		return Value{}
+	}
+	return Value{Float: value.Float / divisor, Valid: true}
 }
 
 // parseFloatSafe converts an mlxlink scalar into a Value. Anything it cannot
@@ -80,8 +427,8 @@ func parseFloatSafe(s string) Value {
 		return Value{}
 	}
 
-	// mlxlink may append units ("3.3V", "1.5 mW"): read the leading number and
-	// ignore the suffix, which does not change the value.
+	// mlxlink appends units and ranges ("3.3V", "61 [-10..80]"): read the
+	// leading number and ignore the suffix, which does not change the value.
 	prefix, ok := leadingNumber(trimmed)
 	if !ok {
 		return Value{}
