@@ -24,7 +24,7 @@ For details on GitHub Actions status badges, see the [official documentation](ht
 - Optionally enriches RoCEv2 visibility with PFC counters from netdev ethtool stats (Linux only, best effort).
 
 ## Requirements
-- Go 1.25 or newer.
+- Go 1.26.2 or newer.
 - Linux with read access to `/sys/class/infiniband` (for production use).
 
 ## Build
