@@ -28,3 +28,22 @@ func TestRDMAExporterService_ExecStartUsesBuiltInConfiguration(t *testing.T) {
 		t.Errorf("ExecStart = %q, want %q", execStarts[0], want)
 	}
 }
+
+func TestMlxlinkExporterRootOverride_RestoresDefaultCapabilityBoundingSet(t *testing.T) {
+	override, err := os.ReadFile("mlxlink_exporter-root.conf")
+	if err != nil {
+		t.Fatalf("read root override: %v", err)
+	}
+
+	contents := string(override)
+	for _, required := range []string{
+		"[Service]",
+		"User=root",
+		"Group=root",
+		"CapabilityBoundingSet=~",
+	} {
+		if !strings.Contains(contents, required) {
+			t.Errorf("root override does not contain %q", required)
+		}
+	}
+}

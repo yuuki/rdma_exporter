@@ -158,7 +158,14 @@ What `mlxlink` needs differs between hosts: MFT packaging, the ownership of the 
 3. **Grant the smallest thing that fixes it**, in this order:
    1. **Device access**: give the service user read/write access to the device nodes `mlxlink` opens, through group ownership or a udev rule, rather than through capabilities.
    2. **Capabilities**: if a capability is genuinely required, add exactly that one to both `CapabilityBoundingSet=` and `AmbientCapabilities=` in the unit. Keep the set explicit; do not clear the bounding set.
-   3. **`User=root`**: the last resort. If you get here, record why in your configuration management, because it is the largest privilege in this deployment and the metric that justified it is worth keeping.
+   3. **Root override**: if MFT still rejects the service user, install the supplied root-only drop-in. It restores the normal capability bounding set required by the vendor command while preserving the main unit's filesystem hardening:
+      ```bash
+      sudo install -Dm0644 deploy/systemd/mlxlink_exporter-root.conf \
+        /etc/systemd/system/mlxlink_exporter.service.d/root.conf
+      sudo systemctl daemon-reload
+      sudo systemctl restart mlxlink_exporter.service
+      ```
+      Use this only after recording why the unprivileged unit cannot collect on the target.
 
 4. **Re-check after every change**: `mlxlink_collection_errors_total` should stop increasing and `mlxlink_collector_up` should report `1` for each device.
 
