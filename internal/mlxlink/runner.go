@@ -76,6 +76,17 @@ func NewExecRunner(path string, timeout time.Duration, logger *slog.Logger) *Exe
 // not a collection error. Output past maxOutputBytes always fails the run, even
 // when the process then exits successfully, because the buffer is truncated.
 func (r *ExecRunner) Run(ctx context.Context, device string) ([]byte, error) {
+	return r.run(ctx, device, "-m", "-c", "--rx_fec_histogram", "--show_histogram", "--show_serdes_tx")
+}
+
+// RunBaseline executes only the original module and counter queries. The
+// poller uses it to preserve base telemetry when an optional query makes
+// mlxlink exit unsuccessfully.
+func (r *ExecRunner) RunBaseline(ctx context.Context, device string) ([]byte, error) {
+	return r.run(ctx, device, "-m", "-c")
+}
+
+func (r *ExecRunner) run(ctx context.Context, device string, queryArgs ...string) ([]byte, error) {
 	runCtx, cancel := context.WithTimeout(ctx, r.timeout)
 	defer cancel()
 
@@ -83,7 +94,11 @@ func (r *ExecRunner) Run(ctx context.Context, device string) ([]byte, error) {
 	stdout := &limitedBuffer{limit: maxOutputBytes, onExceed: cancel}
 	stderr := &limitedBuffer{limit: maxStderrBytes}
 
-	cmd := exec.CommandContext(runCtx, r.path, "-d", device, "-m", "-c", "--json")
+	args := make([]string, 0, len(queryArgs)+3)
+	args = append(args, "-d", device)
+	args = append(args, queryArgs...)
+	args = append(args, "--json")
+	cmd := exec.CommandContext(runCtx, r.path, args...)
 	// mlxlink formats values per locale; pin to C so parsing stays stable.
 	cmd.Env = append(os.Environ(), "LC_ALL=C")
 	cmd.Stdout = stdout

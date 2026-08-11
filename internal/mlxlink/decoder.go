@@ -5,16 +5,20 @@ import (
 	"errors"
 	"fmt"
 	"math"
+	"sort"
 	"strconv"
 	"strings"
 )
 
-// Canonical names used by the mapping below. Every MFT specific spelling lives
-// in fieldAliases, so a renamed key is a one line change there.
+// Canonical names for base fields and top-level output sections. Their MFT
+// specific spellings live in fieldAliases; structural keys inside the FEC and
+// SerDes sections are validated by their dedicated parsers.
 const (
-	sectionModule      = "module_info"
-	sectionOperational = "operational_info"
-	sectionCounters    = "counters_info"
+	sectionModule       = "module_info"
+	sectionOperational  = "operational_info"
+	sectionCounters     = "counters_info"
+	sectionFECHistogram = "fec_histogram"
+	sectionSerDesTX     = "serdes_tx"
 
 	fieldState           = "state"
 	fieldPhysicalState   = "physical_state"
@@ -64,15 +68,19 @@ const datapathActivated = "DPActivated"
 // the base units the metrics use.
 const millisPerUnit = 1000
 
-// fieldAliases maps a canonical name to the mlxlink JSON keys that may carry
-// it, section names included. Keys are tried in order, so a newer spelling can
-// be listed first without breaking older MFT releases.
+// fieldAliases maps canonical base fields and top-level section names to the
+// mlxlink JSON keys that may carry them. Keys are tried in order, so a newer
+// spelling can be listed first without breaking older MFT releases.
 //
-// Verified against MFT 4.34.1, see testdata/mlxlink/mft-4.34.1-400g-dr4.json.
+// Verified against the MFT 4.34.1 captures in
+// testdata/mlxlink/mft-4.34.1-400g-dr4.json and
+// testdata/mlxlink/mft-4.34.1-400g-fec-serdes.json.
 var fieldAliases = map[string][]string{
-	sectionModule:      {"Module Info"},
-	sectionOperational: {"Operational Info"},
-	sectionCounters:    {"Physical Counters and BER Info"},
+	sectionModule:       {"Module Info"},
+	sectionOperational:  {"Operational Info"},
+	sectionCounters:     {"Physical Counters and BER Info"},
+	sectionFECHistogram: {"Histogram of FEC Errors"},
+	sectionSerDesTX:     {"Serdes Tuning Transmitter Info"},
 
 	fieldState:           {"State"},
 	fieldPhysicalState:   {"Physical state"},
@@ -171,10 +179,216 @@ func Decode(raw []byte) (PortData, error) {
 	}
 
 	return PortData{
-		Link:     decodeLink(sectionOf(result.Output, sectionOperational)),
-		Counters: decodeCounters(sectionOf(result.Output, sectionCounters)),
-		Module:   decodeModule(sectionOf(result.Output, sectionModule)),
+		Link:         decodeLink(sectionOf(result.Output, sectionOperational)),
+		Counters:     decodeCounters(sectionOf(result.Output, sectionCounters)),
+		Module:       decodeModule(sectionOf(result.Output, sectionModule)),
+		FECHistogram: decodeFECHistogram(sectionOf(result.Output, sectionFECHistogram)),
+		SerDesTX:     decodeSerDesTX(sectionOf(result.Output, sectionSerDesTX)),
 	}, nil
+}
+
+func decodeFECHistogram(sec section) []FECHistogramBin {
+	if sec == nil {
+		return nil
+	}
+
+	header, ok := rawValues(sec["Header"])
+	if !ok || len(header) != 2 || header[0] != "Range" || header[1] != "Occurrences" {
+		return nil
+	}
+
+	binsByNumber := make(map[int]FECHistogramBin)
+	for key, raw := range sec {
+		if key == "Header" || !strings.HasPrefix(key, "Bin ") {
+			continue
+		}
+
+		bin, ok := parseNonnegativeInt(strings.TrimPrefix(key, "Bin "))
+		if !ok {
+			return nil
+		}
+		if _, duplicate := binsByNumber[bin]; duplicate {
+			return nil
+		}
+
+		values, ok := rawValues(raw)
+		if !ok || len(values) != 2 {
+			return nil
+		}
+		minimum, maximum, ok := parseFECRange(values[0])
+		if !ok {
+			return nil
+		}
+		occurrences, err := strconv.ParseUint(strings.TrimSpace(values[1]), 10, 64)
+		if err != nil {
+			return nil
+		}
+		binsByNumber[bin] = FECHistogramBin{
+			Bin:           bin,
+			ErrorCountMin: minimum,
+			ErrorCountMax: maximum,
+			Occurrences:   occurrences,
+		}
+	}
+
+	if len(binsByNumber) == 0 {
+		return nil
+	}
+	bins := make([]FECHistogramBin, 0, len(binsByNumber))
+	for _, bin := range binsByNumber {
+		bins = append(bins, bin)
+	}
+	sort.Slice(bins, func(i, j int) bool { return bins[i].Bin < bins[j].Bin })
+	for i, bin := range bins {
+		if bin.Bin != i {
+			return nil
+		}
+	}
+	return bins
+}
+
+func parseFECRange(raw string) (uint64, uint64, bool) {
+	raw = strings.TrimSpace(raw)
+	if len(raw) < 3 || raw[0] != '[' || raw[len(raw)-1] != ']' {
+		return 0, 0, false
+	}
+	parts := strings.Split(raw[1:len(raw)-1], ":")
+	if len(parts) < 1 || len(parts) > 2 {
+		return 0, 0, false
+	}
+	minimum, err := strconv.ParseUint(strings.TrimSpace(parts[0]), 10, 64)
+	if err != nil {
+		return 0, 0, false
+	}
+	maximum := minimum
+	if len(parts) == 2 {
+		maximum, err = strconv.ParseUint(strings.TrimSpace(parts[1]), 10, 64)
+		if err != nil || minimum > maximum {
+			return 0, 0, false
+		}
+	}
+	return minimum, maximum, true
+}
+
+func decodeSerDesTX(sec section) SerDesTX {
+	if sec == nil {
+		return SerDesTX{}
+	}
+
+	parameters, ok := rawValues(sec["Serdes TX parameters"])
+	if !ok || len(parameters) == 0 {
+		return SerDesTX{}
+	}
+	seenParameters := make(map[string]struct{}, len(parameters))
+	for i := range parameters {
+		parameters[i] = strings.TrimSpace(parameters[i])
+		if _, duplicate := seenParameters[parameters[i]]; duplicate {
+			return SerDesTX{}
+		}
+		seenParameters[parameters[i]] = struct{}{}
+	}
+
+	lanes := make(map[int][]string)
+	for key, raw := range sec {
+		if key == "Serdes TX parameters" {
+			continue
+		}
+		if !strings.HasPrefix(key, "Lane ") {
+			continue
+		}
+		lane, ok := parseNonnegativeInt(strings.TrimPrefix(key, "Lane "))
+		if !ok {
+			return SerDesTX{}
+		}
+		if _, duplicate := lanes[lane]; duplicate {
+			return SerDesTX{}
+		}
+		values, ok := rawValues(raw)
+		if !ok || len(values) != len(parameters) {
+			return SerDesTX{}
+		}
+		lanes[lane] = values
+	}
+
+	var decoded SerDesTX
+	for lane, values := range lanes {
+		knownValues := make(map[string]float64)
+		validLane := true
+		for i, parameter := range parameters {
+			if _, known := serDesParameter(parameter); !known {
+				continue
+			}
+			value, err := strconv.ParseFloat(strings.TrimSpace(values[i]), 64)
+			if err != nil || math.IsInf(value, 0) || math.IsNaN(value) {
+				validLane = false
+				break
+			}
+			knownValues[parameter] = value
+		}
+		if !validLane {
+			continue
+		}
+		for parameter, value := range knownValues {
+			tap, _ := serDesParameter(parameter)
+			if parameter == "drv_amp" {
+				decoded.DriveAmplitude = append(decoded.DriveAmplitude, LaneValue{Lane: lane, Value: value})
+				continue
+			}
+			decoded.FIRCoefficients = append(decoded.FIRCoefficients, SerDesFIRCoefficient{
+				Lane: lane, Tap: tap, Value: value,
+			})
+		}
+	}
+	sort.SliceStable(decoded.FIRCoefficients, func(i, j int) bool {
+		if decoded.FIRCoefficients[i].Lane != decoded.FIRCoefficients[j].Lane {
+			return decoded.FIRCoefficients[i].Lane < decoded.FIRCoefficients[j].Lane
+		}
+		return decoded.FIRCoefficients[i].Tap < decoded.FIRCoefficients[j].Tap
+	})
+	sort.SliceStable(decoded.DriveAmplitude, func(i, j int) bool {
+		return decoded.DriveAmplitude[i].Lane < decoded.DriveAmplitude[j].Lane
+	})
+	return decoded
+}
+
+func parseNonnegativeInt(raw string) (int, bool) {
+	value, err := strconv.ParseUint(raw, 10, strconv.IntSize-1)
+	if err != nil {
+		return 0, false
+	}
+	return int(value), true
+}
+
+func serDesParameter(parameter string) (string, bool) {
+	switch parameter {
+	case "fir_pre3":
+		return "pre3", true
+	case "fir_pre2":
+		return "pre2", true
+	case "fir_pre1":
+		return "pre1", true
+	case "fir_main":
+		return "main", true
+	case "fir_post1":
+		return "post1", true
+	case "drv_amp":
+		return "", true
+	default:
+		return "", false
+	}
+}
+
+func rawValues(raw json.RawMessage) ([]string, bool) {
+	if len(raw) == 0 {
+		return nil, false
+	}
+	var container struct {
+		Values []string `json:"values"`
+	}
+	if err := json.Unmarshal(raw, &container); err != nil || container.Values == nil {
+		return nil, false
+	}
+	return container.Values, true
 }
 
 func decodeLink(sec section) LinkInfo {

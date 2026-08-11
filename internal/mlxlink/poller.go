@@ -45,6 +45,7 @@ type discoverer interface {
 
 type commandRunner interface {
 	Run(ctx context.Context, device string) ([]byte, error)
+	RunBaseline(ctx context.Context, device string) ([]byte, error)
 }
 
 // DeviceSnapshot is the last known state of one device. Data and LastSuccess
@@ -130,7 +131,7 @@ func newPoller(discovery discoverer, runner commandRunner, interval time.Duratio
 		logger:    logger,
 		errors: prometheus.NewCounterVec(prometheus.CounterOpts{
 			Name: "mlxlink_collection_errors_total",
-			Help: "Total number of failed mlxlink collection attempts, by failure reason.",
+			Help: "Total number of mlxlink query and decode errors, plus skipped overlapping sweeps, by reason.",
 		}, []string{"device", "port", "pci_addr", "reason"}),
 	}
 	for _, opt := range opts {
@@ -284,6 +285,9 @@ func (p *Poller) collect(ctx context.Context, target Target, previous *snapshotS
 		if ctx.Err() != nil {
 			return DeviceSnapshot{}, false
 		}
+		if ReasonFromError(err) == ReasonExitError {
+			return p.collectBaseline(ctx, target, snapshot, start)
+		}
 		p.recordFailure(&snapshot, ReasonFromError(err), err)
 		return snapshot, true
 	}
@@ -303,6 +307,60 @@ func (p *Poller) collect(ctx context.Context, target Target, previous *snapshotS
 	snapshot.LastError = ""
 
 	p.logger.Debug("mlxlink device collected",
+		"device", target.Device, "port", target.Port, "pci_addr", target.PCIAddr,
+		"duration", snapshot.LastDuration)
+	return snapshot, true
+}
+
+// collectBaseline retries the original module and counter query after a
+// combined query exits unsuccessfully. Only exit errors reach this method:
+// failures such as timeouts may affect the baseline query too and must not
+// extend the sweep with another invocation.
+func (p *Poller) collectBaseline(
+	ctx context.Context,
+	target Target,
+	snapshot DeviceSnapshot,
+	start time.Time,
+) (DeviceSnapshot, bool) {
+	if ctx.Err() != nil {
+		return DeviceSnapshot{}, false
+	}
+
+	raw, fallbackErr := p.runner.RunBaseline(ctx, target.Device)
+	now := p.clk.Now()
+	snapshot.LastDuration = now.Sub(start)
+	if ctx.Err() != nil {
+		return DeviceSnapshot{}, false
+	}
+
+	// Account for the rejected combined query only after the fallback attempt
+	// finishes, so cancellation cannot turn shutdown into a collection error.
+	// It is not a collection warning when the baseline query recovers the base
+	// data, and the runner has already logged its detailed cause at debug level.
+	p.countError(target, ReasonExitError)
+	p.logger.Debug("mlxlink combined query required baseline fallback",
+		"device", target.Device, "port", target.Port, "pci_addr", target.PCIAddr,
+		"reason", ReasonExitError.String(), "duration", snapshot.LastDuration)
+	if fallbackErr != nil {
+		p.recordFailure(&snapshot, ReasonFromError(fallbackErr), fallbackErr)
+		return snapshot, true
+	}
+
+	data, err := Decode(raw)
+	if err != nil {
+		p.recordFailure(&snapshot, ReasonInvalidJSON, err)
+		return snapshot, true
+	}
+
+	// A fallback response is authoritative only for the baseline families.
+	// Some mlxlink versions may still include optional sections, but publishing
+	// them would hide that the combined query which requested them failed.
+	data.FECHistogram = nil
+	data.SerDesTX = SerDesTX{}
+	snapshot.Data = data
+	snapshot.LastSuccess = now
+	snapshot.LastError = ""
+	p.logger.Debug("mlxlink device collected with baseline fallback",
 		"device", target.Device, "port", target.Port, "pci_addr", target.PCIAddr,
 		"duration", snapshot.LastDuration)
 	return snapshot, true

@@ -82,9 +82,9 @@ The Go and process collectors from `client_golang` are registered automatically.
 
 ## mlxlink_exporter
 
-This repository also ships a second exporter, `mlxlink_exporter`, which publishes the physical link and optical module telemetry that NVIDIA's `mlxlink` reports: bit error ratios, per-lane raw errors, transceiver diagnostics (temperature, voltage, bias current, optical power) and module inventory.
+This repository also ships a second exporter, `mlxlink_exporter`, which publishes physical link and optical module telemetry that NVIDIA's `mlxlink` reports: bit error ratios, per-lane raw errors, FEC error histograms, SerDes transmitter tuning, transceiver diagnostics (temperature, voltage, bias current, optical power) and module inventory.
 
-It is a separate binary because `mlxlink` is expensive: one invocation costs roughly 0.77 s of wall time, almost all of it fixed firmware-access overhead, which is far too slow to run inside a Prometheus scrape. Instead, a background poller runs `mlxlink -d <device> -m -c --json` once per device per `--poll-interval` and publishes the decoded result into an immutable in-memory snapshot; `/metrics` only reads that snapshot. Scrape frequency therefore has no effect on how often `mlxlink` runs, and the two exporters stay in separate processes so that a firmware hang or an extra privilege never affects `rdma_exporter`.
+It is a separate binary because `mlxlink` is expensive: on the verified MFT 4.34.1 system, the baseline query took 0.77–0.78 s of wall time and most of that cost was fixed firmware-access overhead. The production query, `mlxlink -d <device> -m -c --rx_fec_histogram --show_histogram --show_serdes_tx --json`, took 0.83 s, adding only about 0.05–0.06 s. This is far too slow to run inside a Prometheus scrape, so a background poller runs the production query once per device per `--poll-interval` and publishes the decoded result into an immutable in-memory snapshot; `/metrics` only reads that snapshot. Scrape frequency therefore has no effect on how often `mlxlink` runs, and the two exporters stay in separate processes so that a firmware hang or an extra privilege never affects `rdma_exporter`.
 
 The default listen address is `:9880`.
 
@@ -93,7 +93,7 @@ The default listen address is `:9880`.
 - [NVIDIA MFT](https://network.nvidia.com/products/adapter-software/firmware-tools/) installed, providing the `mlxlink` binary (`--mlxlink-path`, default `/usr/bin/mlxlink`). The exporter exits with status 1 at start-up if that path does not exist.
 - Devices are addressed by their IB device name (`mlxlink -d mlx5_0`), so `mst start` and `/dev/mst/*` device nodes are **not** required.
 - Read access to `/sys/class/infiniband` for device discovery.
-- Verified against MFT 4.34.1 output; the captured response used by the decoder tests is `internal/mlxlink/testdata/mlxlink/mft-4.34.1-400g-dr4.json`.
+- Verified against MFT 4.34.1 output. Decoder tests use the captured baseline response `internal/mlxlink/testdata/mlxlink/mft-4.34.1-400g-dr4.json` and the captured combined-query response `internal/mlxlink/testdata/mlxlink/mft-4.34.1-400g-fec-serdes.json`.
 
 ### Build and run
 ```bash
@@ -107,7 +107,7 @@ make build   # compiles ./rdma_exporter and ./mlxlink_exporter
   --poll-interval=30s
 ```
 
-Recommended settings: keep `--poll-interval=30s` and scrape every 15–30 s. Scraping more often is free, because a scrape never executes `mlxlink`; only `--poll-interval` controls how often the tool runs. A sweep visits every device sequentially, so with N devices one sweep costs about N × 0.8 s.
+Recommended settings: keep `--poll-interval=30s` and scrape every 15–30 s. Scraping more often is free, because a scrape never executes `mlxlink`; only `--poll-interval` controls how often the tool runs. A sweep visits every device sequentially, so with N devices one normal sweep costs about N × 0.83 s on the verified hardware. A baseline fallback after a combined query exits non-zero adds another invocation for the affected device.
 
 To print build information without starting the server, add `--version`.
 
@@ -141,6 +141,13 @@ Physical layer counters:
 - `mlxlink_link_down_total{device,port,pci_addr}` – Link down events.
 - `mlxlink_link_error_recovery_total{device,port,pci_addr}` – Link error recovery events.
 
+FEC histogram counters:
+- `mlxlink_rx_fec_codewords_total{device,port,pci_addr,bin,error_count_min,error_count_max}` – Counter of received FEC codewords in each corrected-error range reported by `mlxlink`. A vendor range `[N]` is exported with equal `error_count_min` and `error_count_max`; `[low:high]` preserves both inclusive bounds. The vendor bins are disjoint, not cumulative Prometheus histogram buckets, so queries must sum the desired ranges explicitly. The histogram can be cleared with `mlxlink --clear_histogram`, which this exporter never invokes, and may also reset with the adapter, hardware or firmware.
+
+SerDes transmitter tuning (gauges with vendor-defined tuning codes; the verified output provides no physical units):
+- `mlxlink_serdes_tx_fir_coefficient{device,port,pci_addr,lane,tap}` – Transmitter FIR coefficient. `tap` is allowlisted to `pre3`, `pre2`, `pre1`, `main` or `post1`; unknown vendor parameters are not exported.
+- `mlxlink_serdes_tx_drive_amplitude{device,port,pci_addr,lane}` – Transmitter drive-amplitude tuning code.
+
 Bit error ratios (gauges, dimensionless):
 - `mlxlink_effective_physical_ber{device,port,pci_addr}` – Effective physical BER.
 - `mlxlink_raw_physical_ber{device,port,pci_addr}` – Raw physical BER.
@@ -165,19 +172,22 @@ Fault and state flags (gauges, `0` or `1`):
 
 Exporter self-monitoring:
 - `mlxlink_collector_up{device,port,pci_addr}` – `1` when the most recent poll of that device succeeded, `0` otherwise.
-- `mlxlink_collection_duration_seconds{device,port,pci_addr}` – Duration of the most recent `mlxlink` invocation.
+- `mlxlink_collection_duration_seconds{device,port,pci_addr}` – Duration of the latest collection attempt, including both invocations when a baseline fallback runs.
 - `mlxlink_collection_last_success_timestamp_seconds{device,port,pci_addr}` – Unix timestamp of the last successful collection. Not published for a device that has never succeeded, so the series never reports 1970.
-- `mlxlink_collection_errors_total{device,port,pci_addr,reason}` – Failed collection attempts. `reason` is one of `timeout`, `command_not_found`, `permission_denied`, `exit_error`, `invalid_json`, `output_too_large`, `overlapping`, `unknown`.
+- `mlxlink_collection_errors_total{device,port,pci_addr,reason}` – Collection failure events, including a combined-query error recovered by baseline fallback and an approximate overlap event. `reason` is one of `timeout`, `command_not_found`, `permission_denied`, `exit_error`, `invalid_json`, `output_too_large`, `overlapping`, `unknown`.
 
 A value that `mlxlink` reports as `N/A` produces no sample at all rather than a zero. For the measurement families (BER, temperature, voltage, bias current, optical power, raw errors) only the affected lane is dropped. The flag families above are all-or-nothing: if any lane of `mlxlink_tx_fault` and friends is unreadable, or reports anything other than `0`/`1`, the whole family is omitted for that port rather than published with renumbered lanes.
 
 ### Operational notes
-- **Counters can be cleared.** `mlxlink` counters live in the adapter firmware and are reset by other tooling (`mlxlink --clear_counters`, firmware resets, link training). `mlxlink` reports how long ago that happened as `Time Since Last Clear [Min]`, which this exporter does not export. `rate()` and `increase()` detect the reset, but a clear inside an evaluation window still hides the errors that preceded it, so treat a sudden return to zero as "counters were cleared", not "errors stopped".
+- **Physical counters can be cleared.** The physical counters live in the adapter firmware and can be reset by other tooling with `mlxlink --clear_counters`, as well as by firmware resets or link training. `mlxlink` reports how long ago that happened as `Time Since Last Clear [Min]`, which this exporter does not export.
+- **The FEC histogram has separate reset semantics.** `mlxlink --clear_histogram` clears the histogram occurrences independently of `--clear_counters`; adapter, hardware or firmware resets may also return them to zero. The exporter invokes neither explicit reset operation, and operators should not run them merely to monitor the link because doing so destroys counter history. `rate()` and `increase()` detect a reset, but a reset inside an evaluation window still hides the errors that preceded it, so treat a sudden return to zero as "the histogram was reset", not "errors stopped".
+- **A non-zero combined query falls back to baseline telemetry.** When the combined query exits non-zero, the poller retries `mlxlink -d <device> -m -c --json`. A successful fallback refreshes the base metrics, omits FEC histogram and SerDes metrics, and reports `mlxlink_collector_up=1`; once the fallback completes without shutdown cancellation, the rejected combined query also increments `mlxlink_collection_errors_total{reason="exit_error"}`. If the fallback fails, the previous snapshot is retained and the normal staleness rules apply. Other combined-query failures, including timeouts, do not trigger the fallback, and shutdown cancellation is not counted.
 - **Stale data is suppressed.** If a device has not been collected successfully for longer than `--poll-interval` × 5 (150 s by default), its measurement series stop being exported while the self-monitoring series continue. This is what distinguishes "the link is fine" from "we stopped being able to ask".
 - **Overlap accounting is approximate.** If a sweep takes longer than `--poll-interval`, the skipped tick is recorded as `mlxlink_collection_errors_total{reason="overlapping"}`. Go tickers coalesce missed ticks, so a sweep that overruns several intervals is still counted once: use the metric to detect that the interval is too short, not to count exactly how many sweeps were lost.
 - **Containers are not supported.** `mlxlink` is part of MFT and talks to the adapter firmware, so it is deliberately absent from the published container images (`dockers` in `.goreleaser.yaml` builds only `rdma_exporter`). Run `mlxlink_exporter` on the host.
 - **Multi-port adapters.** `mlxlink` is invoked once per device without `-p`, so only the lowest port number of a device is collected.
 - **A host with no RDMA devices** stays at `503` on `/readyz` forever, by design: there is nothing to collect. `/healthz` remains `200`.
+- **Eye telemetry is not implemented.** One MFT 4.34.1 observation completed `--show_eye` in 0.33 s and returned FOM and grade fields rather than the previously expected height and phase fields, so a dedicated slow poller is not yet justified. Qualification across additional hardware and output formats is tracked in [Issue #24](https://github.com/yuuki/rdma_exporter/issues/24).
 - Running unprivileged, and how to grant only the privileges your host actually needs, is covered in [docs/deployment.md](docs/deployment.md).
 
 ### Joining with rdma_exporter metrics
