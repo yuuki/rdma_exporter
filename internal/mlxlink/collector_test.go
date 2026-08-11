@@ -26,6 +26,8 @@ var dataMetricNames = []string{
 	"mlxlink_rx_fec_codewords_total",
 	"mlxlink_serdes_tx_fir_coefficient",
 	"mlxlink_serdes_tx_drive_amplitude",
+	"mlxlink_eye_fom",
+	"mlxlink_eye_grade",
 	"mlxlink_effective_physical_errors_total",
 	"mlxlink_raw_physical_errors_total",
 	"mlxlink_link_down_total",
@@ -47,6 +49,46 @@ var dataMetricNames = []string{
 	"mlxlink_rx_cdr_loss_of_lock",
 	"mlxlink_datapath_active",
 	"mlxlink_module_info",
+}
+
+func TestCollector_ExportsNetworkEye(t *testing.T) {
+	t.Parallel()
+
+	data := PortData{Eye: Eye{
+		InitialFOM: []LaneValue{{Lane: 0, Value: 100}, {Lane: 3, Value: 98}},
+		LastFOM:    []LaneValue{{Lane: 0, Value: 107}, {Lane: 3, Value: 101}},
+		UpperGrade: []LaneValue{{Lane: 0, Value: 108}, {Lane: 3, Value: 100}},
+		MidGrade:   []LaneValue{{Lane: 0, Value: 124}, {Lane: 3, Value: 114}},
+		LowerGrade: []LaneValue{{Lane: 0, Value: 106}, {Lane: 3, Value: 95}},
+	}}
+	set := newSnapshotSet([]DeviceSnapshot{{
+		Target:       collectorTarget,
+		Data:         data,
+		LastSuccess:  collectorSuccess,
+		LastDuration: 830 * time.Millisecond,
+	}})
+	collector := newTestCollector(t, set, collectorNow)
+
+	expected := `
+# HELP mlxlink_eye_fom Vendor-defined network Eye figure-of-merit score reported by mlxlink.
+# TYPE mlxlink_eye_fom gauge
+mlxlink_eye_fom{device="mlx5_0",lane="0",pci_addr="0000:1a:00.0",port="1",stage="initial"} 100
+mlxlink_eye_fom{device="mlx5_0",lane="0",pci_addr="0000:1a:00.0",port="1",stage="last"} 107
+mlxlink_eye_fom{device="mlx5_0",lane="3",pci_addr="0000:1a:00.0",port="1",stage="initial"} 98
+mlxlink_eye_fom{device="mlx5_0",lane="3",pci_addr="0000:1a:00.0",port="1",stage="last"} 101
+# HELP mlxlink_eye_grade Vendor-defined network Eye grade reported by mlxlink.
+# TYPE mlxlink_eye_grade gauge
+mlxlink_eye_grade{device="mlx5_0",lane="0",pci_addr="0000:1a:00.0",port="1",position="lower"} 106
+mlxlink_eye_grade{device="mlx5_0",lane="0",pci_addr="0000:1a:00.0",port="1",position="mid"} 124
+mlxlink_eye_grade{device="mlx5_0",lane="0",pci_addr="0000:1a:00.0",port="1",position="upper"} 108
+mlxlink_eye_grade{device="mlx5_0",lane="3",pci_addr="0000:1a:00.0",port="1",position="lower"} 95
+mlxlink_eye_grade{device="mlx5_0",lane="3",pci_addr="0000:1a:00.0",port="1",position="mid"} 114
+mlxlink_eye_grade{device="mlx5_0",lane="3",pci_addr="0000:1a:00.0",port="1",position="upper"} 100
+`
+	if err := testutil.CollectAndCompare(collector, strings.NewReader(expected),
+		"mlxlink_eye_fom", "mlxlink_eye_grade"); err != nil {
+		t.Fatalf("unexpected Eye metrics: %v", err)
+	}
 }
 
 func TestCollector_ExportsFECHistogramAndSerDesTX(t *testing.T) {
@@ -341,7 +383,7 @@ func TestCollector_StaleSuppressesData(t *testing.T) {
 	// touching the self monitoring values: up stays 1 and the timestamp keeps
 	// pointing at that success.
 	expected := `
-# HELP mlxlink_collection_duration_seconds Duration of the latest mlxlink collection attempt, including baseline fallback, for this device in seconds.
+# HELP mlxlink_collection_duration_seconds Duration of the latest mlxlink collection attempt, including all fallback invocations, for this device in seconds.
 # TYPE mlxlink_collection_duration_seconds gauge
 mlxlink_collection_duration_seconds{device="mlx5_0",pci_addr="0000:1a:00.0",port="1"} 0.7
 # HELP mlxlink_collection_last_success_timestamp_seconds Unix timestamp of the most recent successful mlxlink collection for this device.
@@ -376,7 +418,7 @@ func TestCollector_NeverSucceededDevice(t *testing.T) {
 	collector := newTestCollector(t, set, collectorNow)
 
 	expected := `
-# HELP mlxlink_collection_duration_seconds Duration of the latest mlxlink collection attempt, including baseline fallback, for this device in seconds.
+# HELP mlxlink_collection_duration_seconds Duration of the latest mlxlink collection attempt, including all fallback invocations, for this device in seconds.
 # TYPE mlxlink_collection_duration_seconds gauge
 mlxlink_collection_duration_seconds{device="mlx5_0",pci_addr="0000:1a:00.0",port="1"} 0.02
 # HELP mlxlink_collection_last_success_timestamp_seconds Unix timestamp of the most recent successful mlxlink collection for this device.
@@ -488,7 +530,7 @@ func BenchmarkMlxlinkCollectorCollect(b *testing.B) {
 // expositionAllFamilies is the complete output for one device with every
 // field populated across three lanes.
 const expositionAllFamilies = `
-# HELP mlxlink_collection_duration_seconds Duration of the latest mlxlink collection attempt, including baseline fallback, for this device in seconds.
+# HELP mlxlink_collection_duration_seconds Duration of the latest mlxlink collection attempt, including all fallback invocations, for this device in seconds.
 # TYPE mlxlink_collection_duration_seconds gauge
 mlxlink_collection_duration_seconds{device="mlx5_0",pci_addr="0000:1a:00.0",port="1"} 0.7
 # HELP mlxlink_collection_last_success_timestamp_seconds Unix timestamp of the most recent successful mlxlink collection for this device.
@@ -635,6 +677,48 @@ func TestCollectorWithPoller_ExportsRealOptionalCapture(t *testing.T) {
 		if got := testutil.CollectAndCount(collector, tt.name); got != tt.want {
 			t.Errorf("expected %d %s series from real capture, got %d", tt.want, tt.name, got)
 		}
+	}
+}
+
+func TestCollectorWithPoller_ExportsRealEyeCapture(t *testing.T) {
+	t.Parallel()
+
+	clk := newFakeClock(1)
+	runner := newFakeRunner(minimalMlxlinkJSON)
+	runner.setEyeResult(mlxlinkFixture(t, "mft-4.34.1-400g-eye.json"), nil)
+	poller := newPoller(newFakeDiscoverer([]Target{collectorTarget}), runner, testPollInterval,
+		newDiscardLogger(), withClock(clk), WithShowEye(true))
+
+	poller.sweep(context.Background())
+	collector := newCollector(poller, collectorStaleAfter, newDiscardLogger(), WithNow(clk.Now))
+	for _, tt := range []struct {
+		name string
+		want int
+	}{
+		{name: "mlxlink_eye_fom", want: 8},
+		{name: "mlxlink_eye_grade", want: 12},
+		{name: "mlxlink_rx_fec_codewords_total", want: 16},
+		{name: "mlxlink_serdes_tx_fir_coefficient", want: 20},
+	} {
+		if got := testutil.CollectAndCount(collector, tt.name); got != tt.want {
+			t.Errorf("expected %d %s series from real capture, got %d", tt.want, tt.name, got)
+		}
+	}
+}
+
+func TestPCIeEyeCollectorWithPoller_ExportsRealCapture(t *testing.T) {
+	t.Parallel()
+
+	clk := newFakeClock(1)
+	runner := newFakeRunner(minimalMlxlinkJSON)
+	runner.setPCIeEyeResult(mlxlinkFixture(t, "mft-4.34.1-pcie-eye.json"), nil)
+	poller := newPoller(newFakeDiscoverer([]Target{collectorTarget}), runner, testPollInterval,
+		newDiscardLogger(), withClock(clk), WithShowPCIeEye(true))
+
+	poller.sweep(context.Background())
+	collector := newPCIeEyeCollector(poller, collectorStaleAfter, newDiscardLogger(), clk.Now)
+	if got := testutil.CollectAndCount(collector, "mlxlink_pcie_eye_fom"); got != 32 {
+		t.Fatalf("expected 32 PCIe Eye FOM series from real capture, got %d", got)
 	}
 }
 

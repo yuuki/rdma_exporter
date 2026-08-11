@@ -535,6 +535,7 @@ func TestFieldAliases_CoverEveryCanonicalName(t *testing.T) {
 	// in the table; a typo here would silently blank a field.
 	canonical := []string{
 		sectionModule, sectionOperational, sectionCounters, sectionFECHistogram, sectionSerDesTX,
+		sectionEye, sectionPCIeEye,
 		fieldState, fieldPhysicalState, fieldSpeed, fieldWidth, fieldFEC, fieldAutoNegotiation,
 		fieldEffectivePhysicalErrors, fieldLinkDown, fieldLinkErrorRecovery,
 		fieldEffectiveBER, fieldRawBER, fieldRawBERPerLane, fieldRawErrorsPerLane,
@@ -876,5 +877,330 @@ func TestDecode_OptionalSectionsAbsent(t *testing.T) {
 	}
 	if got.FECHistogram != nil || !reflect.DeepEqual(got.SerDesTX, (SerDesTX{})) {
 		t.Fatalf("expected absent optional sections to be empty, got %+v", got)
+	}
+}
+
+func eyeDocument(sectionName, fields string) []byte {
+	return optionalDocument(fmt.Sprintf("%q:{%s}", sectionName, fields))
+}
+
+func TestDecode_GoldenEyeCombinedRealCapture(t *testing.T) {
+	t.Parallel()
+
+	got := decodeFixture(t, "mft-4.34.1-400g-eye.json")
+	want := Eye{
+		InitialFOM: []LaneValue{
+			{Lane: 0, Value: 100},
+			{Lane: 1, Value: 116},
+			{Lane: 2, Value: 87},
+			{Lane: 3, Value: 98},
+		},
+		LastFOM: []LaneValue{
+			{Lane: 0, Value: 107},
+			{Lane: 1, Value: 112},
+			{Lane: 2, Value: 88},
+			{Lane: 3, Value: 101},
+		},
+		UpperGrade: []LaneValue{
+			{Lane: 0, Value: 108},
+			{Lane: 1, Value: 111},
+			{Lane: 2, Value: 85},
+			{Lane: 3, Value: 100},
+		},
+		MidGrade: []LaneValue{
+			{Lane: 0, Value: 124},
+			{Lane: 1, Value: 121},
+			{Lane: 2, Value: 111},
+			{Lane: 3, Value: 114},
+		},
+		LowerGrade: []LaneValue{
+			{Lane: 0, Value: 106},
+			{Lane: 1, Value: 109},
+			{Lane: 2, Value: 91},
+			{Lane: 3, Value: 95},
+		},
+	}
+	if !reflect.DeepEqual(got.Eye, want) {
+		t.Fatalf("unexpected Eye data\n got: %+v\nwant: %+v", got.Eye, want)
+	}
+
+	// One invocation supplies all optional and baseline families. Pinning them
+	// here catches a decoder integration that accidentally trades existing data
+	// for Eye data.
+	if len(got.FECHistogram) != 16 {
+		t.Fatalf("expected 16 FEC bins, got %d", len(got.FECHistogram))
+	}
+	if len(got.SerDesTX.FIRCoefficients) != 20 || len(got.SerDesTX.DriveAmplitude) != 4 {
+		t.Fatalf("unexpected SerDes data: %+v", got.SerDesTX)
+	}
+	if got.Link.State != "Active" || got.Counters.RawBER != (Value{Float: 5e-10, Valid: true}) {
+		t.Fatalf("expected baseline data to survive, got link=%+v counters=%+v", got.Link, got.Counters)
+	}
+	if got.Module.Info.SerialNumber != "<redacted>" {
+		t.Fatalf("expected sanitized serial number, got %q", got.Module.Info.SerialNumber)
+	}
+}
+
+func TestDecodePCIeEye_GoldenRealCapture(t *testing.T) {
+	t.Parallel()
+
+	got, err := DecodePCIeEye(mlxlinkFixture(t, "mft-4.34.1-pcie-eye.json"))
+	if err != nil {
+		t.Fatalf("DecodePCIeEye returned error: %v", err)
+	}
+
+	want := PCIeEye{
+		InitialFOM: lanes(145, 140, 145, 144, 130, 136, 137, 129, 145, 130, 136, 122, 144, 130, 125, 135),
+		LastFOM:    lanes(134, 141, 138, 142, 121, 115, 136, 135, 136, 130, 121, 103, 122, 109, 111, 131),
+	}
+	if !reflect.DeepEqual(got, want) {
+		t.Fatalf("unexpected PCIe Eye data\n got: %+v\nwant: %+v", got, want)
+	}
+}
+
+func TestDecode_EyeLaneNumbersAreExplicitAndSorted(t *testing.T) {
+	t.Parallel()
+
+	raw := eyeDocument("EYE Opening Info", `
+		"FOM Mode":{"values":["future-mode"]},
+		"Lane":{"values":["3","1"]},
+		"Initial FOM":{"values":["30","10"]},
+		"Last FOM":{"values":["31","11"]},
+		"Upper Grades":{"values":["32","12"]},
+		"Mid Grades":{"values":["33","13"]},
+		"Lower Grades":{"values":["34","14"]},
+		"Future Field":{"values":["ignored"]}
+	`)
+	got, err := Decode(raw)
+	if err != nil {
+		t.Fatalf("Decode returned error: %v", err)
+	}
+	want := Eye{
+		InitialFOM: []LaneValue{{Lane: 1, Value: 10}, {Lane: 3, Value: 30}},
+		LastFOM:    []LaneValue{{Lane: 1, Value: 11}, {Lane: 3, Value: 31}},
+		UpperGrade: []LaneValue{{Lane: 1, Value: 12}, {Lane: 3, Value: 32}},
+		MidGrade:   []LaneValue{{Lane: 1, Value: 13}, {Lane: 3, Value: 33}},
+		LowerGrade: []LaneValue{{Lane: 1, Value: 14}, {Lane: 3, Value: 34}},
+	}
+	if !reflect.DeepEqual(got.Eye, want) {
+		t.Fatalf("unexpected sorted Eye data\n got: %+v\nwant: %+v", got.Eye, want)
+	}
+}
+
+func TestDecode_EyeLaneCounts(t *testing.T) {
+	t.Parallel()
+
+	for _, laneCount := range []int{1, 4, 8, 16} {
+		laneCount := laneCount
+		t.Run(fmt.Sprintf("%d lanes", laneCount), func(t *testing.T) {
+			t.Parallel()
+
+			laneNumbers := make([]string, 0, laneCount)
+			initial := make([]string, 0, laneCount)
+			last := make([]string, 0, laneCount)
+			upper := make([]string, 0, laneCount)
+			mid := make([]string, 0, laneCount)
+			lower := make([]string, 0, laneCount)
+			for lane := 0; lane < laneCount; lane++ {
+				laneNumbers = append(laneNumbers, fmt.Sprintf("%q", fmt.Sprint(lane)))
+				initial = append(initial, fmt.Sprintf("%q", fmt.Sprint(100+lane)))
+				last = append(last, fmt.Sprintf("%q", fmt.Sprint(200+lane)))
+				upper = append(upper, fmt.Sprintf("%q", fmt.Sprint(300+lane)))
+				mid = append(mid, fmt.Sprintf("%q", fmt.Sprint(400+lane)))
+				lower = append(lower, fmt.Sprintf("%q", fmt.Sprint(500+lane)))
+			}
+			raw := eyeDocument("EYE Opening Info", fmt.Sprintf(`
+				"Lane":{"values":[%s]},
+				"Initial FOM":{"values":[%s]},
+				"Last FOM":{"values":[%s]},
+				"Upper Grades":{"values":[%s]},
+				"Mid Grades":{"values":[%s]},
+				"Lower Grades":{"values":[%s]}`,
+				strings.Join(laneNumbers, ","), strings.Join(initial, ","), strings.Join(last, ","),
+				strings.Join(upper, ","), strings.Join(mid, ","), strings.Join(lower, ",")))
+			got, err := Decode(raw)
+			if err != nil {
+				t.Fatalf("Decode returned error: %v", err)
+			}
+			for name, values := range map[string][]LaneValue{
+				"initial": got.Eye.InitialFOM,
+				"last":    got.Eye.LastFOM,
+				"upper":   got.Eye.UpperGrade,
+				"mid":     got.Eye.MidGrade,
+				"lower":   got.Eye.LowerGrade,
+			} {
+				if len(values) != laneCount {
+					t.Errorf("expected %d %s lanes, got %+v", laneCount, name, values)
+				}
+			}
+		})
+	}
+}
+
+func TestDecode_EyeInvalidStructureOmitsFamily(t *testing.T) {
+	t.Parallel()
+
+	tests := []struct {
+		name   string
+		fields string
+	}{
+		{
+			name: "missing required values",
+			fields: `"Lane":{"values":["0"]},
+				"Initial FOM":{"values":["1"]},"Last FOM":{"values":["2"]},
+				"Upper Grades":{"values":["3"]},"Mid Grades":{"values":["4"]}`,
+		},
+		{
+			name: "length mismatch",
+			fields: `"Lane":{"values":["0","1"]},
+				"Initial FOM":{"values":["1"]},"Last FOM":{"values":["2","3"]},
+				"Upper Grades":{"values":["4","5"]},"Mid Grades":{"values":["6","7"]},
+				"Lower Grades":{"values":["8","9"]}`,
+		},
+		{
+			name: "duplicate lane",
+			fields: `"Lane":{"values":["0","0"]},
+				"Initial FOM":{"values":["1","2"]},"Last FOM":{"values":["3","4"]},
+				"Upper Grades":{"values":["5","6"]},"Mid Grades":{"values":["7","8"]},
+				"Lower Grades":{"values":["9","10"]}`,
+		},
+		{
+			name: "negative lane",
+			fields: `"Lane":{"values":["-1"]},
+				"Initial FOM":{"values":["1"]},"Last FOM":{"values":["2"]},
+				"Upper Grades":{"values":["3"]},"Mid Grades":{"values":["4"]},
+				"Lower Grades":{"values":["5"]}`,
+		},
+		{
+			name: "overflowing lane",
+			fields: `"Lane":{"values":["18446744073709551615"]},
+				"Initial FOM":{"values":["1"]},"Last FOM":{"values":["2"]},
+				"Upper Grades":{"values":["3"]},"Mid Grades":{"values":["4"]},
+				"Lower Grades":{"values":["5"]}`,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+
+			got, err := Decode(eyeDocument("EYE Opening Info", tt.fields))
+			if err != nil {
+				t.Fatalf("Decode returned error: %v", err)
+			}
+			if !reflect.DeepEqual(got.Eye, (Eye{})) {
+				t.Fatalf("expected invalid Eye family to be empty, got %+v", got.Eye)
+			}
+		})
+	}
+}
+
+func TestDecode_EyeInvalidNumberDropsWholeLane(t *testing.T) {
+	t.Parallel()
+
+	for _, invalid := range []string{"bad", "NaN", "Inf", "-Inf"} {
+		invalid := invalid
+		t.Run(invalid, func(t *testing.T) {
+			t.Parallel()
+
+			raw := eyeDocument("EYE Opening Info", fmt.Sprintf(`
+				"Lane":{"values":["0","1","2"]},
+				"Initial FOM":{"values":["10","11","12"]},
+				"Last FOM":{"values":["20","%s","22"]},
+				"Upper Grades":{"values":["30","31","32"]},
+				"Mid Grades":{"values":["40","41","42"]},
+				"Lower Grades":{"values":["50","51","52"]}`, invalid))
+			got, err := Decode(raw)
+			if err != nil {
+				t.Fatalf("Decode returned error: %v", err)
+			}
+			for name, values := range map[string][]LaneValue{
+				"initial": got.Eye.InitialFOM,
+				"last":    got.Eye.LastFOM,
+				"upper":   got.Eye.UpperGrade,
+				"mid":     got.Eye.MidGrade,
+				"lower":   got.Eye.LowerGrade,
+			} {
+				if len(values) != 2 || values[0].Lane != 0 || values[1].Lane != 2 {
+					t.Errorf("expected %s to omit lane 1, got %+v", name, values)
+				}
+			}
+		})
+	}
+}
+
+func TestDecode_EyeSectionAbsentIsEmpty(t *testing.T) {
+	t.Parallel()
+
+	got, err := Decode(optionalDocument(`"Operational Info":{"State":"Active"}`))
+	if err != nil {
+		t.Fatalf("Decode returned error: %v", err)
+	}
+	if !reflect.DeepEqual(got.Eye, (Eye{})) {
+		t.Fatalf("expected absent Eye section to be empty, got %+v", got.Eye)
+	}
+}
+
+func TestDecodePCIeEye_InvalidStructureAndNumbers(t *testing.T) {
+	t.Parallel()
+
+	t.Run("invalid structure omits family", func(t *testing.T) {
+		t.Parallel()
+
+		got, err := DecodePCIeEye(eyeDocument("EYE Opening Info (PCIe)", `
+			"Lane":{"values":["0","1"]},
+			"Initial FOM":{"values":["1"]},
+			"Last FOM":{"values":["2","3"]}`))
+		if err != nil {
+			t.Fatalf("DecodePCIeEye returned error: %v", err)
+		}
+		if !reflect.DeepEqual(got, (PCIeEye{})) {
+			t.Fatalf("expected invalid PCIe Eye family to be empty, got %+v", got)
+		}
+	})
+
+	t.Run("invalid number omits lane", func(t *testing.T) {
+		t.Parallel()
+
+		got, err := DecodePCIeEye(eyeDocument("EYE Opening Info (PCIe)", `
+			"Lane":{"values":["2","0","1"]},
+			"Initial FOM":{"values":["12","10","NaN"]},
+			"Last FOM":{"values":["22","20","21"]}`))
+		if err != nil {
+			t.Fatalf("DecodePCIeEye returned error: %v", err)
+		}
+		want := PCIeEye{
+			InitialFOM: []LaneValue{{Lane: 0, Value: 10}, {Lane: 2, Value: 12}},
+			LastFOM:    []LaneValue{{Lane: 0, Value: 20}, {Lane: 2, Value: 22}},
+		}
+		if !reflect.DeepEqual(got, want) {
+			t.Fatalf("unexpected PCIe Eye data\n got: %+v\nwant: %+v", got, want)
+		}
+	})
+}
+
+func TestDecodePCIeEye_EnvelopeValidation(t *testing.T) {
+	t.Parallel()
+
+	tests := []struct {
+		name string
+		raw  string
+	}{
+		{name: "malformed json", raw: `{"result":`},
+		{name: "missing output", raw: `{"result":{},"status":{"code":0,"message":"success"}}`},
+		{name: "status failure", raw: `{"result":{"output":{}},"status":{"code":7,"message":"device failed"}}`},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+
+			got, err := DecodePCIeEye([]byte(tt.raw))
+			if err == nil {
+				t.Fatal("expected error")
+			}
+			if !reflect.DeepEqual(got, (PCIeEye{})) {
+				t.Fatalf("expected empty data on error, got %+v", got)
+			}
+		})
 	}
 }

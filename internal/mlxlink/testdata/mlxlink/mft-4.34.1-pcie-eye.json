@@ -1,0 +1,82 @@
+{
+	"result": {
+		"output": {
+			"EYE Opening Info (PCIe)": {
+				"FOM Mode": {
+					"values": [
+						"SLRG_FOM_MODE_EYEC"
+					]
+				},
+				"Initial FOM": {
+					"values": [
+						"145",
+						"140",
+						"145",
+						"144",
+						"130",
+						"136",
+						"137",
+						"129",
+						"145",
+						"130",
+						"136",
+						"122",
+						"144",
+						"130",
+						"125",
+						"135"
+					]
+				},
+				"Lane": {
+					"values": [
+						"0",
+						"1",
+						"2",
+						"3",
+						"4",
+						"5",
+						"6",
+						"7",
+						"8",
+						"9",
+						"10",
+						"11",
+						"12",
+						"13",
+						"14",
+						"15"
+					]
+				},
+				"Last FOM": {
+					"values": [
+						"134",
+						"141",
+						"138",
+						"142",
+						"121",
+						"115",
+						"136",
+						"135",
+						"136",
+						"130",
+						"121",
+						"103",
+						"122",
+						"109",
+						"111",
+						"131"
+					]
+				}
+			},
+			"PCIe Operational (Enabled) Info": {
+				"Depth, pcie index, node": "0, 0, 0",
+				"Link Speed Active (Enabled)": "32G-Gen 5 (32G-Gen 5)",
+				"Link Width Active (Enabled)": "16X (16X)"
+			}
+		}
+	},
+	"status": {
+		"code": 0,
+		"message": "success"
+	}
+}

@@ -1,0 +1,425 @@
+{
+	"result": {
+		"output": {
+			"Histogram of FEC Errors": {
+				"Bin 0": {
+					"values": [
+						"[0]",
+						"26766318661536"
+					]
+				},
+				"Bin 1": {
+					"values": [
+						"[1]",
+						"76439959"
+					]
+				},
+				"Bin 10": {
+					"values": [
+						"[10]",
+						"0"
+					]
+				},
+				"Bin 11": {
+					"values": [
+						"[11]",
+						"0"
+					]
+				},
+				"Bin 12": {
+					"values": [
+						"[12]",
+						"0"
+					]
+				},
+				"Bin 13": {
+					"values": [
+						"[13]",
+						"0"
+					]
+				},
+				"Bin 14": {
+					"values": [
+						"[14]",
+						"0"
+					]
+				},
+				"Bin 15": {
+					"values": [
+						"[15]",
+						"0"
+					]
+				},
+				"Bin 2": {
+					"values": [
+						"[2]",
+						"9232"
+					]
+				},
+				"Bin 3": {
+					"values": [
+						"[3]",
+						"204"
+					]
+				},
+				"Bin 4": {
+					"values": [
+						"[4]",
+						"73"
+					]
+				},
+				"Bin 5": {
+					"values": [
+						"[5]",
+						"2"
+					]
+				},
+				"Bin 6": {
+					"values": [
+						"[6]",
+						"2"
+					]
+				},
+				"Bin 7": {
+					"values": [
+						"[7]",
+						"1"
+					]
+				},
+				"Bin 8": {
+					"values": [
+						"[8]",
+						"3"
+					]
+				},
+				"Bin 9": {
+					"values": [
+						"[9]",
+						"0"
+					]
+				},
+				"Header": {
+					"values": [
+						"Range",
+						"Occurrences"
+					]
+				}
+			},
+			"Module Info": {
+				"Active Set Host Compliance Code": "IB NDR",
+				"Active Set Media Compliance Code": "400GBASE-DR4",
+				"Attenuation (5g,7g,12g,25g)[dB]": "N/A",
+				"Bias Current [mA]": "266.360,266.360,249.272,249.272 [40..480]",
+				"CDR RX": {
+					"values": [
+						"ON",
+						"ON",
+						"ON",
+						"ON"
+					]
+				},
+				"CDR TX": {
+					"values": [
+						"ON",
+						"ON",
+						"ON",
+						"ON"
+					]
+				},
+				"Cable Breakout": "Unspecified",
+				"Cable Rx AMP": "1",
+				"Cable Rx Emphasis (Pre)": "0",
+				"Cable Rx Post Emphasis": "0",
+				"Cable Technology": "1310 nm DFB laser",
+				"Cable Tx Equalization": "0",
+				"Cable Type": "Optical Module (separated)",
+				"Compliance": "IB NDR,400GBASE-DR4",
+				"DataPath FW Fault": "0",
+				"DataPath state [per lane]": {
+					"values": [
+						"DPActivated",
+						"DPActivated",
+						"DPActivated",
+						"DPActivated"
+					]
+				},
+				"Digital Diagnostic Monitoring": "Yes",
+				"Error Code Response": "ConfigUndefined",
+				"FW Version": "40.242.17",
+				"IB Cable Width": "1x,2x,4x",
+				"Identifier": "OSFP",
+				"LOS Alarm": "N/A",
+				"Linear Direct Drive": "0",
+				"MAX Power": "8.0 W max",
+				"Manufacturing Date": "22_03_25",
+				"Memory Map Revision": "64",
+				"Module FW Fault": "0",
+				"Module State": "Ready state",
+				"Nominal bit rate": "N/A",
+				"OUI": "Nvidia",
+				"Power Class": "4 (8.0 W max)",
+				"Rev": "1A",
+				"Rx CDR LOL [per lane]": {
+					"values": [
+						"0",
+						"0",
+						"0",
+						"0"
+					]
+				},
+				"Rx LOS [per lane]": {
+					"values": [
+						"0",
+						"0",
+						"0",
+						"0"
+					]
+				},
+				"Rx Output Valid [per lane]": {
+					"values": [
+						"0",
+						"0",
+						"0",
+						"0"
+					]
+				},
+				"Rx Power Current [dBm]": "3.585,3.259,3.220,2.674 [-9.914..6.999]",
+				"Rx Power Type": "Average power",
+				"SMF Length": "100m",
+				"SNR Host Lanes [dB]": {
+					"values": [
+						"N/A"
+					]
+				},
+				"SNR Media Lanes [dB]": {
+					"values": [
+						"N/A"
+					]
+				},
+				"Temperature [C]": "62 [-10..80]",
+				"Transfer Distance [m]": "0.0",
+				"Tx Adaptive EQ Fault [per lane]": {
+					"values": [
+						"0",
+						"0",
+						"0",
+						"0"
+					]
+				},
+				"Tx CDR LOL [per lane]": {
+					"values": [
+						"0",
+						"0",
+						"0",
+						"0"
+					]
+				},
+				"Tx Fault [per lane]": {
+					"values": [
+						"0",
+						"0",
+						"0",
+						"0"
+					]
+				},
+				"Tx LOS [per lane]": {
+					"values": [
+						"0",
+						"0",
+						"0",
+						"0"
+					]
+				},
+				"Tx Power Current [dBm]": "2.251,1.358,1.714,1.287 [-6.904..6.999]",
+				"Vendor Name": "SAKURA",
+				"Vendor Part Number": "OSFP-400G-DR4",
+				"Vendor Serial Number": "<redacted>",
+				"Voltage [mV]": "3235.5 [2970..3630]",
+				"Wavelength Tolerance": "6.5nm",
+				"Wavelength [nm]": "1311"
+			},
+			"Operational Info": {
+				"Auto Negotiation": "ON",
+				"FEC": "Standard_RS-FEC - (544,514)",
+				"Loopback Mode": "No Loopback",
+				"Physical state": "ETH_AN_FSM_ENABLE",
+				"Speed": "400G",
+				"State": "Active",
+				"Width": "4x"
+			},
+			"Physical Counters and BER Info": {
+				"Effective Physical BER": "15E-255",
+				"Effective Physical Errors": "0",
+				"Link Down Counter": "0",
+				"Link Error Recovery Counter": "0",
+				"Raw Physical BER": "5E-10",
+				"Raw Physical BER Per Lane": {
+					"values": [
+						"1E-10",
+						"1E-9",
+						"5E-10",
+						"5E-10"
+					]
+				},
+				"Raw Physical Errors Per Lane": {
+					"values": [
+						"6473844",
+						"33464964",
+						"16981052",
+						"19539502"
+					]
+				},
+				"Time Since Last Clear [Min]": "5710.4"
+			},
+			"Serdes Tuning Transmitter Info": {
+				"Lane 0": {
+					"values": [
+						"0",
+						"5",
+						"-15",
+						"43",
+						"0",
+						"0"
+					]
+				},
+				"Lane 1": {
+					"values": [
+						"0",
+						"5",
+						"-15",
+						"43",
+						"0",
+						"0"
+					]
+				},
+				"Lane 2": {
+					"values": [
+						"0",
+						"5",
+						"-15",
+						"43",
+						"0",
+						"0"
+					]
+				},
+				"Lane 3": {
+					"values": [
+						"0",
+						"5",
+						"-15",
+						"43",
+						"0",
+						"0"
+					]
+				},
+				"Serdes TX parameters": {
+					"values": [
+						"fir_pre3",
+						"fir_pre2",
+						"fir_pre1",
+						"fir_main",
+						"fir_post1",
+						"drv_amp"
+					]
+				}
+			},
+			"Supported Info": {
+				"Enabled Link Speed (Ext.)": {
+					"mask": "0x0001bff2",
+					"values": [
+						"400G_4X",
+						"400G_8X",
+						"200G_2X",
+						"200G_4X",
+						"100G_1X",
+						"100G_2X",
+						"100G_4X",
+						"50G_1X",
+						"50G_2X",
+						"40G",
+						"25G",
+						"10G",
+						"1G"
+					]
+				},
+				"Supported Cable Speed (Ext.)": {
+					"mask": "0x00012800",
+					"values": [
+						"400G_4X",
+						"200G_2X",
+						"100G_1X"
+					]
+				}
+			},
+			"Tool Information": {
+				"Firmware Version": "28.47.1088",
+				"MFT Version": "4.34.1-10",
+				"amBER Version": "5.75"
+			},
+			"Troubleshooting Info": {
+				"Group Opcode": "N/A",
+				"Recommendation": "No issue was observed",
+				"Status Opcode": "0"
+			},
+			"EYE Opening Info": {
+				"FOM Mode": {
+					"values": [
+						"SLRG_FOM_MODE_EYEO"
+					]
+				},
+				"Initial FOM": {
+					"values": [
+						"100",
+						"116",
+						"87",
+						"98"
+					]
+				},
+				"Lane": {
+					"values": [
+						"0",
+						"1",
+						"2",
+						"3"
+					]
+				},
+				"Last FOM": {
+					"values": [
+						"107",
+						"112",
+						"88",
+						"101"
+					]
+				},
+				"Lower Grades": {
+					"values": [
+						"106",
+						"109",
+						"91",
+						"95"
+					]
+				},
+				"Mid Grades": {
+					"values": [
+						"124",
+						"121",
+						"111",
+						"114"
+					]
+				},
+				"Upper Grades": {
+					"values": [
+						"108",
+						"111",
+						"85",
+						"100"
+					]
+				}
+			}
+		}
+	},
+	"status": {
+		"code": 0,
+		"message": "success"
+	}
+}

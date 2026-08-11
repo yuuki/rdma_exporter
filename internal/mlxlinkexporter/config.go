@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"io"
 	"os"
+	"strconv"
 	"strings"
 	"time"
 
@@ -41,6 +42,8 @@ type Config struct {
 	PollInterval   time.Duration
 	CommandTimeout time.Duration
 	ExcludeDevices []string
+	ShowEye        bool
+	ShowPCIeEye    bool
 	ShowVersion    bool
 }
 
@@ -68,6 +71,16 @@ func Parse(args []string) (Config, error) {
 	mlxlinkPath := fs.String("mlxlink-path", envOrDefault("MLXLINK_EXPORTER_MLXLINK_PATH", defaultMlxlinkPath), "Path to the mlxlink binary.")
 	sysfsRoot := fs.String("sysfs-root", envOrDefault("MLXLINK_EXPORTER_SYSFS_ROOT", defaultSysfsRoot), "Root of the sysfs tree used to discover RDMA devices.")
 	excludeDevices := fs.String("exclude-devices", envOrDefault("MLXLINK_EXPORTER_EXCLUDE_DEVICES", ""), "Comma-separated list of RDMA devices to exclude from monitoring (e.g., mlx5_0,mlx5_1).")
+	showEyeDefault, err := envBoolOrDefault("MLXLINK_EXPORTER_SHOW_EYE", false)
+	if err != nil {
+		return cfg, err
+	}
+	showPCIeEyeDefault, err := envBoolOrDefault("MLXLINK_EXPORTER_SHOW_PCIE_EYE", false)
+	if err != nil {
+		return cfg, err
+	}
+	showEye := fs.Bool("show-eye", showEyeDefault, "Collect network-port Eye telemetry with mlxlink --show_eye.")
+	showPCIeEye := fs.Bool("show-pcie-eye", showPCIeEyeDefault, "Collect root PCIe Eye telemetry with a separate mlxlink query.")
 
 	pollIntervalDefault := defaultPollInterval
 	if envInterval := os.Getenv("MLXLINK_EXPORTER_POLL_INTERVAL"); envInterval != "" {
@@ -125,9 +138,23 @@ func Parse(args []string) (Config, error) {
 		PollInterval:   *pollInterval,
 		CommandTimeout: *commandTimeout,
 		ExcludeDevices: parseDeviceList(*excludeDevices),
+		ShowEye:        *showEye,
+		ShowPCIeEye:    *showPCIeEye,
 		ShowVersion:    *showVersion,
 	}
 	return cfg, nil
+}
+
+func envBoolOrDefault(key string, fallback bool) (bool, error) {
+	value := strings.TrimSpace(os.Getenv(key))
+	if value == "" {
+		return fallback, nil
+	}
+	parsed, err := strconv.ParseBool(value)
+	if err != nil {
+		return false, fmt.Errorf("invalid %s: %w", key, err)
+	}
+	return parsed, nil
 }
 
 func envOrDefault(key, fallback string) string {

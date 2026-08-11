@@ -65,6 +65,8 @@ func main() {
 		"poll_interval", cfg.PollInterval.String(),
 		"command_timeout", cfg.CommandTimeout.String(),
 		"stale_after", cfg.StaleAfter().String(),
+		"show_eye", cfg.ShowEye,
+		"show_pcie_eye", cfg.ShowPCIeEye,
 	)
 	if len(cfg.ExcludeDevices) > 0 {
 		logger.Info("excluding devices from monitoring", "devices", cfg.ExcludeDevices)
@@ -75,16 +77,26 @@ func main() {
 
 	discovery := mlxlink.NewSysfsDiscovery(cfg.SysfsRoot, cfg.ExcludeDevices, logger)
 	runner := mlxlink.NewExecRunner(cfg.MlxlinkPath, cfg.CommandTimeout, logger)
-	poller := mlxlink.NewPoller(discovery, runner, cfg.PollInterval, logger)
+	poller := mlxlink.NewPoller(discovery, runner, cfg.PollInterval, logger,
+		mlxlink.WithShowEye(cfg.ShowEye),
+		mlxlink.WithShowPCIeEye(cfg.ShowPCIeEye),
+	)
 	mlxlinkCollector := mlxlink.NewCollector(poller, cfg.StaleAfter(), logger)
 
 	registry := prometheus.NewRegistry()
-	registry.MustRegister(
+	collectors := []prometheus.Collector{
 		prometheus.NewProcessCollector(prometheus.ProcessCollectorOpts{}),
 		prometheus.NewGoCollector(),
 		mlxlinkCollector,
 		poller.Errors(),
-	)
+	}
+	if cfg.ShowPCIeEye {
+		collectors = append(collectors,
+			mlxlink.NewPCIeEyeCollector(poller, cfg.StaleAfter(), logger),
+			poller.PCIeEyeErrors(),
+		)
+	}
+	registry.MustRegister(collectors...)
 
 	var wg sync.WaitGroup
 	wg.Add(1)

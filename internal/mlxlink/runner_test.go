@@ -75,6 +75,40 @@ func TestExecRunner_PassesArgumentsAndLocale(t *testing.T) {
 	}
 }
 
+func TestExecRunner_RunWithEyePassesArgumentsAndLocale(t *testing.T) {
+	t.Parallel()
+
+	path := writeFakeMlxlink(t, "#!/bin/sh\nprintf '{\"args\":\"%s\",\"lc_all\":\"%s\"}' \"$*\" \"$LC_ALL\"\n")
+	runner := NewExecRunner(path, 5*time.Second, newDiscardLogger())
+
+	out, err := runner.RunWithEye(context.Background(), "mlx5_0")
+	if err != nil {
+		t.Fatalf("RunWithEye returned error: %v", err)
+	}
+
+	want := `{"args":"-d mlx5_0 -m -c --rx_fec_histogram --show_histogram --show_serdes_tx --show_eye --json","lc_all":"C"}`
+	if string(out) != want {
+		t.Fatalf("expected stdout %s, got %s", want, out)
+	}
+}
+
+func TestExecRunner_RunPCIeEyePassesArgumentsAndLocale(t *testing.T) {
+	t.Parallel()
+
+	path := writeFakeMlxlink(t, "#!/bin/sh\nprintf '{\"args\":\"%s\",\"lc_all\":\"%s\"}' \"$*\" \"$LC_ALL\"\n")
+	runner := NewExecRunner(path, 5*time.Second, newDiscardLogger())
+
+	out, err := runner.RunPCIeEye(context.Background(), "mlx5_0")
+	if err != nil {
+		t.Fatalf("RunPCIeEye returned error: %v", err)
+	}
+
+	want := `{"args":"-d mlx5_0 --port_type PCIE --show_eye --json","lc_all":"C"}`
+	if string(out) != want {
+		t.Fatalf("expected stdout %s, got %s", want, out)
+	}
+}
+
 func TestExecRunner_RunBaselinePassesArgumentsAndLocale(t *testing.T) {
 	t.Parallel()
 

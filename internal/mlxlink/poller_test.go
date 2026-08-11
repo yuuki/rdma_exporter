@@ -78,6 +78,10 @@ type fakeRunner struct {
 	mu             sync.Mutex
 	output         []byte
 	err            error
+	eyeOutput      []byte
+	eyeErr         error
+	pcieEyeOutput  []byte
+	pcieEyeErr     error
 	baselineOutput []byte
 	baselineErr    error
 	clk            *fakeClock
@@ -95,9 +99,48 @@ type fakeRunner struct {
 func newFakeRunner(output []byte) *fakeRunner {
 	return &fakeRunner{
 		output:         output,
+		eyeOutput:      output,
+		pcieEyeOutput:  output,
 		baselineOutput: output,
 		done:           make(chan string, 64),
 	}
+}
+
+func (f *fakeRunner) RunWithEye(_ context.Context, device string) ([]byte, error) {
+	f.mu.Lock()
+	output, err := f.eyeOutput, f.eyeErr
+	onCall := f.onCall
+	f.calls = append(f.calls, device)
+	f.callOrder = append(f.callOrder, "eye:"+device)
+	if f.clk != nil {
+		f.clk.advance(f.step)
+	}
+	f.mu.Unlock()
+
+	if onCall != nil {
+		onCall(device)
+	}
+	select {
+	case f.done <- device:
+	default:
+	}
+	return output, err
+}
+
+func (f *fakeRunner) RunPCIeEye(_ context.Context, device string) ([]byte, error) {
+	f.mu.Lock()
+	output, err := f.pcieEyeOutput, f.pcieEyeErr
+	onCall := f.onCall
+	f.callOrder = append(f.callOrder, "pcie_eye:"+device)
+	if f.clk != nil {
+		f.clk.advance(f.step)
+	}
+	f.mu.Unlock()
+
+	if onCall != nil {
+		onCall(device)
+	}
+	return output, err
 }
 
 func (f *fakeRunner) Run(_ context.Context, device string) ([]byte, error) {
@@ -149,6 +192,18 @@ func (f *fakeRunner) setBaselineResult(output []byte, err error) {
 	f.mu.Lock()
 	defer f.mu.Unlock()
 	f.baselineOutput, f.baselineErr = output, err
+}
+
+func (f *fakeRunner) setEyeResult(output []byte, err error) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	f.eyeOutput, f.eyeErr = output, err
+}
+
+func (f *fakeRunner) setPCIeEyeResult(output []byte, err error) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	f.pcieEyeOutput, f.pcieEyeErr = output, err
 }
 
 func (f *fakeRunner) callsMade() ([]string, int) {
@@ -260,12 +315,28 @@ func errorCount(t *testing.T, p *Poller, target Target, reason ErrorReason) floa
 	return testutil.ToFloat64(p.errors.WithLabelValues(target.Device, target.Port, target.PCIAddr, reason.String()))
 }
 
+func pcieEyeErrorCount(t *testing.T, p *Poller, target Target, reason ErrorReason) float64 {
+	t.Helper()
+
+	return testutil.ToFloat64(p.pcieEyeErrors.WithLabelValues(target.Device, target.PCIAddr, reason.String()))
+}
+
 func snapshotFor(t *testing.T, p *Poller, device string) DeviceSnapshot {
 	t.Helper()
 
 	snapshot, ok := p.Snapshots().lookup(device)
 	if !ok {
 		t.Fatalf("expected a snapshot for %s, got %+v", device, p.Snapshots())
+	}
+	return snapshot
+}
+
+func pcieEyeSnapshotFor(t *testing.T, p *Poller, device string) PCIeEyeSnapshot {
+	t.Helper()
+
+	snapshot, ok := p.PCIeEyeSnapshots().lookup(device)
+	if !ok {
+		t.Fatalf("expected a PCIe Eye snapshot for %s, got %+v", device, p.PCIeEyeSnapshots())
 	}
 	return snapshot
 }
@@ -504,6 +575,341 @@ func TestPoller_CombinedSuccessDoesNotRunBaseline(t *testing.T) {
 	}
 	if len(order) != 1 || order[0] != "combined:mlx5_0" {
 		t.Fatalf("expected only the combined query, got %v", order)
+	}
+}
+
+func TestPoller_ShowEyeDisabledClearsUnexpectedEyeSection(t *testing.T) {
+	t.Parallel()
+
+	clk := newFakeClock(1)
+	runner := newFakeRunner(mlxlinkFixture(t, "mft-4.34.1-400g-eye.json"))
+	poller := newTestPoller(t, newFakeDiscoverer([]Target{targetMlx0}), runner, clk)
+
+	snapshot, ok := poller.collect(context.Background(), targetMlx0, nil)
+	if !ok || snapshot.LastError != "" {
+		t.Fatalf("expected normal combined collection to succeed, got %+v", snapshot)
+	}
+	if len(snapshot.Data.Eye.InitialFOM) != 0 || len(snapshot.Data.Eye.LastFOM) != 0 ||
+		len(snapshot.Data.Eye.UpperGrade) != 0 || len(snapshot.Data.Eye.MidGrade) != 0 ||
+		len(snapshot.Data.Eye.LowerGrade) != 0 {
+		t.Fatalf("expected disabled Eye collection to omit Eye data, got %+v", snapshot.Data.Eye)
+	}
+}
+
+func TestPoller_ShowEyeUsesEyeCombinedQuery(t *testing.T) {
+	t.Parallel()
+
+	clk := newFakeClock(1)
+	runner := newFakeRunner(minimalMlxlinkJSON)
+	poller := newPoller(newFakeDiscoverer([]Target{targetMlx0}), runner, testPollInterval,
+		newDiscardLogger(), withClock(clk), WithShowEye(true))
+
+	snapshot, ok := poller.collect(context.Background(), targetMlx0, nil)
+	if !ok || snapshot.LastError != "" {
+		t.Fatalf("expected Eye collection to succeed, got %+v", snapshot)
+	}
+	order, baselineCalls := runner.callsMade()
+	if baselineCalls != 0 || len(order) != 1 || order[0] != "eye:mlx5_0" {
+		t.Fatalf("expected only the Eye combined query, got %v", order)
+	}
+}
+
+func TestPoller_EyeExitErrorFallsBackToCombined(t *testing.T) {
+	t.Parallel()
+
+	clk := newFakeClock(1)
+	// The fallback contract, not the response shape, decides whether Eye is
+	// authoritative. Ignore an Eye section returned without requesting it.
+	runner := newFakeRunner(mlxlinkFixture(t, "mft-4.34.1-400g-eye.json"))
+	runner.clk, runner.step = clk, 300*time.Millisecond
+	runner.setEyeResult(nil, &RunError{Reason: ReasonExitError, Err: errors.New("Eye unsupported")})
+	poller := newPoller(newFakeDiscoverer([]Target{targetMlx0}), runner, testPollInterval,
+		newDiscardLogger(), withClock(clk), WithShowEye(true))
+
+	snapshot, ok := poller.collect(context.Background(), targetMlx0, nil)
+	if !ok || snapshot.LastError != "" {
+		t.Fatalf("expected combined fallback to succeed, got %+v", snapshot)
+	}
+	if snapshot.LastDuration != 600*time.Millisecond {
+		t.Fatalf("expected duration across Eye and combined queries, got %v", snapshot.LastDuration)
+	}
+	if len(snapshot.Data.Eye.InitialFOM) != 0 || len(snapshot.Data.Eye.UpperGrade) != 0 {
+		t.Fatalf("expected no-Eye fallback to clear Eye data, got %+v", snapshot.Data.Eye)
+	}
+	if got := errorCount(t, poller, targetMlx0, ReasonExitError); got != 1 {
+		t.Fatalf("expected one rejected Eye query, got %v", got)
+	}
+	order, baselineCalls := runner.callsMade()
+	if baselineCalls != 0 || len(order) != 2 || order[0] != "eye:mlx5_0" || order[1] != "combined:mlx5_0" {
+		t.Fatalf("expected Eye then combined queries, got %v", order)
+	}
+}
+
+func TestPoller_EyeAndCombinedExitErrorsFallBackToBaseline(t *testing.T) {
+	t.Parallel()
+
+	clk := newFakeClock(1)
+	runner := newFakeRunner(nil)
+	runner.clk, runner.step = clk, 250*time.Millisecond
+	runner.setEyeResult(nil, &RunError{Reason: ReasonExitError, Err: errors.New("Eye unsupported")})
+	runner.setResult(nil, &RunError{Reason: ReasonExitError, Err: errors.New("combined unsupported")})
+	runner.setBaselineResult(minimalMlxlinkJSON, nil)
+	poller := newPoller(newFakeDiscoverer([]Target{targetMlx0}), runner, testPollInterval,
+		newDiscardLogger(), withClock(clk), WithShowEye(true))
+
+	snapshot, ok := poller.collect(context.Background(), targetMlx0, nil)
+	if !ok || snapshot.LastError != "" {
+		t.Fatalf("expected baseline fallback to succeed, got %+v", snapshot)
+	}
+	if snapshot.LastDuration != 750*time.Millisecond {
+		t.Fatalf("expected duration across all three queries, got %v", snapshot.LastDuration)
+	}
+	if got := errorCount(t, poller, targetMlx0, ReasonExitError); got != 2 {
+		t.Fatalf("expected two rejected optional queries, got %v", got)
+	}
+	order, baselineCalls := runner.callsMade()
+	if baselineCalls != 1 || len(order) != 3 || order[0] != "eye:mlx5_0" || order[1] != "combined:mlx5_0" || order[2] != "baseline:mlx5_0" {
+		t.Fatalf("expected Eye, combined, then baseline queries, got %v", order)
+	}
+}
+
+func TestPoller_EyeTimeoutDoesNotFallback(t *testing.T) {
+	t.Parallel()
+
+	clk := newFakeClock(1)
+	runner := newFakeRunner(nil)
+	runner.setEyeResult(nil, &RunError{Reason: ReasonTimeout, Err: context.DeadlineExceeded})
+	poller := newPoller(newFakeDiscoverer([]Target{targetMlx0}), runner, testPollInterval,
+		newDiscardLogger(), withClock(clk), WithShowEye(true))
+
+	snapshot, ok := poller.collect(context.Background(), targetMlx0, nil)
+	if !ok || snapshot.LastError != ReasonTimeout {
+		t.Fatalf("expected timeout failure, got %+v", snapshot)
+	}
+	order, baselineCalls := runner.callsMade()
+	if baselineCalls != 0 || len(order) != 1 || order[0] != "eye:mlx5_0" {
+		t.Fatalf("expected no fallback after timeout, got %v", order)
+	}
+}
+
+func TestPoller_CancellationAfterSuccessfulEyeRunDoesNotPublishOrCount(t *testing.T) {
+	t.Parallel()
+
+	clk := newFakeClock(1)
+	runner := newFakeRunner(minimalMlxlinkJSON)
+	poller := newPoller(newFakeDiscoverer([]Target{targetMlx0}), runner, testPollInterval,
+		newDiscardLogger(), withClock(clk), WithShowEye(true))
+	previousSuccess := clk.Now().Add(-time.Minute)
+	poller.store.Store(newSnapshotSet([]DeviceSnapshot{{
+		Target: targetMlx0, Data: PortData{Link: LinkInfo{State: "previous"}}, LastSuccess: previousSuccess,
+	}}))
+
+	ctx, cancel := context.WithCancel(context.Background())
+	runner.onCall = func(string) { cancel() }
+	poller.sweep(ctx)
+
+	snapshot := snapshotFor(t, poller, targetMlx0.Device)
+	if snapshot.Data.Link.State != "previous" || !snapshot.LastSuccess.Equal(previousSuccess) {
+		t.Fatalf("expected cancellation to preserve the published snapshot, got %+v", snapshot)
+	}
+	if got := testutil.CollectAndCount(poller.errors); got != 0 {
+		t.Fatalf("expected no collection errors during shutdown, got %d series", got)
+	}
+}
+
+func TestPoller_CancellationAfterSuccessfulCombinedFallbackDoesNotPublishOrCount(t *testing.T) {
+	t.Parallel()
+
+	clk := newFakeClock(1)
+	runner := newFakeRunner(minimalMlxlinkJSON)
+	runner.setEyeResult(nil, &RunError{Reason: ReasonExitError, Err: errors.New("Eye unsupported")})
+	poller := newPoller(newFakeDiscoverer([]Target{targetMlx0}), runner, testPollInterval,
+		newDiscardLogger(), withClock(clk), WithShowEye(true))
+	previousSuccess := clk.Now().Add(-time.Minute)
+	poller.store.Store(newSnapshotSet([]DeviceSnapshot{{
+		Target: targetMlx0, Data: PortData{Link: LinkInfo{State: "previous"}}, LastSuccess: previousSuccess,
+	}}))
+
+	ctx, cancel := context.WithCancel(context.Background())
+	calls := 0
+	runner.onCall = func(string) {
+		calls++
+		if calls == 2 {
+			cancel()
+		}
+	}
+	poller.sweep(ctx)
+
+	snapshot := snapshotFor(t, poller, targetMlx0.Device)
+	if snapshot.Data.Link.State != "previous" || !snapshot.LastSuccess.Equal(previousSuccess) {
+		t.Fatalf("expected cancellation to preserve the published snapshot, got %+v", snapshot)
+	}
+	if got := testutil.CollectAndCount(poller.errors); got != 0 {
+		t.Fatalf("expected no collection errors during shutdown, got %d series", got)
+	}
+}
+
+func TestPoller_PCIeEyeDisabledDoesNotRunQuery(t *testing.T) {
+	t.Parallel()
+
+	clk := newFakeClock(1)
+	runner := newFakeRunner(minimalMlxlinkJSON)
+	poller := newTestPoller(t, newFakeDiscoverer([]Target{targetMlx0}), runner, clk)
+
+	poller.sweep(context.Background())
+	order, _ := runner.callsMade()
+	if len(order) != 1 || order[0] != "combined:mlx5_0" {
+		t.Fatalf("expected only the network query, got %v", order)
+	}
+	if poller.PCIeEyeSnapshots() != nil {
+		t.Fatalf("expected no PCIe Eye snapshot when disabled, got %+v", poller.PCIeEyeSnapshots())
+	}
+}
+
+func TestPoller_PCIeEyeRunsAfterAllNetworkQueries(t *testing.T) {
+	t.Parallel()
+
+	clk := newFakeClock(1)
+	runner := newFakeRunner(minimalMlxlinkJSON)
+	poller := newPoller(newFakeDiscoverer([]Target{targetMlx0, targetMlx1}), runner, testPollInterval,
+		newDiscardLogger(), withClock(clk), WithShowPCIeEye(true))
+
+	poller.sweep(context.Background())
+	order, _ := runner.callsMade()
+	want := []string{"combined:mlx5_0", "combined:mlx5_1", "pcie_eye:mlx5_0", "pcie_eye:mlx5_1"}
+	if strings.Join(order, ",") != strings.Join(want, ",") {
+		t.Fatalf("expected network-first collection %v, got %v", want, order)
+	}
+	for _, target := range []Target{targetMlx0, targetMlx1} {
+		snapshot := pcieEyeSnapshotFor(t, poller, target.Device)
+		if snapshot.LastError != "" || snapshot.LastSuccess.IsZero() {
+			t.Fatalf("expected successful PCIe Eye snapshot, got %+v", snapshot)
+		}
+	}
+}
+
+func TestPoller_PCIeEyePartialSweepStaysVisible(t *testing.T) {
+	t.Parallel()
+
+	clk := newFakeClock(1)
+	runner := newFakeRunner(minimalMlxlinkJSON)
+	poller := newPoller(newFakeDiscoverer([]Target{targetMlx0, targetMlx1}), runner, testPollInterval,
+		newDiscardLogger(), withClock(clk), WithShowPCIeEye(true))
+
+	poller.sweep(context.Background())
+	firstSuccess := pcieEyeSnapshotFor(t, poller, targetMlx1.Device).LastSuccess
+
+	clk.advance(time.Minute)
+	var midSweep *pcieEyeSnapshotSet
+	calls := 0
+	runner.mu.Lock()
+	runner.onCall = func(string) {
+		calls++
+		if calls == 4 {
+			midSweep = poller.PCIeEyeSnapshots()
+		}
+	}
+	runner.mu.Unlock()
+
+	poller.sweep(context.Background())
+
+	if midSweep == nil || len(midSweep.devices) != 2 {
+		t.Fatalf("expected both PCIe Eye devices to stay published mid sweep, got %+v", midSweep)
+	}
+	updated, _ := midSweep.lookup(targetMlx0.Device)
+	if !updated.LastSuccess.Equal(clk.Now()) {
+		t.Fatalf("expected the collected PCIe Eye device to be published immediately, got %v", updated.LastSuccess)
+	}
+	pending, _ := midSweep.lookup(targetMlx1.Device)
+	if !pending.LastSuccess.Equal(firstSuccess) {
+		t.Fatalf("expected the pending PCIe Eye device to keep its previous value, got %v", pending.LastSuccess)
+	}
+}
+
+func TestPoller_PCIeEyeFailureDoesNotAffectNetworkSnapshot(t *testing.T) {
+	t.Parallel()
+
+	clk := newFakeClock(1)
+	runner := newFakeRunner(minimalMlxlinkJSON)
+	runner.setPCIeEyeResult(mlxlinkFixture(t, "mft-4.34.1-pcie-eye.json"), nil)
+	poller := newPoller(newFakeDiscoverer([]Target{targetMlx0}), runner, testPollInterval,
+		newDiscardLogger(), withClock(clk), WithShowPCIeEye(true))
+
+	poller.sweep(context.Background())
+	firstNetwork := snapshotFor(t, poller, targetMlx0.Device)
+	firstPCIe := pcieEyeSnapshotFor(t, poller, targetMlx0.Device)
+	if len(firstPCIe.Data.InitialFOM) != 16 {
+		t.Fatalf("expected captured PCIe Eye data, got %+v", firstPCIe.Data)
+	}
+
+	clk.advance(time.Minute)
+	runner.setPCIeEyeResult(nil, &RunError{Reason: ReasonTimeout, Err: context.DeadlineExceeded})
+	poller.sweep(context.Background())
+	secondNetwork := snapshotFor(t, poller, targetMlx0.Device)
+	secondPCIe := pcieEyeSnapshotFor(t, poller, targetMlx0.Device)
+
+	if !secondNetwork.LastSuccess.After(firstNetwork.LastSuccess) || secondNetwork.LastError != "" {
+		t.Fatalf("expected network collection to remain successful, got %+v", secondNetwork)
+	}
+	if secondPCIe.LastError != ReasonTimeout || !secondPCIe.LastSuccess.Equal(firstPCIe.LastSuccess) {
+		t.Fatalf("expected failed PCIe Eye query to retain prior data, got %+v", secondPCIe)
+	}
+	if len(secondPCIe.Data.InitialFOM) != 16 {
+		t.Fatalf("expected previous PCIe Eye data to survive, got %+v", secondPCIe.Data)
+	}
+	if got := pcieEyeErrorCount(t, poller, targetMlx0, ReasonTimeout); got != 1 {
+		t.Fatalf("expected one PCIe Eye timeout, got %v", got)
+	}
+}
+
+func TestPoller_CancellationAfterSuccessfulPCIeEyeRunDoesNotPublishOrCount(t *testing.T) {
+	t.Parallel()
+
+	clk := newFakeClock(1)
+	runner := newFakeRunner(minimalMlxlinkJSON)
+	poller := newPoller(newFakeDiscoverer([]Target{targetMlx0}), runner, testPollInterval,
+		newDiscardLogger(), withClock(clk), WithShowPCIeEye(true))
+	previousSuccess := clk.Now().Add(-time.Minute)
+	poller.pcieEyeStore.Store(newPCIeEyeSnapshotSet([]PCIeEyeSnapshot{{
+		Target:      targetMlx0,
+		Data:        PCIeEye{InitialFOM: []LaneValue{{Lane: 0, Value: 145}}},
+		LastSuccess: previousSuccess,
+	}}))
+
+	ctx, cancel := context.WithCancel(context.Background())
+	calls := 0
+	runner.onCall = func(string) {
+		calls++
+		if calls == 2 {
+			cancel()
+		}
+	}
+	poller.sweep(ctx)
+
+	snapshot := pcieEyeSnapshotFor(t, poller, targetMlx0.Device)
+	if len(snapshot.Data.InitialFOM) != 1 || snapshot.Data.InitialFOM[0].Value != 145 ||
+		!snapshot.LastSuccess.Equal(previousSuccess) {
+		t.Fatalf("expected cancellation to preserve the PCIe Eye snapshot, got %+v", snapshot)
+	}
+	if got := testutil.CollectAndCount(poller.pcieEyeErrors); got != 0 {
+		t.Fatalf("expected no PCIe Eye collection errors during shutdown, got %d series", got)
+	}
+}
+
+func TestPoller_PCIeEyeErrorsHaveIndependentLabels(t *testing.T) {
+	t.Parallel()
+
+	poller := newPoller(newFakeDiscoverer([]Target{targetMlx0}), newFakeRunner(minimalMlxlinkJSON),
+		testPollInterval, newDiscardLogger(), WithShowPCIeEye(true))
+	poller.countPCIeEyeError(targetMlx0, ReasonExitError)
+
+	expected := `
+# HELP mlxlink_pcie_eye_collection_errors_total Total number of PCIe Eye query and decode errors, plus skipped overlapping sweeps, by reason.
+# TYPE mlxlink_pcie_eye_collection_errors_total counter
+mlxlink_pcie_eye_collection_errors_total{device="mlx5_0",pci_addr="0000:1a:00.0",reason="exit_error"} 1
+`
+	if err := testutil.CollectAndCompare(poller.PCIeEyeErrors(), strings.NewReader(expected)); err != nil {
+		t.Fatalf("unexpected PCIe Eye error exposition: %v", err)
 	}
 }
 

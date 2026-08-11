@@ -111,8 +111,12 @@ The image runs as the unprivileged `rdma_exporter` user by default and contains 
    echo 'MLXLINK_EXPORTER_LISTEN_ADDRESS=:9880' | sudo tee -a /etc/mlxlink_exporter.env
    echo 'MLXLINK_EXPORTER_POLL_INTERVAL=30s'    | sudo tee -a /etc/mlxlink_exporter.env
    echo 'MLXLINK_EXPORTER_LOG_LEVEL=info'       | sudo tee -a /etc/mlxlink_exporter.env
+   echo 'MLXLINK_EXPORTER_SHOW_EYE=false'       | sudo tee -a /etc/mlxlink_exporter.env
+   echo 'MLXLINK_EXPORTER_SHOW_PCIE_EYE=false'  | sudo tee -a /etc/mlxlink_exporter.env
    ```
    Every flag except `--version` has a `MLXLINK_EXPORTER_*` counterpart and a built-in default, so an empty file is a valid configuration.
+
+   Both Eye collectors are disabled by default because their latency and output have only been verified on MFT 4.34.1 with one ConnectX-7 system. Set either value to `true` only after running the corresponding command as the service user in "Verify the privileges" below.
 
    All configuration goes in this file rather than in `ExecStart`. systemd does not run `ExecStart` through a shell and expands only `$VAR` and `${VAR}`; shell-style defaults such as `${MLXLINK_EXPORTER_LISTEN_ADDRESS:-:9880}` are not interpreted and would leave the service failing to start. The shipped unit therefore calls the binary with no flags at all.
 
@@ -169,10 +173,20 @@ What `mlxlink` needs differs between hosts: MFT packaging, the ownership of the 
 
 4. **Re-check after every change**: `mlxlink_collection_errors_total` should stop increasing and `mlxlink_collector_up` should report `1` for each device.
 
+5. **Verify optional Eye commands before enabling them**. Run the exact fixed argument vectors as the service user and confirm that each finishes within `MLXLINK_EXPORTER_COMMAND_TIMEOUT` (3 s by default), returns `status.code: 0`, and contains the expected Eye section:
+   ```bash
+   sudo -u mlxlink_exporter /usr/bin/mlxlink -d mlx5_0 -m -c \
+     --rx_fec_histogram --show_histogram --show_serdes_tx --show_eye --json
+   sudo -u mlxlink_exporter /usr/bin/mlxlink -d mlx5_0 \
+     --port_type PCIE --show_eye --json
+   ```
+   After setting `MLXLINK_EXPORTER_SHOW_EYE=true` or `MLXLINK_EXPORTER_SHOW_PCIE_EYE=true` and restarting the service, check the network `mlxlink_eye_*` metrics or the PCIe `mlxlink_pcie_eye_*` metrics respectively. PCIe Eye has its own `mlxlink_pcie_eye_collection_errors_total{device,pci_addr,reason}` and `mlxlink_pcie_eye_collector_up{device,pci_addr}`; a PCIe failure does not change `mlxlink_collector_up`.
+
 ### Operational notes
 
 - **A host with no RDMA devices never becomes ready.** `/readyz` returns `503` for the lifetime of the process because there is nothing to collect, while `/healthz` stays `200`. Use `/healthz` for liveness and `/readyz` only where "has data" is the question you mean to ask.
 - **Scrape interval and poll interval are independent.** A scrape reads a cache, so scraping every 15 s costs nothing extra; `--poll-interval` alone decides how often `mlxlink` runs.
+- **Eye collection is explicitly opt-in.** Network Eye adds `--show_eye` to the network combined query. PCIe Eye runs as a separate low-priority query only after every network device has been collected, so enabling it increases the complete sweep time while keeping `mlxlink` concurrency at one.
 - **Both exporters can run side by side** on the same host (`:9879` and `:9880`) as separate scrape targets. See the join examples in the README before writing queries that combine them.
 
 ## Updating deployment manifests
