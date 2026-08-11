@@ -1,6 +1,7 @@
 package mlxlink
 
 import (
+	"fmt"
 	"os"
 	"path/filepath"
 	"reflect"
@@ -533,7 +534,7 @@ func TestFieldAliases_CoverEveryCanonicalName(t *testing.T) {
 	// Every canonical name the decoder asks for must have at least one spelling
 	// in the table; a typo here would silently blank a field.
 	canonical := []string{
-		sectionModule, sectionOperational, sectionCounters,
+		sectionModule, sectionOperational, sectionCounters, sectionFECHistogram, sectionSerDesTX,
 		fieldState, fieldPhysicalState, fieldSpeed, fieldWidth, fieldFEC, fieldAutoNegotiation,
 		fieldEffectivePhysicalErrors, fieldLinkDown, fieldLinkErrorRecovery,
 		fieldEffectiveBER, fieldRawBER, fieldRawBERPerLane, fieldRawErrorsPerLane,
@@ -551,5 +552,329 @@ func TestFieldAliases_CoverEveryCanonicalName(t *testing.T) {
 	}
 	if len(fieldAliases) != len(canonical) {
 		t.Errorf("expected %d entries in the alias table, got %d", len(canonical), len(fieldAliases))
+	}
+}
+
+func optionalDocument(sections string) []byte {
+	return []byte(`{"result":{"output":{` + sections + `}},"status":{"code":0,"message":"success"}}`)
+}
+
+func TestDecode_GoldenCombinedRealCapture(t *testing.T) {
+	t.Parallel()
+
+	got := decodeFixture(t, "mft-4.34.1-400g-fec-serdes.json")
+
+	if len(got.FECHistogram) != 16 {
+		t.Fatalf("expected 16 FEC bins, got %d (%+v)", len(got.FECHistogram), got.FECHistogram)
+	}
+	if got.FECHistogram[0] != (FECHistogramBin{
+		Bin: 0, ErrorCountMin: 0, ErrorCountMax: 0, Occurrences: 22858119037881,
+	}) {
+		t.Fatalf("unexpected first FEC bin: %+v", got.FECHistogram[0])
+	}
+	if got.FECHistogram[15] != (FECHistogramBin{
+		Bin: 15, ErrorCountMin: 15, ErrorCountMax: 15, Occurrences: 0,
+	}) {
+		t.Fatalf("unexpected last FEC bin: %+v", got.FECHistogram[15])
+	}
+
+	wantFIR := make([]SerDesFIRCoefficient, 0, 20)
+	for lane := 0; lane < 4; lane++ {
+		for _, coefficient := range []struct {
+			tap   string
+			value float64
+		}{
+			{"main", 43},
+			{"post1", 0},
+			{"pre1", -15},
+			{"pre2", 5},
+			{"pre3", 0},
+		} {
+			wantFIR = append(wantFIR, SerDesFIRCoefficient{
+				Lane: lane, Tap: coefficient.tap, Value: coefficient.value,
+			})
+		}
+	}
+	if !reflect.DeepEqual(got.SerDesTX.FIRCoefficients, wantFIR) {
+		t.Fatalf("unexpected SerDes FIR coefficients\n got: %+v\nwant: %+v", got.SerDesTX.FIRCoefficients, wantFIR)
+	}
+	if want := lanes(0, 0, 0, 0); !reflect.DeepEqual(got.SerDesTX.DriveAmplitude, want) {
+		t.Fatalf("unexpected SerDes drive amplitude: %+v", got.SerDesTX.DriveAmplitude)
+	}
+	if got.Module.Info.SerialNumber != "<redacted>" {
+		t.Fatalf("expected sanitized serial number, got %q", got.Module.Info.SerialNumber)
+	}
+}
+
+func TestDecode_FECHistogramRanges(t *testing.T) {
+	t.Parallel()
+
+	raw := optionalDocument(`"Histogram of FEC Errors":{
+		"Header":{"values":["Range","Occurrences"]},
+		"Bin 1":{"values":["[16:31]","18446744073709551615"]},
+		"Bin 0":{"values":["[0]","7"]},
+		"Future Field":"ignored"
+	}`)
+	got, err := Decode(raw)
+	if err != nil {
+		t.Fatalf("Decode returned error: %v", err)
+	}
+	want := []FECHistogramBin{
+		{Bin: 0, ErrorCountMin: 0, ErrorCountMax: 0, Occurrences: 7},
+		{Bin: 1, ErrorCountMin: 16, ErrorCountMax: 31, Occurrences: ^uint64(0)},
+	}
+	if !reflect.DeepEqual(got.FECHistogram, want) {
+		t.Fatalf("unexpected FEC histogram\n got: %+v\nwant: %+v", got.FECHistogram, want)
+	}
+}
+
+func TestDecode_FECHistogramInvalidSectionIsEmpty(t *testing.T) {
+	t.Parallel()
+
+	tests := []struct {
+		name    string
+		section string
+	}{
+		{
+			name: "bad header",
+			section: `"Header":{"values":["Occurrences","Range"]},
+				"Bin 0":{"values":["[0]","1"]}`,
+		},
+		{
+			name: "bin gap",
+			section: `"Header":{"values":["Range","Occurrences"]},
+				"Bin 0":{"values":["[0]","1"]},
+				"Bin 2":{"values":["[2]","1"]}`,
+		},
+		{
+			name: "descending range",
+			section: `"Header":{"values":["Range","Occurrences"]},
+				"Bin 0":{"values":["[2:1]","1"]}`,
+		},
+		{
+			name: "negative range",
+			section: `"Header":{"values":["Range","Occurrences"]},
+				"Bin 0":{"values":["[-1]","1"]}`,
+		},
+		{
+			name: "bad count",
+			section: `"Header":{"values":["Range","Occurrences"]},
+				"Bin 0":{"values":["[0]","1.5"]}`,
+		},
+		{
+			name: "wrong value count",
+			section: `"Header":{"values":["Range","Occurrences"]},
+				"Bin 0":{"values":["[0]"]}`,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+
+			raw := optionalDocument(`
+				"Histogram of FEC Errors":{` + tt.section + `},
+				"Operational Info":{"State":"Active"}
+			`)
+			got, err := Decode(raw)
+			if err != nil {
+				t.Fatalf("Decode returned error: %v", err)
+			}
+			if got.FECHistogram != nil {
+				t.Fatalf("expected invalid FEC section to be empty, got %+v", got.FECHistogram)
+			}
+			if got.Link.State != "Active" {
+				t.Fatalf("expected another section to survive, got %+v", got.Link)
+			}
+		})
+	}
+}
+
+func TestDecode_SerDesTXUnknownParameterIsIgnored(t *testing.T) {
+	t.Parallel()
+
+	raw := optionalDocument(`"Serdes Tuning Transmitter Info":{
+		"Serdes TX parameters":{"values":["fir_pre1","future_param","drv_amp"]},
+		"Lane 3":{"values":["-4","999","12"]},
+		"Lane 1":{"values":["-2","888","10"]},
+		"Future Field":{"values":["ignored"]}
+	}`)
+	got, err := Decode(raw)
+	if err != nil {
+		t.Fatalf("Decode returned error: %v", err)
+	}
+	want := SerDesTX{
+		FIRCoefficients: []SerDesFIRCoefficient{
+			{Lane: 1, Tap: "pre1", Value: -2},
+			{Lane: 3, Tap: "pre1", Value: -4},
+		},
+		DriveAmplitude: []LaneValue{
+			{Lane: 1, Value: 10},
+			{Lane: 3, Value: 12},
+		},
+	}
+	if !reflect.DeepEqual(got.SerDesTX, want) {
+		t.Fatalf("unexpected SerDes data\n got: %+v\nwant: %+v", got.SerDesTX, want)
+	}
+}
+
+func TestDecode_SerDesTXLaneCountsAndHeaderOrder(t *testing.T) {
+	t.Parallel()
+
+	for _, laneCount := range []int{1, 4, 8} {
+		laneCount := laneCount
+		t.Run(fmt.Sprintf("%d lanes", laneCount), func(t *testing.T) {
+			t.Parallel()
+
+			laneFields := make([]string, 0, laneCount)
+			for lane := laneCount - 1; lane >= 0; lane-- {
+				laneFields = append(laneFields, fmt.Sprintf(
+					`"Lane %d":{"values":["%d","%d","%d"]}`,
+					lane, lane+10, -lane-1, lane+40,
+				))
+			}
+			raw := optionalDocument(`"Serdes Tuning Transmitter Info":{
+				"Serdes TX parameters":{"values":["drv_amp","fir_pre1","fir_main"]},` +
+				strings.Join(laneFields, ",") + `}`)
+			got, err := Decode(raw)
+			if err != nil {
+				t.Fatalf("Decode returned error: %v", err)
+			}
+			if len(got.SerDesTX.FIRCoefficients) != laneCount*2 || len(got.SerDesTX.DriveAmplitude) != laneCount {
+				t.Fatalf("unexpected lane counts: %+v", got.SerDesTX)
+			}
+			wantFirst := []SerDesFIRCoefficient{
+				{Lane: 0, Tap: "main", Value: 40},
+				{Lane: 0, Tap: "pre1", Value: -1},
+			}
+			if !reflect.DeepEqual(got.SerDesTX.FIRCoefficients[:2], wantFirst) {
+				t.Fatalf("header values were not paired with their parameters: %+v", got.SerDesTX.FIRCoefficients[:2])
+			}
+			if last := got.SerDesTX.DriveAmplitude[laneCount-1]; last != (LaneValue{Lane: laneCount - 1, Value: float64(laneCount + 9)}) {
+				t.Fatalf("unexpected last drive amplitude: %+v", last)
+			}
+		})
+	}
+}
+
+func TestDecode_SerDesTXInvalidSectionIsEmpty(t *testing.T) {
+	t.Parallel()
+
+	tests := []struct {
+		name    string
+		section string
+	}{
+		{
+			name: "duplicate header",
+			section: `"Serdes TX parameters":{"values":["fir_pre1","fir_pre1"]},
+				"Lane 0":{"values":["1","2"]}`,
+		},
+		{
+			name: "lane length mismatch",
+			section: `"Serdes TX parameters":{"values":["fir_pre1","drv_amp"]},
+				"Lane 0":{"values":["1"]}`,
+		},
+		{
+			name: "invalid lane number",
+			section: `"Serdes TX parameters":{"values":["fir_pre1"]},
+				"Lane future":{"values":["1"]}`,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+
+			raw := optionalDocument(`
+				"Serdes Tuning Transmitter Info":{` + tt.section + `},
+				"Operational Info":{"State":"Active"}
+			`)
+			got, err := Decode(raw)
+			if err != nil {
+				t.Fatalf("Decode returned error: %v", err)
+			}
+			if !reflect.DeepEqual(got.SerDesTX, (SerDesTX{})) {
+				t.Fatalf("expected invalid SerDes section to be empty, got %+v", got.SerDesTX)
+			}
+			if got.Link.State != "Active" {
+				t.Fatalf("expected another section to survive, got %+v", got.Link)
+			}
+		})
+	}
+}
+
+func TestDecode_OptionalSectionIndexesMustFitInt(t *testing.T) {
+	t.Parallel()
+
+	t.Run("FEC bin", func(t *testing.T) {
+		t.Parallel()
+
+		raw := optionalDocument(`"Histogram of FEC Errors":{
+			"Header":{"values":["Range","Occurrences"]},
+			"Bin 18446744073709551615":{"values":["[0]","1"]}
+		}`)
+		got, err := Decode(raw)
+		if err != nil {
+			t.Fatalf("Decode returned error: %v", err)
+		}
+		if got.FECHistogram != nil {
+			t.Fatalf("expected an overflowing bin number to invalidate the family, got %+v", got.FECHistogram)
+		}
+	})
+
+	t.Run("SerDes lane", func(t *testing.T) {
+		t.Parallel()
+
+		raw := optionalDocument(`"Serdes Tuning Transmitter Info":{
+			"Serdes TX parameters":{"values":["fir_main","drv_amp"]},
+			"Lane 18446744073709551615":{"values":["40","8"]}
+		}`)
+		got, err := Decode(raw)
+		if err != nil {
+			t.Fatalf("Decode returned error: %v", err)
+		}
+		if !reflect.DeepEqual(got.SerDesTX, (SerDesTX{})) {
+			t.Fatalf("expected an overflowing lane number to invalidate the section, got %+v", got.SerDesTX)
+		}
+	})
+}
+
+func TestDecode_SerDesTXBadLaneIsOmitted(t *testing.T) {
+	t.Parallel()
+
+	raw := optionalDocument(`"Serdes Tuning Transmitter Info":{
+		"Serdes TX parameters":{"values":["fir_main","drv_amp","future_param"]},
+		"Lane 0":{"values":["43","8","not-numeric"]},
+		"Lane 1":{"values":["bad","9","ignored"]},
+		"Lane 2":{"values":["41","10","ignored"]}
+	}`)
+	got, err := Decode(raw)
+	if err != nil {
+		t.Fatalf("Decode returned error: %v", err)
+	}
+	want := SerDesTX{
+		FIRCoefficients: []SerDesFIRCoefficient{
+			{Lane: 0, Tap: "main", Value: 43},
+			{Lane: 2, Tap: "main", Value: 41},
+		},
+		DriveAmplitude: []LaneValue{
+			{Lane: 0, Value: 8},
+			{Lane: 2, Value: 10},
+		},
+	}
+	if !reflect.DeepEqual(got.SerDesTX, want) {
+		t.Fatalf("unexpected SerDes data\n got: %+v\nwant: %+v", got.SerDesTX, want)
+	}
+}
+
+func TestDecode_OptionalSectionsAbsent(t *testing.T) {
+	t.Parallel()
+
+	got, err := Decode(optionalDocument(`"Operational Info":{"State":"Active"}`))
+	if err != nil {
+		t.Fatalf("Decode returned error: %v", err)
+	}
+	if got.FECHistogram != nil || !reflect.DeepEqual(got.SerDesTX, (SerDesTX{})) {
+		t.Fatalf("expected absent optional sections to be empty, got %+v", got)
 	}
 }

@@ -62,9 +62,34 @@ type Target struct {
 
 // PortData is the decoded result of one mlxlink invocation for one port.
 type PortData struct {
-	Link     LinkInfo
-	Counters Counters
-	Module   Module
+	Link         LinkInfo
+	Counters     Counters
+	Module       Module
+	FECHistogram []FECHistogramBin
+	SerDesTX     SerDesTX
+}
+
+// FECHistogramBin counts received FEC codewords by the number of errors in a
+// codeword. A range has equal minimum and maximum values when mlxlink reports
+// a single error count such as "[3]".
+type FECHistogramBin struct {
+	Bin           int
+	ErrorCountMin uint64
+	ErrorCountMax uint64
+	Occurrences   uint64
+}
+
+// SerDesFIRCoefficient is one vendor-defined transmitter FIR tuning value.
+type SerDesFIRCoefficient struct {
+	Lane  int
+	Tap   string
+	Value float64
+}
+
+// SerDesTX holds the transmitter tuning codes that mlxlink reports per lane.
+type SerDesTX struct {
+	FIRCoefficients []SerDesFIRCoefficient
+	DriveAmplitude  []LaneValue
 }
 
 // LinkInfo holds the descriptive link attributes exported as labels of

@@ -40,9 +40,12 @@ type Collector struct {
 	linkDown                *prometheus.Desc
 	linkErrorRecovery       *prometheus.Desc
 
-	effectiveBER *prometheus.Desc
-	rawBER       *prometheus.Desc
-	rawBERLane   *prometheus.Desc
+	effectiveBER   *prometheus.Desc
+	rawBER         *prometheus.Desc
+	rawBERLane     *prometheus.Desc
+	rxFECCodewords *prometheus.Desc
+	serDesTXFIR    *prometheus.Desc
+	serDesTXDrive  *prometheus.Desc
 
 	moduleTemperature  *prometheus.Desc
 	moduleVoltage      *prometheus.Desc
@@ -106,6 +109,13 @@ func newCollector(source snapshotSource, staleAfter time.Duration, logger *slog.
 		"Raw physical bit error ratio reported by mlxlink.", base)
 	c.rawBERLane = c.newDesc("mlxlink_raw_physical_ber_lane",
 		"Raw physical bit error ratio per lane reported by mlxlink.", lane)
+	c.rxFECCodewords = c.newDesc("mlxlink_rx_fec_codewords_total",
+		"Received FEC codewords in the reported corrected-error range."+resettable,
+		append(base, "bin", "error_count_min", "error_count_max"))
+	c.serDesTXFIR = c.newDesc("mlxlink_serdes_tx_fir_coefficient",
+		"Vendor-defined transmitter FIR tuning code reported by mlxlink.", append(lane, "tap"))
+	c.serDesTXDrive = c.newDesc("mlxlink_serdes_tx_drive_amplitude",
+		"Vendor-defined transmitter drive amplitude tuning code reported by mlxlink.", lane)
 
 	c.moduleTemperature = c.newDesc("mlxlink_module_temperature_celsius",
 		"Optical module temperature in degrees Celsius.", base)
@@ -143,7 +153,7 @@ func newCollector(source snapshotSource, staleAfter time.Duration, logger *slog.
 	c.up = c.newDesc("mlxlink_collector_up",
 		"Whether the most recent mlxlink poll for this device succeeded.", base)
 	c.collectionDuration = c.newDesc("mlxlink_collection_duration_seconds",
-		"Duration of the most recent mlxlink invocation for this device in seconds.", base)
+		"Duration of the latest mlxlink collection attempt, including baseline fallback, for this device in seconds.", base)
 	c.lastSuccess = c.newDesc("mlxlink_collection_last_success_timestamp_seconds",
 		"Unix timestamp of the most recent successful mlxlink collection for this device.", base)
 
@@ -211,6 +221,8 @@ func (c *Collector) collectDevice(ch chan<- prometheus.Metric, snapshot DeviceSn
 	c.collectLink(ch, snapshot.Data.Link, labels)
 	c.collectCounters(ch, snapshot.Data.Counters, labels)
 	c.collectModule(ch, snapshot.Data.Module, labels)
+	c.collectFECHistogram(ch, snapshot.Data.FECHistogram, labels)
+	c.collectSerDesTX(ch, snapshot.Data.SerDesTX, labels)
 }
 
 // isStale reports whether the cached data is too old to publish. Data that was
@@ -268,6 +280,27 @@ func (c *Collector) collectModule(ch chan<- prometheus.Metric, module Module, la
 	}
 	ch <- prometheus.MustNewConstMetric(c.moduleInfo, prometheus.GaugeValue, 1,
 		concatLabels(labels, values)...)
+}
+
+func (c *Collector) collectFECHistogram(ch chan<- prometheus.Metric, bins []FECHistogramBin, labels []string) {
+	for _, bin := range bins {
+		values := []string{
+			strconv.Itoa(bin.Bin),
+			strconv.FormatUint(bin.ErrorCountMin, 10),
+			strconv.FormatUint(bin.ErrorCountMax, 10),
+		}
+		ch <- prometheus.MustNewConstMetric(c.rxFECCodewords, prometheus.CounterValue,
+			float64(bin.Occurrences), concatLabels(labels, values)...)
+	}
+}
+
+func (c *Collector) collectSerDesTX(ch chan<- prometheus.Metric, serdes SerDesTX, labels []string) {
+	for _, coefficient := range serdes.FIRCoefficients {
+		values := []string{strconv.Itoa(coefficient.Lane), coefficient.Tap}
+		ch <- prometheus.MustNewConstMetric(c.serDesTXFIR, prometheus.GaugeValue,
+			coefficient.Value, concatLabels(labels, values)...)
+	}
+	sendLanes(ch, c.serDesTXDrive, prometheus.GaugeValue, serdes.DriveAmplitude, labels)
 }
 
 // sendValue drops samples the decoder could not read: a missing field must not

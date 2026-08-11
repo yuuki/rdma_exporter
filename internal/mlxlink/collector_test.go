@@ -23,6 +23,9 @@ const collectorStaleAfter = 150 * time.Second
 // dataMetricNames are the families that must disappear once data is stale.
 var dataMetricNames = []string{
 	"mlxlink_link_info",
+	"mlxlink_rx_fec_codewords_total",
+	"mlxlink_serdes_tx_fir_coefficient",
+	"mlxlink_serdes_tx_drive_amplitude",
 	"mlxlink_effective_physical_errors_total",
 	"mlxlink_raw_physical_errors_total",
 	"mlxlink_link_down_total",
@@ -44,6 +47,58 @@ var dataMetricNames = []string{
 	"mlxlink_rx_cdr_loss_of_lock",
 	"mlxlink_datapath_active",
 	"mlxlink_module_info",
+}
+
+func TestCollector_ExportsFECHistogramAndSerDesTX(t *testing.T) {
+	t.Parallel()
+
+	data := PortData{
+		FECHistogram: []FECHistogramBin{
+			{Bin: 0, ErrorCountMin: 0, ErrorCountMax: 0, Occurrences: 1_274_099_439},
+			{Bin: 8, ErrorCountMin: 15, ErrorCountMax: 16, Occurrences: 27},
+		},
+		SerDesTX: SerDesTX{
+			FIRCoefficients: []SerDesFIRCoefficient{
+				{Lane: 0, Tap: "pre3", Value: -3},
+				{Lane: 0, Tap: "main", Value: 19},
+				{Lane: 3, Tap: "post1", Value: -7},
+			},
+			DriveAmplitude: []LaneValue{
+				{Lane: 0, Value: 4},
+				{Lane: 3, Value: 7},
+			},
+		},
+	}
+	set := newSnapshotSet([]DeviceSnapshot{{
+		Target:       collectorTarget,
+		Data:         data,
+		LastSuccess:  collectorSuccess,
+		LastDuration: 700 * time.Millisecond,
+	}})
+	collector := newTestCollector(t, set, collectorNow)
+
+	expected := `
+# HELP mlxlink_rx_fec_codewords_total Received FEC codewords in the reported corrected-error range. mlxlink counters can be cleared by other tooling, so this counter may reset.
+# TYPE mlxlink_rx_fec_codewords_total counter
+mlxlink_rx_fec_codewords_total{bin="0",device="mlx5_0",error_count_max="0",error_count_min="0",pci_addr="0000:1a:00.0",port="1"} 1.274099439e+09
+mlxlink_rx_fec_codewords_total{bin="8",device="mlx5_0",error_count_max="16",error_count_min="15",pci_addr="0000:1a:00.0",port="1"} 27
+# HELP mlxlink_serdes_tx_drive_amplitude Vendor-defined transmitter drive amplitude tuning code reported by mlxlink.
+# TYPE mlxlink_serdes_tx_drive_amplitude gauge
+mlxlink_serdes_tx_drive_amplitude{device="mlx5_0",lane="0",pci_addr="0000:1a:00.0",port="1"} 4
+mlxlink_serdes_tx_drive_amplitude{device="mlx5_0",lane="3",pci_addr="0000:1a:00.0",port="1"} 7
+# HELP mlxlink_serdes_tx_fir_coefficient Vendor-defined transmitter FIR tuning code reported by mlxlink.
+# TYPE mlxlink_serdes_tx_fir_coefficient gauge
+mlxlink_serdes_tx_fir_coefficient{device="mlx5_0",lane="0",pci_addr="0000:1a:00.0",port="1",tap="main"} 19
+mlxlink_serdes_tx_fir_coefficient{device="mlx5_0",lane="0",pci_addr="0000:1a:00.0",port="1",tap="pre3"} -3
+mlxlink_serdes_tx_fir_coefficient{device="mlx5_0",lane="3",pci_addr="0000:1a:00.0",port="1",tap="post1"} -7
+`
+	if err := testutil.CollectAndCompare(collector, strings.NewReader(expected),
+		"mlxlink_rx_fec_codewords_total",
+		"mlxlink_serdes_tx_drive_amplitude",
+		"mlxlink_serdes_tx_fir_coefficient",
+	); err != nil {
+		t.Fatalf("unexpected optional metrics: %v", err)
+	}
 }
 
 type fakeSnapshotSource struct{ set *snapshotSet }
@@ -78,6 +133,25 @@ func fullPortData(lanes int) PortData {
 		}
 		return values
 	}
+	coefficients := make([]SerDesFIRCoefficient, 0, lanes*5)
+	for lane := range lanes {
+		for _, coefficient := range []struct {
+			tap   string
+			value float64
+		}{
+			{tap: "pre3", value: -3},
+			{tap: "pre2", value: 0},
+			{tap: "pre1", value: -9},
+			{tap: "main", value: 43},
+			{tap: "post1", value: -14},
+		} {
+			coefficients = append(coefficients, SerDesFIRCoefficient{
+				Lane:  lane,
+				Tap:   coefficient.tap,
+				Value: coefficient.value + float64(lane),
+			})
+		}
+	}
 
 	return PortData{
 		Link: LinkInfo{
@@ -96,6 +170,14 @@ func fullPortData(lanes int) PortData {
 			RawBER:                  Value{Float: 2.5e-09, Valid: true},
 			RawPhysicalErrorsLane:   laneValues(4, 1),
 			RawBERLane:              laneValues(1.5e-09, 1e-10),
+		},
+		FECHistogram: []FECHistogramBin{
+			{Bin: 0, ErrorCountMin: 0, ErrorCountMax: 0, Occurrences: 22_858_119_037_881},
+			{Bin: 8, ErrorCountMin: 15, ErrorCountMax: 16, Occurrences: 27},
+		},
+		SerDesTX: SerDesTX{
+			FIRCoefficients: coefficients,
+			DriveAmplitude:  laneValues(4, 1),
 		},
 		Module: Module{
 			TemperatureCelsius: Value{Float: 45, Valid: true},
@@ -259,7 +341,7 @@ func TestCollector_StaleSuppressesData(t *testing.T) {
 	// touching the self monitoring values: up stays 1 and the timestamp keeps
 	// pointing at that success.
 	expected := `
-# HELP mlxlink_collection_duration_seconds Duration of the most recent mlxlink invocation for this device in seconds.
+# HELP mlxlink_collection_duration_seconds Duration of the latest mlxlink collection attempt, including baseline fallback, for this device in seconds.
 # TYPE mlxlink_collection_duration_seconds gauge
 mlxlink_collection_duration_seconds{device="mlx5_0",pci_addr="0000:1a:00.0",port="1"} 0.7
 # HELP mlxlink_collection_last_success_timestamp_seconds Unix timestamp of the most recent successful mlxlink collection for this device.
@@ -294,7 +376,7 @@ func TestCollector_NeverSucceededDevice(t *testing.T) {
 	collector := newTestCollector(t, set, collectorNow)
 
 	expected := `
-# HELP mlxlink_collection_duration_seconds Duration of the most recent mlxlink invocation for this device in seconds.
+# HELP mlxlink_collection_duration_seconds Duration of the latest mlxlink collection attempt, including baseline fallback, for this device in seconds.
 # TYPE mlxlink_collection_duration_seconds gauge
 mlxlink_collection_duration_seconds{device="mlx5_0",pci_addr="0000:1a:00.0",port="1"} 0.02
 # HELP mlxlink_collection_last_success_timestamp_seconds Unix timestamp of the most recent successful mlxlink collection for this device.
@@ -406,7 +488,7 @@ func BenchmarkMlxlinkCollectorCollect(b *testing.B) {
 // expositionAllFamilies is the complete output for one device with every
 // field populated across three lanes.
 const expositionAllFamilies = `
-# HELP mlxlink_collection_duration_seconds Duration of the most recent mlxlink invocation for this device in seconds.
+# HELP mlxlink_collection_duration_seconds Duration of the latest mlxlink collection attempt, including baseline fallback, for this device in seconds.
 # TYPE mlxlink_collection_duration_seconds gauge
 mlxlink_collection_duration_seconds{device="mlx5_0",pci_addr="0000:1a:00.0",port="1"} 0.7
 # HELP mlxlink_collection_last_success_timestamp_seconds Unix timestamp of the most recent successful mlxlink collection for this device.
@@ -483,11 +565,37 @@ mlxlink_raw_physical_errors_total{device="mlx5_0",lane="2",pci_addr="0000:1a:00.
 mlxlink_rx_cdr_loss_of_lock{device="mlx5_0",lane="0",pci_addr="0000:1a:00.0",port="1"} 1
 mlxlink_rx_cdr_loss_of_lock{device="mlx5_0",lane="1",pci_addr="0000:1a:00.0",port="1"} 0
 mlxlink_rx_cdr_loss_of_lock{device="mlx5_0",lane="2",pci_addr="0000:1a:00.0",port="1"} 1
+# HELP mlxlink_rx_fec_codewords_total Received FEC codewords in the reported corrected-error range. mlxlink counters can be cleared by other tooling, so this counter may reset.
+# TYPE mlxlink_rx_fec_codewords_total counter
+mlxlink_rx_fec_codewords_total{bin="0",device="mlx5_0",error_count_max="0",error_count_min="0",pci_addr="0000:1a:00.0",port="1"} 2.2858119037881e+13
+mlxlink_rx_fec_codewords_total{bin="8",device="mlx5_0",error_count_max="16",error_count_min="15",pci_addr="0000:1a:00.0",port="1"} 27
 # HELP mlxlink_rx_los Receiver loss of signal per lane, 1 when signal is lost.
 # TYPE mlxlink_rx_los gauge
 mlxlink_rx_los{device="mlx5_0",lane="0",pci_addr="0000:1a:00.0",port="1"} 0
 mlxlink_rx_los{device="mlx5_0",lane="1",pci_addr="0000:1a:00.0",port="1"} 0
 mlxlink_rx_los{device="mlx5_0",lane="2",pci_addr="0000:1a:00.0",port="1"} 1
+# HELP mlxlink_serdes_tx_drive_amplitude Vendor-defined transmitter drive amplitude tuning code reported by mlxlink.
+# TYPE mlxlink_serdes_tx_drive_amplitude gauge
+mlxlink_serdes_tx_drive_amplitude{device="mlx5_0",lane="0",pci_addr="0000:1a:00.0",port="1"} 4
+mlxlink_serdes_tx_drive_amplitude{device="mlx5_0",lane="1",pci_addr="0000:1a:00.0",port="1"} 5
+mlxlink_serdes_tx_drive_amplitude{device="mlx5_0",lane="2",pci_addr="0000:1a:00.0",port="1"} 6
+# HELP mlxlink_serdes_tx_fir_coefficient Vendor-defined transmitter FIR tuning code reported by mlxlink.
+# TYPE mlxlink_serdes_tx_fir_coefficient gauge
+mlxlink_serdes_tx_fir_coefficient{device="mlx5_0",lane="0",pci_addr="0000:1a:00.0",port="1",tap="main"} 43
+mlxlink_serdes_tx_fir_coefficient{device="mlx5_0",lane="0",pci_addr="0000:1a:00.0",port="1",tap="post1"} -14
+mlxlink_serdes_tx_fir_coefficient{device="mlx5_0",lane="0",pci_addr="0000:1a:00.0",port="1",tap="pre1"} -9
+mlxlink_serdes_tx_fir_coefficient{device="mlx5_0",lane="0",pci_addr="0000:1a:00.0",port="1",tap="pre2"} 0
+mlxlink_serdes_tx_fir_coefficient{device="mlx5_0",lane="0",pci_addr="0000:1a:00.0",port="1",tap="pre3"} -3
+mlxlink_serdes_tx_fir_coefficient{device="mlx5_0",lane="1",pci_addr="0000:1a:00.0",port="1",tap="main"} 44
+mlxlink_serdes_tx_fir_coefficient{device="mlx5_0",lane="1",pci_addr="0000:1a:00.0",port="1",tap="post1"} -13
+mlxlink_serdes_tx_fir_coefficient{device="mlx5_0",lane="1",pci_addr="0000:1a:00.0",port="1",tap="pre1"} -8
+mlxlink_serdes_tx_fir_coefficient{device="mlx5_0",lane="1",pci_addr="0000:1a:00.0",port="1",tap="pre2"} 1
+mlxlink_serdes_tx_fir_coefficient{device="mlx5_0",lane="1",pci_addr="0000:1a:00.0",port="1",tap="pre3"} -2
+mlxlink_serdes_tx_fir_coefficient{device="mlx5_0",lane="2",pci_addr="0000:1a:00.0",port="1",tap="main"} 45
+mlxlink_serdes_tx_fir_coefficient{device="mlx5_0",lane="2",pci_addr="0000:1a:00.0",port="1",tap="post1"} -12
+mlxlink_serdes_tx_fir_coefficient{device="mlx5_0",lane="2",pci_addr="0000:1a:00.0",port="1",tap="pre1"} -7
+mlxlink_serdes_tx_fir_coefficient{device="mlx5_0",lane="2",pci_addr="0000:1a:00.0",port="1",tap="pre2"} 2
+mlxlink_serdes_tx_fir_coefficient{device="mlx5_0",lane="2",pci_addr="0000:1a:00.0",port="1",tap="pre3"} -1
 # HELP mlxlink_tx_cdr_loss_of_lock Transmitter clock and data recovery loss of lock per lane, 1 when unlocked.
 # TYPE mlxlink_tx_cdr_loss_of_lock gauge
 mlxlink_tx_cdr_loss_of_lock{device="mlx5_0",lane="0",pci_addr="0000:1a:00.0",port="1"} 1
@@ -504,6 +612,31 @@ mlxlink_tx_los{device="mlx5_0",lane="0",pci_addr="0000:1a:00.0",port="1"} 0
 mlxlink_tx_los{device="mlx5_0",lane="1",pci_addr="0000:1a:00.0",port="1"} 1
 mlxlink_tx_los{device="mlx5_0",lane="2",pci_addr="0000:1a:00.0",port="1"} 0
 `
+
+func TestCollectorWithPoller_ExportsRealOptionalCapture(t *testing.T) {
+	t.Parallel()
+
+	clk := newFakeClock(1)
+	runner := newFakeRunner(mlxlinkFixture(t, "mft-4.34.1-400g-fec-serdes.json"))
+	poller := newTestPoller(t, newFakeDiscoverer([]Target{collectorTarget}), runner, clk)
+
+	poller.sweep(context.Background())
+
+	collector := newCollector(poller, collectorStaleAfter, newDiscardLogger(), WithNow(clk.Now))
+	tests := []struct {
+		name string
+		want int
+	}{
+		{name: "mlxlink_rx_fec_codewords_total", want: 16},
+		{name: "mlxlink_serdes_tx_fir_coefficient", want: 20},
+		{name: "mlxlink_serdes_tx_drive_amplitude", want: 4},
+	}
+	for _, tt := range tests {
+		if got := testutil.CollectAndCount(collector, tt.name); got != tt.want {
+			t.Errorf("expected %d %s series from real capture, got %d", tt.want, tt.name, got)
+		}
+	}
+}
 
 // TestCollectorWithPoller_ExportsRealCapture runs the whole path a scrape takes:
 // the runner returns the captured mlxlink response, the poller decodes and

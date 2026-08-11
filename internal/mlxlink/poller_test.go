@@ -75,21 +75,29 @@ func (f *fakeDiscoverer) Discover(context.Context) ([]Target, error) {
 // fakeRunner returns a canned result and reports every call, which lets tests
 // observe sweep progress without polling.
 type fakeRunner struct {
-	mu     sync.Mutex
-	output []byte
-	err    error
-	clk    *fakeClock
-	step   time.Duration
+	mu             sync.Mutex
+	output         []byte
+	err            error
+	baselineOutput []byte
+	baselineErr    error
+	clk            *fakeClock
+	step           time.Duration
 	// onCall observes poller state from inside a sweep, where the effects of
 	// the devices collected so far are already published.
 	onCall func(device string)
 
-	calls []string
-	done  chan string
+	calls         []string
+	baselineCalls int
+	callOrder     []string
+	done          chan string
 }
 
 func newFakeRunner(output []byte) *fakeRunner {
-	return &fakeRunner{output: output, done: make(chan string, 64)}
+	return &fakeRunner{
+		output:         output,
+		baselineOutput: output,
+		done:           make(chan string, 64),
+	}
 }
 
 func (f *fakeRunner) Run(_ context.Context, device string) ([]byte, error) {
@@ -97,6 +105,7 @@ func (f *fakeRunner) Run(_ context.Context, device string) ([]byte, error) {
 	output, err := f.output, f.err
 	onCall := f.onCall
 	f.calls = append(f.calls, device)
+	f.callOrder = append(f.callOrder, "combined:"+device)
 	if f.clk != nil {
 		f.clk.advance(f.step)
 	}
@@ -113,10 +122,39 @@ func (f *fakeRunner) Run(_ context.Context, device string) ([]byte, error) {
 	return output, err
 }
 
+func (f *fakeRunner) RunBaseline(_ context.Context, device string) ([]byte, error) {
+	f.mu.Lock()
+	output, err := f.baselineOutput, f.baselineErr
+	onCall := f.onCall
+	f.baselineCalls++
+	f.callOrder = append(f.callOrder, "baseline:"+device)
+	if f.clk != nil {
+		f.clk.advance(f.step)
+	}
+	f.mu.Unlock()
+
+	if onCall != nil {
+		onCall(device)
+	}
+	return output, err
+}
+
 func (f *fakeRunner) setResult(output []byte, err error) {
 	f.mu.Lock()
 	defer f.mu.Unlock()
 	f.output, f.err = output, err
+}
+
+func (f *fakeRunner) setBaselineResult(output []byte, err error) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	f.baselineOutput, f.baselineErr = output, err
+}
+
+func (f *fakeRunner) callsMade() ([]string, int) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	return append([]string(nil), f.callOrder...), f.baselineCalls
 }
 
 func (f *fakeRunner) callCount() int {
@@ -241,6 +279,22 @@ func deviceNames(set *snapshotSet) []string {
 		names = append(names, snapshot.Target.Device)
 	}
 	return names
+}
+
+func TestPoller_CollectionErrorsHelpDescribesCountedEvents(t *testing.T) {
+	t.Parallel()
+
+	poller := newTestPoller(t, newFakeDiscoverer([]Target{targetMlx0}), newFakeRunner(minimalMlxlinkJSON), newFakeClock(1))
+	poller.countError(targetMlx0, ReasonExitError)
+
+	expected := `
+# HELP mlxlink_collection_errors_total Total number of mlxlink query and decode errors, plus skipped overlapping sweeps, by reason.
+# TYPE mlxlink_collection_errors_total counter
+mlxlink_collection_errors_total{device="mlx5_0",pci_addr="0000:1a:00.0",port="1",reason="exit_error"} 1
+`
+	if err := testutil.CollectAndCompare(poller.Errors(), strings.NewReader(expected)); err != nil {
+		t.Fatalf("unexpected collection error exposition: %v", err)
+	}
 }
 
 func TestPoller_InitialSweepPopulatesSnapshotsAndReady(t *testing.T) {
@@ -433,6 +487,274 @@ func TestPoller_RunnerErrorKeepsLastSuccessAndCountsReason(t *testing.T) {
 	}
 }
 
+func TestPoller_CombinedSuccessDoesNotRunBaseline(t *testing.T) {
+	t.Parallel()
+
+	clk := newFakeClock(1)
+	runner := newFakeRunner(minimalMlxlinkJSON)
+	poller := newTestPoller(t, newFakeDiscoverer([]Target{targetMlx0}), runner, clk)
+
+	snapshot, ok := poller.collect(context.Background(), targetMlx0, nil)
+	if !ok || snapshot.LastError != "" {
+		t.Fatalf("expected combined collection to succeed, got %+v", snapshot)
+	}
+	order, baselineCalls := runner.callsMade()
+	if baselineCalls != 0 {
+		t.Fatalf("expected no baseline fallback, got %d calls", baselineCalls)
+	}
+	if len(order) != 1 || order[0] != "combined:mlx5_0" {
+		t.Fatalf("expected only the combined query, got %v", order)
+	}
+}
+
+func TestPoller_ExitErrorFallsBackToBaseline(t *testing.T) {
+	t.Parallel()
+
+	clk := newFakeClock(1)
+	previousSuccess := clk.Now().Add(-time.Minute)
+	runner := newFakeRunner(nil)
+	runner.clk, runner.step = clk, 350*time.Millisecond
+	runner.setResult(nil, &RunError{Reason: ReasonExitError, Err: errors.New("unsupported query")})
+	// The fallback contract, not the response shape, decides which families
+	// are safe to publish. Ignore optional sections even if mlxlink includes
+	// them in a baseline response.
+	runner.setBaselineResult(mlxlinkFixture(t, "mft-4.34.1-400g-fec-serdes.json"), nil)
+	poller := newTestPoller(t, newFakeDiscoverer([]Target{targetMlx0}), runner, clk)
+	previous := newSnapshotSet([]DeviceSnapshot{{
+		Target:      targetMlx0,
+		LastSuccess: previousSuccess,
+		LastError:   ReasonTimeout,
+		Data: PortData{
+			Link:         LinkInfo{State: "Inactive"},
+			FECHistogram: []FECHistogramBin{{Bin: 0, Occurrences: 123}},
+			SerDesTX: SerDesTX{
+				FIRCoefficients: []SerDesFIRCoefficient{{Lane: 0, Tap: "main", Value: 42}},
+				DriveAmplitude:  []LaneValue{{Lane: 0, Value: 4}},
+			},
+		},
+	}})
+
+	snapshot, ok := poller.collect(context.Background(), targetMlx0, previous)
+	if !ok {
+		t.Fatal("expected fallback collection to complete")
+	}
+	if snapshot.Data.Link.State != "Active" {
+		t.Fatalf("expected baseline data to replace the previous data, got %+v", snapshot.Data.Link)
+	}
+	if snapshot.Data.FECHistogram != nil || snapshot.Data.SerDesTX.FIRCoefficients != nil || snapshot.Data.SerDesTX.DriveAmplitude != nil {
+		t.Fatalf("expected unavailable optional data to be cleared, got %+v", snapshot.Data)
+	}
+	if snapshot.LastError != "" {
+		t.Fatalf("expected fallback success to clear the error, got %q", snapshot.LastError)
+	}
+	if !snapshot.LastSuccess.Equal(clk.Now()) || snapshot.LastSuccess.Equal(previousSuccess) {
+		t.Fatalf("expected a fresh success timestamp %v, got %v", clk.Now(), snapshot.LastSuccess)
+	}
+	if snapshot.LastDuration != 700*time.Millisecond {
+		t.Fatalf("expected combined fallback duration, got %v", snapshot.LastDuration)
+	}
+	if got := errorCount(t, poller, targetMlx0, ReasonExitError); got != 1 {
+		t.Fatalf("expected one combined exit error, got %v", got)
+	}
+	order, baselineCalls := runner.callsMade()
+	if baselineCalls != 1 || len(order) != 2 || order[0] != "combined:mlx5_0" || order[1] != "baseline:mlx5_0" {
+		t.Fatalf("expected combined then baseline, got %v", order)
+	}
+
+	collector := newCollector(fakeSnapshotSource{set: newSnapshotSet([]DeviceSnapshot{snapshot})},
+		testPollInterval*5, newDiscardLogger(), WithNow(func() time.Time { return clk.Now() }))
+	expected := `
+# HELP mlxlink_collector_up Whether the most recent mlxlink poll for this device succeeded.
+# TYPE mlxlink_collector_up gauge
+mlxlink_collector_up{device="mlx5_0",pci_addr="0000:1a:00.0",port="1"} 1
+`
+	if err := testutil.CollectAndCompare(collector, strings.NewReader(expected), "mlxlink_collector_up"); err != nil {
+		t.Fatalf("expected fallback success to export collector_up=1: %v", err)
+	}
+}
+
+func TestPoller_FallbackSuccessDoesNotWarn(t *testing.T) {
+	t.Parallel()
+
+	var logged bytes.Buffer
+	logger := slog.New(slog.NewTextHandler(&logged, &slog.HandlerOptions{Level: slog.LevelWarn}))
+	clk := newFakeClock(1)
+	runner := newFakeRunner(nil)
+	runner.setResult(nil, &RunError{Reason: ReasonExitError, Err: errors.New("unsupported query")})
+	runner.setBaselineResult(minimalMlxlinkJSON, nil)
+	poller := newPoller(newFakeDiscoverer([]Target{targetMlx0}), runner, testPollInterval,
+		logger, withClock(clk))
+
+	snapshot, ok := poller.collect(context.Background(), targetMlx0, nil)
+	if !ok || snapshot.LastError != "" {
+		t.Fatalf("expected baseline fallback to succeed, got %+v", snapshot)
+	}
+	if logged.Len() != 0 {
+		t.Fatalf("expected successful fallback not to warn, got %q", logged.String())
+	}
+}
+
+func TestPoller_FallbackFailureWarnsOnce(t *testing.T) {
+	t.Parallel()
+
+	var logged bytes.Buffer
+	logger := slog.New(slog.NewTextHandler(&logged, &slog.HandlerOptions{Level: slog.LevelWarn}))
+	clk := newFakeClock(1)
+	runner := newFakeRunner(nil)
+	runner.setResult(nil, &RunError{Reason: ReasonExitError, Err: errors.New("unsupported query")})
+	runner.setBaselineResult(nil, &RunError{Reason: ReasonTimeout, Err: context.DeadlineExceeded})
+	poller := newPoller(newFakeDiscoverer([]Target{targetMlx0}), runner, testPollInterval,
+		logger, withClock(clk))
+
+	snapshot, ok := poller.collect(context.Background(), targetMlx0, nil)
+	if !ok || snapshot.LastError != ReasonTimeout {
+		t.Fatalf("expected baseline fallback to fail with timeout, got %+v", snapshot)
+	}
+	if got := strings.Count(logged.String(), "mlxlink collection failed"); got != 1 {
+		t.Fatalf("expected exactly one final collection warning, got %d in %q", got, logged.String())
+	}
+	if !strings.Contains(logged.String(), "reason=timeout") {
+		t.Fatalf("expected warning to report the final fallback reason, got %q", logged.String())
+	}
+	if strings.Contains(logged.String(), "reason=exit_error") {
+		t.Fatalf("expected the recovered combined error not to warn, got %q", logged.String())
+	}
+}
+
+func TestPoller_ExitErrorAndBaselineRunFailureKeepPreviousSnapshot(t *testing.T) {
+	t.Parallel()
+
+	clk := newFakeClock(1)
+	previousSuccess := clk.Now().Add(-time.Minute)
+	previousData := PortData{Link: LinkInfo{State: "Active"}}
+	runner := newFakeRunner(nil)
+	runner.clk, runner.step = clk, 400*time.Millisecond
+	runner.setResult(nil, &RunError{Reason: ReasonExitError, Err: errors.New("unsupported query")})
+	runner.setBaselineResult(nil, &RunError{Reason: ReasonPermissionDenied, Err: errors.New("denied")})
+	poller := newTestPoller(t, newFakeDiscoverer([]Target{targetMlx0}), runner, clk)
+	previous := newSnapshotSet([]DeviceSnapshot{{Target: targetMlx0, Data: previousData, LastSuccess: previousSuccess}})
+
+	snapshot, ok := poller.collect(context.Background(), targetMlx0, previous)
+	if !ok {
+		t.Fatal("expected failed fallback to complete as a collection failure")
+	}
+	if snapshot.Data.Link.State != previousData.Link.State || !snapshot.LastSuccess.Equal(previousSuccess) {
+		t.Fatalf("expected previous data and success to survive, got %+v", snapshot)
+	}
+	if snapshot.LastError != ReasonPermissionDenied {
+		t.Fatalf("expected baseline failure reason %s, got %q", ReasonPermissionDenied, snapshot.LastError)
+	}
+	if snapshot.LastDuration != 800*time.Millisecond {
+		t.Fatalf("expected combined fallback duration, got %v", snapshot.LastDuration)
+	}
+	if got := errorCount(t, poller, targetMlx0, ReasonExitError); got != 1 {
+		t.Fatalf("expected one combined exit error, got %v", got)
+	}
+	if got := errorCount(t, poller, targetMlx0, ReasonPermissionDenied); got != 1 {
+		t.Fatalf("expected one baseline permission error, got %v", got)
+	}
+}
+
+func TestPoller_ExitErrorAndInvalidBaselineJSONKeepPreviousSnapshot(t *testing.T) {
+	t.Parallel()
+
+	clk := newFakeClock(1)
+	previousSuccess := clk.Now().Add(-time.Minute)
+	runner := newFakeRunner(nil)
+	runner.setResult(nil, &RunError{Reason: ReasonExitError, Err: errors.New("unsupported query")})
+	runner.setBaselineResult([]byte(`{"result":`), nil)
+	poller := newTestPoller(t, newFakeDiscoverer([]Target{targetMlx0}), runner, clk)
+	previous := newSnapshotSet([]DeviceSnapshot{{
+		Target: targetMlx0, Data: PortData{Link: LinkInfo{State: "Active"}}, LastSuccess: previousSuccess,
+	}})
+
+	snapshot, ok := poller.collect(context.Background(), targetMlx0, previous)
+	if !ok {
+		t.Fatal("expected invalid baseline response to complete as a collection failure")
+	}
+	if snapshot.Data.Link.State != "Active" || !snapshot.LastSuccess.Equal(previousSuccess) {
+		t.Fatalf("expected previous snapshot to survive, got %+v", snapshot)
+	}
+	if snapshot.LastError != ReasonInvalidJSON {
+		t.Fatalf("expected invalid_json, got %q", snapshot.LastError)
+	}
+	if got := errorCount(t, poller, targetMlx0, ReasonExitError); got != 1 {
+		t.Fatalf("expected one combined exit error, got %v", got)
+	}
+	if got := errorCount(t, poller, targetMlx0, ReasonInvalidJSON); got != 1 {
+		t.Fatalf("expected one invalid_json error, got %v", got)
+	}
+}
+
+func TestPoller_TimeoutDoesNotRunBaseline(t *testing.T) {
+	t.Parallel()
+
+	clk := newFakeClock(1)
+	runner := newFakeRunner(nil)
+	runner.setResult(nil, &RunError{Reason: ReasonTimeout, Err: context.DeadlineExceeded})
+	poller := newTestPoller(t, newFakeDiscoverer([]Target{targetMlx0}), runner, clk)
+
+	snapshot, ok := poller.collect(context.Background(), targetMlx0, nil)
+	if !ok || snapshot.LastError != ReasonTimeout {
+		t.Fatalf("expected timeout failure, got %+v", snapshot)
+	}
+	if _, baselineCalls := runner.callsMade(); baselineCalls != 0 {
+		t.Fatalf("expected no baseline fallback for timeout, got %d calls", baselineCalls)
+	}
+}
+
+func TestPoller_CancellationBeforeFallbackDoesNotPublishOrCount(t *testing.T) {
+	t.Parallel()
+
+	clk := newFakeClock(1)
+	runner := newFakeRunner(nil)
+	runner.setResult(nil, &RunError{Reason: ReasonExitError, Err: errors.New("unsupported query")})
+	poller := newTestPoller(t, newFakeDiscoverer([]Target{targetMlx0}), runner, clk)
+	ctx, cancel := context.WithCancel(context.Background())
+	runner.onCall = func(string) { cancel() }
+
+	if _, ok := poller.collect(ctx, targetMlx0, nil); ok {
+		t.Fatal("expected shutdown to abort collection")
+	}
+	if _, baselineCalls := runner.callsMade(); baselineCalls != 0 {
+		t.Fatalf("expected cancellation to prevent fallback, got %d calls", baselineCalls)
+	}
+	if got := testutil.CollectAndCount(poller.errors); got != 0 {
+		t.Fatalf("expected no collection errors during shutdown, got %d series", got)
+	}
+	if poller.Snapshots() != nil {
+		t.Fatalf("expected shutdown not to publish, got %+v", poller.Snapshots())
+	}
+}
+
+func TestPoller_CancellationDuringFallbackDoesNotPublishOrCount(t *testing.T) {
+	t.Parallel()
+
+	clk := newFakeClock(1)
+	runner := newFakeRunner(nil)
+	runner.setResult(nil, &RunError{Reason: ReasonExitError, Err: errors.New("unsupported query")})
+	runner.setBaselineResult(nil, context.Canceled)
+	poller := newTestPoller(t, newFakeDiscoverer([]Target{targetMlx0}), runner, clk)
+	ctx, cancel := context.WithCancel(context.Background())
+	calls := 0
+	runner.onCall = func(string) {
+		calls++
+		if calls == 2 {
+			cancel()
+		}
+	}
+
+	if _, ok := poller.collect(ctx, targetMlx0, nil); ok {
+		t.Fatal("expected shutdown during fallback to abort collection")
+	}
+	if _, baselineCalls := runner.callsMade(); baselineCalls != 1 {
+		t.Fatalf("expected one in-flight fallback, got %d calls", baselineCalls)
+	}
+	if got := testutil.CollectAndCount(poller.errors); got != 0 {
+		t.Fatalf("expected no collection errors during shutdown, got %d series", got)
+	}
+}
+
 func TestPoller_FailureWarningOmitsStderr(t *testing.T) {
 	t.Parallel()
 
@@ -446,11 +768,13 @@ func TestPoller_FailureWarningOmitsStderr(t *testing.T) {
 
 	clk := newFakeClock(1)
 	runner := newFakeRunner(nil)
-	runner.setResult(nil, &RunError{
+	runErr := &RunError{
 		Reason: ReasonExitError,
 		Err:    errors.New("exit status 1"),
 		Stderr: captured,
-	})
+	}
+	runner.setResult(nil, runErr)
+	runner.setBaselineResult(nil, runErr)
 	poller := newPoller(newFakeDiscoverer([]Target{targetMlx0}), runner, testPollInterval,
 		logger, withClock(clk))
 
