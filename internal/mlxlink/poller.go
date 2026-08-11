@@ -45,6 +45,8 @@ type discoverer interface {
 
 type commandRunner interface {
 	Run(ctx context.Context, device string) ([]byte, error)
+	RunWithEye(ctx context.Context, device string) ([]byte, error)
+	RunPCIeEye(ctx context.Context, device string) ([]byte, error)
 	RunBaseline(ctx context.Context, device string) ([]byte, error)
 }
 
@@ -57,6 +59,41 @@ type DeviceSnapshot struct {
 	LastSuccess  time.Time
 	LastError    ErrorReason
 	LastDuration time.Duration
+}
+
+// PCIeEyeSnapshot is the independently collected Eye state of one device's
+// root PCIe link. A PCIe failure never changes the network DeviceSnapshot.
+type PCIeEyeSnapshot struct {
+	Target       Target
+	Data         PCIeEye
+	LastSuccess  time.Time
+	LastError    ErrorReason
+	LastDuration time.Duration
+}
+
+type pcieEyeSnapshotSet struct {
+	devices []PCIeEyeSnapshot
+}
+
+func newPCIeEyeSnapshotSet(devices []PCIeEyeSnapshot) *pcieEyeSnapshotSet {
+	sorted := make([]PCIeEyeSnapshot, len(devices))
+	copy(sorted, devices)
+	slices.SortFunc(sorted, func(a, b PCIeEyeSnapshot) int {
+		return strings.Compare(a.Target.Device, b.Target.Device)
+	})
+	return &pcieEyeSnapshotSet{devices: sorted}
+}
+
+func (s *pcieEyeSnapshotSet) lookup(device string) (PCIeEyeSnapshot, bool) {
+	if s == nil {
+		return PCIeEyeSnapshot{}, false
+	}
+	for _, snapshot := range s.devices {
+		if snapshot.Target.Device == device {
+			return snapshot, true
+		}
+	}
+	return PCIeEyeSnapshot{}, false
 }
 
 // snapshotSet is an immutable set of device snapshots, sorted by device name so
@@ -93,15 +130,19 @@ func (s *snapshotSet) lookup(device string) (DeviceSnapshot, bool) {
 // mlxlink themselves. A single sweep loop walks every device in turn, which
 // keeps concurrency at one and makes overlapping runs structurally impossible.
 type Poller struct {
-	discovery discoverer
-	runner    commandRunner
-	interval  time.Duration
-	clk       clock
-	logger    *slog.Logger
+	discovery   discoverer
+	runner      commandRunner
+	interval    time.Duration
+	showEye     bool
+	showPCIeEye bool
+	clk         clock
+	logger      *slog.Logger
 
-	store  atomic.Pointer[snapshotSet]
-	errors *prometheus.CounterVec
-	ready  atomic.Bool
+	store         atomic.Pointer[snapshotSet]
+	pcieEyeStore  atomic.Pointer[pcieEyeSnapshotSet]
+	errors        *prometheus.CounterVec
+	pcieEyeErrors *prometheus.CounterVec
+	ready         atomic.Bool
 }
 
 // PollerOption customises a Poller at construction time.
@@ -110,6 +151,16 @@ type PollerOption func(*Poller)
 // withClock replaces the time source; tests use it to drive sweeps.
 func withClock(c clock) PollerOption {
 	return func(p *Poller) { p.clk = c }
+}
+
+// WithShowEye enables the network-port Eye section in the normal query.
+func WithShowEye(enabled bool) PollerOption {
+	return func(p *Poller) { p.showEye = enabled }
+}
+
+// WithShowPCIeEye enables the low-priority root PCIe Eye query.
+func WithShowPCIeEye(enabled bool) PollerOption {
+	return func(p *Poller) { p.showPCIeEye = enabled }
 }
 
 // NewPoller returns a poller that collects from discovery through runner every
@@ -133,6 +184,10 @@ func newPoller(discovery discoverer, runner commandRunner, interval time.Duratio
 			Name: "mlxlink_collection_errors_total",
 			Help: "Total number of mlxlink query and decode errors, plus skipped overlapping sweeps, by reason.",
 		}, []string{"device", "port", "pci_addr", "reason"}),
+		pcieEyeErrors: prometheus.NewCounterVec(prometheus.CounterOpts{
+			Name: "mlxlink_pcie_eye_collection_errors_total",
+			Help: "Total number of PCIe Eye query and decode errors, plus skipped overlapping sweeps, by reason.",
+		}, []string{"device", "pci_addr", "reason"}),
 	}
 	for _, opt := range opts {
 		opt(p)
@@ -143,9 +198,15 @@ func newPoller(discovery discoverer, runner commandRunner, interval time.Duratio
 // Errors exposes the collection error counter for registration by the caller.
 func (p *Poller) Errors() prometheus.Collector { return p.errors }
 
+// PCIeEyeErrors exposes the independent PCIe Eye collection error counter.
+func (p *Poller) PCIeEyeErrors() prometheus.Collector { return p.pcieEyeErrors }
+
 // Snapshots returns the current immutable snapshot set, or nil before the first
 // device has been collected.
 func (p *Poller) Snapshots() *snapshotSet { return p.store.Load() }
+
+// PCIeEyeSnapshots returns the independent root PCIe Eye snapshots.
+func (p *Poller) PCIeEyeSnapshots() *pcieEyeSnapshotSet { return p.pcieEyeStore.Load() }
 
 // Ready reports whether at least one device has ever been collected
 // successfully. It never returns to false: once data exists, a later failure
@@ -211,6 +272,13 @@ func (p *Poller) countOverlap() {
 	for _, snapshot := range set.devices {
 		p.countError(snapshot.Target, ReasonOverlapping)
 	}
+	if p.showPCIeEye {
+		if pcieSet := p.pcieEyeStore.Load(); pcieSet != nil {
+			for _, snapshot := range pcieSet.devices {
+				p.countPCIeEyeError(snapshot.Target, ReasonOverlapping)
+			}
+		}
+	}
 	// Logged after counting so the record marks a completed accounting.
 	p.logger.Warn("mlxlink sweep did not finish before the next tick",
 		"devices", len(set.devices), "poll_interval", p.interval.String())
@@ -252,6 +320,71 @@ func (p *Poller) sweep(ctx context.Context) {
 	// Devices that disappeared are absent from targets and therefore from the
 	// set published here.
 	p.store.Store(newSnapshotSet(collected))
+	if p.showPCIeEye {
+		p.sweepPCIeEye(ctx, targets)
+	}
+}
+
+func (p *Poller) sweepPCIeEye(ctx context.Context, targets []Target) {
+	previous := p.pcieEyeStore.Load()
+	collected := make([]PCIeEyeSnapshot, 0, len(targets))
+
+	for i, target := range targets {
+		snapshot, ok := p.collectPCIeEye(ctx, target, previous)
+		if !ok {
+			return
+		}
+		collected = append(collected, snapshot)
+		p.publishPCIeEye(collected, targets[i+1:], previous)
+	}
+	p.pcieEyeStore.Store(newPCIeEyeSnapshotSet(collected))
+}
+
+func (p *Poller) publishPCIeEye(collected []PCIeEyeSnapshot, pending []Target, previous *pcieEyeSnapshotSet) {
+	devices := make([]PCIeEyeSnapshot, 0, len(collected)+len(pending))
+	devices = append(devices, collected...)
+	for _, target := range pending {
+		if snapshot, ok := previous.lookup(target.Device); ok {
+			devices = append(devices, snapshot)
+		}
+	}
+	p.pcieEyeStore.Store(newPCIeEyeSnapshotSet(devices))
+}
+
+func (p *Poller) collectPCIeEye(
+	ctx context.Context,
+	target Target,
+	previous *pcieEyeSnapshotSet,
+) (PCIeEyeSnapshot, bool) {
+	snapshot, _ := previous.lookup(target.Device)
+	snapshot.Target = target
+
+	start := p.clk.Now()
+	raw, err := p.runner.RunPCIeEye(ctx, target.Device)
+	now := p.clk.Now()
+	snapshot.LastDuration = now.Sub(start)
+	if ctx.Err() != nil {
+		return PCIeEyeSnapshot{}, false
+	}
+	if err != nil {
+		p.recordPCIeEyeFailure(&snapshot, ReasonFromError(err), err)
+		return snapshot, true
+	}
+
+	data, err := DecodePCIeEye(raw)
+	if ctx.Err() != nil {
+		return PCIeEyeSnapshot{}, false
+	}
+	if err != nil {
+		p.recordPCIeEyeFailure(&snapshot, ReasonInvalidJSON, err)
+		return snapshot, true
+	}
+	snapshot.Data = data
+	snapshot.LastSuccess = now
+	snapshot.LastError = ""
+	p.logger.Debug("mlxlink PCIe Eye collected",
+		"device", target.Device, "pci_addr", target.PCIAddr, "duration", snapshot.LastDuration)
+	return snapshot, true
 }
 
 // publish makes the devices collected so far visible mid-sweep. Devices this
@@ -277,14 +410,69 @@ func (p *Poller) collect(ctx context.Context, target Target, previous *snapshotS
 	snapshot.Target = target
 
 	start := p.clk.Now()
+	if p.showEye {
+		return p.collectWithEye(ctx, target, snapshot, start)
+	}
+	return p.collectCombined(ctx, target, snapshot, start)
+}
+
+func (p *Poller) collectWithEye(
+	ctx context.Context,
+	target Target,
+	snapshot DeviceSnapshot,
+	start time.Time,
+) (DeviceSnapshot, bool) {
+	raw, err := p.runner.RunWithEye(ctx, target.Device)
+	now := p.clk.Now()
+	snapshot.LastDuration = now.Sub(start)
+	if ctx.Err() != nil {
+		return DeviceSnapshot{}, false
+	}
+
+	if err != nil {
+		if ReasonFromError(err) == ReasonExitError {
+			fallback, ok := p.collectCombined(ctx, target, snapshot, start)
+			if !ok {
+				return DeviceSnapshot{}, false
+			}
+			if ctx.Err() != nil {
+				return DeviceSnapshot{}, false
+			}
+			p.countError(target, ReasonExitError)
+			p.logger.Debug("mlxlink Eye query required combined fallback",
+				"device", target.Device, "port", target.Port, "pci_addr", target.PCIAddr,
+				"reason", ReasonExitError.String(), "duration", fallback.LastDuration)
+			return fallback, true
+		}
+		p.recordFailure(&snapshot, ReasonFromError(err), err)
+		return snapshot, true
+	}
+
+	data, err := Decode(raw)
+	if ctx.Err() != nil {
+		return DeviceSnapshot{}, false
+	}
+	if err != nil {
+		p.recordFailure(&snapshot, ReasonInvalidJSON, err)
+		return snapshot, true
+	}
+	return p.recordSuccess(snapshot, target, data, now), true
+}
+
+func (p *Poller) collectCombined(
+	ctx context.Context,
+	target Target,
+	snapshot DeviceSnapshot,
+	start time.Time,
+) (DeviceSnapshot, bool) {
 	raw, err := p.runner.Run(ctx, target.Device)
 	now := p.clk.Now()
 	snapshot.LastDuration = now.Sub(start)
+	if ctx.Err() != nil {
+		return DeviceSnapshot{}, false
+	}
 
 	if err != nil {
-		if ctx.Err() != nil {
-			return DeviceSnapshot{}, false
-		}
 		if ReasonFromError(err) == ReasonExitError {
 			return p.collectBaseline(ctx, target, snapshot, start)
 		}
@@ -293,13 +481,22 @@ func (p *Poller) collect(ctx context.Context, target Target, previous *snapshotS
 	}
 
 	data, err := Decode(raw)
+	if ctx.Err() != nil {
+		return DeviceSnapshot{}, false
+	}
 	if err != nil {
 		// Decode returns a plain error by design, so the reason is assigned
 		// here; ReasonFromError would flatten it to unknown.
 		p.recordFailure(&snapshot, ReasonInvalidJSON, err)
 		return snapshot, true
 	}
+	// Only RunWithEye makes Eye data authoritative. A normal combined query may
+	// still include an unsolicited section, but the opt-in contract omits it.
+	data.Eye = Eye{}
+	return p.recordSuccess(snapshot, target, data, now), true
+}
 
+func (p *Poller) recordSuccess(snapshot DeviceSnapshot, target Target, data PortData, now time.Time) DeviceSnapshot {
 	snapshot.Data = data
 	snapshot.LastSuccess = now
 	// Readiness is deliberately not announced here: the caller publishes the
@@ -309,7 +506,7 @@ func (p *Poller) collect(ctx context.Context, target Target, previous *snapshotS
 	p.logger.Debug("mlxlink device collected",
 		"device", target.Device, "port", target.Port, "pci_addr", target.PCIAddr,
 		"duration", snapshot.LastDuration)
-	return snapshot, true
+	return snapshot
 }
 
 // collectBaseline retries the original module and counter query after a
@@ -333,20 +530,17 @@ func (p *Poller) collectBaseline(
 		return DeviceSnapshot{}, false
 	}
 
-	// Account for the rejected combined query only after the fallback attempt
-	// finishes, so cancellation cannot turn shutdown into a collection error.
-	// It is not a collection warning when the baseline query recovers the base
-	// data, and the runner has already logged its detailed cause at debug level.
-	p.countError(target, ReasonExitError)
-	p.logger.Debug("mlxlink combined query required baseline fallback",
-		"device", target.Device, "port", target.Port, "pci_addr", target.PCIAddr,
-		"reason", ReasonExitError.String(), "duration", snapshot.LastDuration)
 	if fallbackErr != nil {
+		p.recordCombinedFallback(target, snapshot.LastDuration)
 		p.recordFailure(&snapshot, ReasonFromError(fallbackErr), fallbackErr)
 		return snapshot, true
 	}
 
 	data, err := Decode(raw)
+	if ctx.Err() != nil {
+		return DeviceSnapshot{}, false
+	}
+	p.recordCombinedFallback(target, snapshot.LastDuration)
 	if err != nil {
 		p.recordFailure(&snapshot, ReasonInvalidJSON, err)
 		return snapshot, true
@@ -357,6 +551,7 @@ func (p *Poller) collectBaseline(
 	// them would hide that the combined query which requested them failed.
 	data.FECHistogram = nil
 	data.SerDesTX = SerDesTX{}
+	data.Eye = Eye{}
 	snapshot.Data = data
 	snapshot.LastSuccess = now
 	snapshot.LastError = ""
@@ -364,6 +559,15 @@ func (p *Poller) collectBaseline(
 		"device", target.Device, "port", target.Port, "pci_addr", target.PCIAddr,
 		"duration", snapshot.LastDuration)
 	return snapshot, true
+}
+
+// recordCombinedFallback accounts for the rejected combined query only after
+// the fallback result is known, so shutdown does not become a collection error.
+func (p *Poller) recordCombinedFallback(target Target, duration time.Duration) {
+	p.countError(target, ReasonExitError)
+	p.logger.Debug("mlxlink combined query required baseline fallback",
+		"device", target.Device, "port", target.Port, "pci_addr", target.PCIAddr,
+		"reason", ReasonExitError.String(), "duration", duration)
 }
 
 // recordFailure keeps the previous data and last success timestamp: stale data
@@ -391,4 +595,22 @@ func (p *Poller) recordFailure(snapshot *DeviceSnapshot, reason ErrorReason, err
 
 func (p *Poller) countError(target Target, reason ErrorReason) {
 	p.errors.WithLabelValues(target.Device, target.Port, target.PCIAddr, reason.String()).Inc()
+}
+
+func (p *Poller) recordPCIeEyeFailure(snapshot *PCIeEyeSnapshot, reason ErrorReason, err error) {
+	snapshot.LastError = reason
+	p.countPCIeEyeError(snapshot.Target, reason)
+
+	logErr := err
+	var runErr *RunError
+	if errors.As(err, &runErr) {
+		logErr = runErr.Err
+	}
+	p.logger.Warn("mlxlink PCIe Eye collection failed",
+		"device", snapshot.Target.Device, "pci_addr", snapshot.Target.PCIAddr,
+		"reason", reason.String(), "duration", snapshot.LastDuration, "err", logErr)
+}
+
+func (p *Poller) countPCIeEyeError(target Target, reason ErrorReason) {
+	p.pcieEyeErrors.WithLabelValues(target.Device, target.PCIAddr, reason.String()).Inc()
 }

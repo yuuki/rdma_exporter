@@ -82,9 +82,9 @@ The Go and process collectors from `client_golang` are registered automatically.
 
 ## mlxlink_exporter
 
-This repository also ships a second exporter, `mlxlink_exporter`, which publishes physical link and optical module telemetry that NVIDIA's `mlxlink` reports: bit error ratios, per-lane raw errors, FEC error histograms, SerDes transmitter tuning, transceiver diagnostics (temperature, voltage, bias current, optical power) and module inventory.
+This repository also ships a second exporter, `mlxlink_exporter`, which publishes physical link and optical module telemetry that NVIDIA's `mlxlink` reports: bit error ratios, per-lane raw errors, FEC error histograms, SerDes transmitter tuning, optional network and root-PCIe Eye measurements, transceiver diagnostics (temperature, voltage, bias current, optical power) and module inventory.
 
-It is a separate binary because `mlxlink` is expensive: on the verified MFT 4.34.1 system, the baseline query took 0.77–0.78 s of wall time and most of that cost was fixed firmware-access overhead. The production query, `mlxlink -d <device> -m -c --rx_fec_histogram --show_histogram --show_serdes_tx --json`, took 0.83 s, adding only about 0.05–0.06 s. This is far too slow to run inside a Prometheus scrape, so a background poller runs the production query once per device per `--poll-interval` and publishes the decoded result into an immutable in-memory snapshot; `/metrics` only reads that snapshot. Scrape frequency therefore has no effect on how often `mlxlink` runs, and the two exporters stay in separate processes so that a firmware hang or an extra privilege never affects `rdma_exporter`.
+It is a separate binary because `mlxlink` is expensive: on the verified MFT 4.34.1 ConnectX-7 system, the baseline query took 0.77–0.78 s of wall time and most of that cost was fixed firmware-access overhead. The normal combined query, `mlxlink -d <device> -m -c --rx_fec_histogram --show_histogram --show_serdes_tx --json`, took 0.83 s. The same combined query with `--show_eye` also took 0.83 s in one measurement, while the separate root-PCIe Eye query took 0.33 s. These commands are far too slow to run inside a Prometheus scrape, so a background poller runs them on its own schedule and publishes decoded results into immutable in-memory snapshots; `/metrics` only reads those snapshots. Scrape frequency therefore has no effect on how often `mlxlink` runs, and the two exporters stay in separate processes so that a firmware hang or an extra privilege never affects `rdma_exporter`.
 
 The default listen address is `:9880`.
 
@@ -93,7 +93,7 @@ The default listen address is `:9880`.
 - [NVIDIA MFT](https://network.nvidia.com/products/adapter-software/firmware-tools/) installed, providing the `mlxlink` binary (`--mlxlink-path`, default `/usr/bin/mlxlink`). The exporter exits with status 1 at start-up if that path does not exist.
 - Devices are addressed by their IB device name (`mlxlink -d mlx5_0`), so `mst start` and `/dev/mst/*` device nodes are **not** required.
 - Read access to `/sys/class/infiniband` for device discovery.
-- Verified against MFT 4.34.1 output. Decoder tests use the captured baseline response `internal/mlxlink/testdata/mlxlink/mft-4.34.1-400g-dr4.json` and the captured combined-query response `internal/mlxlink/testdata/mlxlink/mft-4.34.1-400g-fec-serdes.json`.
+- Verified against MFT 4.34.1 output from one ConnectX-7 system. Decoder tests use captured baseline, FEC/SerDes, network Eye and root-PCIe Eye responses under `internal/mlxlink/testdata/mlxlink/`. The serial number in the Eye capture is redacted. Other MFT releases and adapter families are not yet qualified.
 
 ### Build and run
 ```bash
@@ -107,12 +107,14 @@ make build   # compiles ./rdma_exporter and ./mlxlink_exporter
   --poll-interval=30s
 ```
 
-Recommended settings: keep `--poll-interval=30s` and scrape every 15–30 s. Scraping more often is free, because a scrape never executes `mlxlink`; only `--poll-interval` controls how often the tool runs. A sweep visits every device sequentially, so with N devices one normal sweep costs about N × 0.83 s on the verified hardware. A baseline fallback after a combined query exits non-zero adds another invocation for the affected device.
+Both Eye flags are optional and default to `false`. After qualifying the corresponding command as the service user, add `--show-eye`, `--show-pcie-eye`, or both to opt in.
+
+Recommended settings: keep `--poll-interval=30s` and scrape every 15–30 s. Scraping more often is free, because a scrape never executes `mlxlink`; only `--poll-interval` controls how often the tool runs. A sweep visits every device sequentially, so with N devices one normal network sweep costs about N × 0.83 s on the verified hardware. When `--show-pcie-eye` is enabled, every network device is collected first, then the root-PCIe Eye query runs once per device at low priority while global `mlxlink` concurrency remains one. A fallback or PCIe Eye query extends the sweep, so verify that the complete sweep stays below the poll interval.
 
 To print build information without starting the server, add `--version`.
 
 ### Configuration
-Every flag except `--version` has an equivalent environment variable, ten in total. Environment values provide defaults; explicit CLI flags take precedence.
+Every flag except `--version` has an equivalent environment variable, twelve in total. Environment values provide defaults; explicit CLI flags take precedence.
 
 | Flag | Environment | Default | Description |
 | ---- | ----------- | ------- | ----------- |
@@ -126,10 +128,12 @@ Every flag except `--version` has an equivalent environment variable, ten in tot
 | `--poll-interval` | `MLXLINK_EXPORTER_POLL_INTERVAL` | `30s` | Interval between background sweeps over all devices |
 | `--command-timeout` | `MLXLINK_EXPORTER_COMMAND_TIMEOUT` | `3s` | Maximum duration of a single `mlxlink` invocation |
 | `--exclude-devices` | `MLXLINK_EXPORTER_EXCLUDE_DEVICES` | `` | Comma-separated list of RDMA devices to skip (e.g., `mlx5_0,mlx5_1`) |
+| `--show-eye` | `MLXLINK_EXPORTER_SHOW_EYE` | `false` | Add network-port Eye telemetry to the combined query |
+| `--show-pcie-eye` | `MLXLINK_EXPORTER_SHOW_PCIE_EYE` | `false` | Collect root-PCIe Eye telemetry with a separate low-priority query |
 | `--version` | – | `false` | Print build information and exit |
 
 ### Metrics
-All families carry the labels `device`, `port` and `pci_addr`; per-lane families add `lane`. **Lane numbers start at 0**: a lane number is the index of the value within the list `mlxlink` reports.
+Network-port families carry the labels `device`, `port` and `pci_addr`; per-lane families add `lane`. Root-PCIe Eye families carry `device` and `pci_addr`, but deliberately have no `port` label because they describe the PCIe link rather than a network port. Non-Eye lane numbers use the zero-based position in the reported list. Eye lane numbers come from the explicit `Lane` list.
 
 Link and inventory:
 - `mlxlink_link_info{device,port,pci_addr,state,physical_state,speed,width,fec,auto_negotiation}` – Gauge set to `1` with the port's operational attributes as labels. Not published when every attribute is empty.
@@ -147,6 +151,13 @@ FEC histogram counters:
 SerDes transmitter tuning (gauges with vendor-defined tuning codes; the verified output provides no physical units):
 - `mlxlink_serdes_tx_fir_coefficient{device,port,pci_addr,lane,tap}` – Transmitter FIR coefficient. `tap` is allowlisted to `pre3`, `pre2`, `pre1`, `main` or `post1`; unknown vendor parameters are not exported.
 - `mlxlink_serdes_tx_drive_amplitude{device,port,pci_addr,lane}` – Transmitter drive-amplitude tuning code.
+
+Optional Eye telemetry (gauges with vendor-defined scores and no physical units):
+- `mlxlink_eye_fom{device,port,pci_addr,lane,stage}` – Network-port figure of merit. `stage` is `initial` or `last`.
+- `mlxlink_eye_grade{device,port,pci_addr,lane,position}` – Network-port grade. `position` is `upper`, `mid` or `lower`.
+- `mlxlink_pcie_eye_fom{device,pci_addr,lane,stage}` – Root-PCIe figure of merit. `stage` is `initial` or `last`.
+
+`FOM Mode` is intentionally not exported as a metric or label: its value set has not been established across MFT and hardware versions.
 
 Bit error ratios (gauges, dimensionless):
 - `mlxlink_effective_physical_ber{device,port,pci_addr}` – Effective physical BER.
@@ -172,22 +183,29 @@ Fault and state flags (gauges, `0` or `1`):
 
 Exporter self-monitoring:
 - `mlxlink_collector_up{device,port,pci_addr}` – `1` when the most recent poll of that device succeeded, `0` otherwise.
-- `mlxlink_collection_duration_seconds{device,port,pci_addr}` – Duration of the latest collection attempt, including both invocations when a baseline fallback runs.
+- `mlxlink_collection_duration_seconds{device,port,pci_addr}` – Duration of the latest collection attempt, including every invocation in the fallback chain.
 - `mlxlink_collection_last_success_timestamp_seconds{device,port,pci_addr}` – Unix timestamp of the last successful collection. Not published for a device that has never succeeded, so the series never reports 1970.
 - `mlxlink_collection_errors_total{device,port,pci_addr,reason}` – Collection failure events, including a combined-query error recovered by baseline fallback and an approximate overlap event. `reason` is one of `timeout`, `command_not_found`, `permission_denied`, `exit_error`, `invalid_json`, `output_too_large`, `overlapping`, `unknown`.
+
+Root-PCIe Eye self-monitoring is registered only when `--show-pcie-eye` is enabled and has no `port` label:
+- `mlxlink_pcie_eye_collector_up{device,pci_addr}` – `1` when the most recent root-PCIe Eye poll succeeded, `0` otherwise.
+- `mlxlink_pcie_eye_collection_duration_seconds{device,pci_addr}` – Duration of the latest root-PCIe Eye attempt.
+- `mlxlink_pcie_eye_collection_last_success_timestamp_seconds{device,pci_addr}` – Unix timestamp of the last successful root-PCIe Eye collection; omitted until the first success.
+- `mlxlink_pcie_eye_collection_errors_total{device,pci_addr,reason}` – Root-PCIe Eye failures and approximate overlap events, using the same closed `reason` set as network collection.
 
 A value that `mlxlink` reports as `N/A` produces no sample at all rather than a zero. For the measurement families (BER, temperature, voltage, bias current, optical power, raw errors) only the affected lane is dropped. The flag families above are all-or-nothing: if any lane of `mlxlink_tx_fault` and friends is unreadable, or reports anything other than `0`/`1`, the whole family is omitted for that port rather than published with renumbered lanes.
 
 ### Operational notes
 - **Physical counters can be cleared.** The physical counters live in the adapter firmware and can be reset by other tooling with `mlxlink --clear_counters`, as well as by firmware resets or link training. `mlxlink` reports how long ago that happened as `Time Since Last Clear [Min]`, which this exporter does not export.
 - **The FEC histogram has separate reset semantics.** `mlxlink --clear_histogram` clears the histogram occurrences independently of `--clear_counters`; adapter, hardware or firmware resets may also return them to zero. The exporter invokes neither explicit reset operation, and operators should not run them merely to monitor the link because doing so destroys counter history. `rate()` and `increase()` detect a reset, but a reset inside an evaluation window still hides the errors that preceded it, so treat a sudden return to zero as "the histogram was reset", not "errors stopped".
-- **A non-zero combined query falls back to baseline telemetry.** When the combined query exits non-zero, the poller retries `mlxlink -d <device> -m -c --json`. A successful fallback refreshes the base metrics, omits FEC histogram and SerDes metrics, and reports `mlxlink_collector_up=1`; once the fallback completes without shutdown cancellation, the rejected combined query also increments `mlxlink_collection_errors_total{reason="exit_error"}`. If the fallback fails, the previous snapshot is retained and the normal staleness rules apply. Other combined-query failures, including timeouts, do not trigger the fallback, and shutdown cancellation is not counted.
+- **Only non-zero exits trigger fallback.** Without network Eye, a rejected combined query falls back directly to `mlxlink -d <device> -m -c --json`. With `--show-eye`, the Eye-enabled combined query first falls back to the normal combined query; if that also exits non-zero, it falls back to baseline. A successful normal-combined fallback omits only Eye data and retains FEC/SerDes data. A successful baseline fallback omits Eye, FEC and SerDes data. Each rejected query increments `mlxlink_collection_errors_total{reason="exit_error"}`, while the successful fallback leaves `mlxlink_collector_up=1`; duration covers the whole staged attempt. Timeouts, permission failures, oversized output, invalid JSON and shutdown cancellation do not advance to the next query.
+- **PCIe Eye failures are isolated.** Root-PCIe Eye collection runs after all network collection, has no fallback, and never changes network snapshots, readiness or `mlxlink_collector_up`. A failure sets its own `up` metric to `0` and retains the previous PCIe Eye values until they become stale.
 - **Stale data is suppressed.** If a device has not been collected successfully for longer than `--poll-interval` × 5 (150 s by default), its measurement series stop being exported while the self-monitoring series continue. This is what distinguishes "the link is fine" from "we stopped being able to ask".
 - **Overlap accounting is approximate.** If a sweep takes longer than `--poll-interval`, the skipped tick is recorded as `mlxlink_collection_errors_total{reason="overlapping"}`. Go tickers coalesce missed ticks, so a sweep that overruns several intervals is still counted once: use the metric to detect that the interval is too short, not to count exactly how many sweeps were lost.
 - **Containers are not supported.** `mlxlink` is part of MFT and talks to the adapter firmware, so it is deliberately absent from the published container images (`dockers` in `.goreleaser.yaml` builds only `rdma_exporter`). Run `mlxlink_exporter` on the host.
 - **Multi-port adapters.** `mlxlink` is invoked once per device without `-p`, so only the lowest port number of a device is collected.
 - **A host with no RDMA devices** stays at `503` on `/readyz` forever, by design: there is nothing to collect. `/healthz` remains `200`.
-- **Eye telemetry is not implemented.** One MFT 4.34.1 observation completed `--show_eye` in 0.33 s and returned FOM and grade fields rather than the previously expected height and phase fields, so a dedicated slow poller is not yet justified. Qualification across additional hardware and output formats is tracked in [Issue #24](https://github.com/yuuki/rdma_exporter/issues/24).
+- **Eye telemetry is opt-in and narrowly qualified.** Both Eye flags default to `false`. Network combined Eye took 0.83 s and the separate PCIe Eye query took 0.33 s in single measurements on MFT 4.34.1/ConnectX-7. These are not multi-run latency guarantees, and other MFT releases, adapter families, cables, line rates and link states remain unverified.
 - Running unprivileged, and how to grant only the privileges your host actually needs, is covered in [docs/deployment.md](docs/deployment.md).
 
 ### Joining with rdma_exporter metrics

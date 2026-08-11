@@ -79,6 +79,16 @@ func (r *ExecRunner) Run(ctx context.Context, device string) ([]byte, error) {
 	return r.run(ctx, device, "-m", "-c", "--rx_fec_histogram", "--show_histogram", "--show_serdes_tx")
 }
 
+// RunWithEye executes the normal query with network-port Eye telemetry.
+func (r *ExecRunner) RunWithEye(ctx context.Context, device string) ([]byte, error) {
+	return r.run(ctx, device, "-m", "-c", "--rx_fec_histogram", "--show_histogram", "--show_serdes_tx", "--show_eye")
+}
+
+// RunPCIeEye executes a separate Eye query for the device's root PCIe link.
+func (r *ExecRunner) RunPCIeEye(ctx context.Context, device string) ([]byte, error) {
+	return r.run(ctx, device, "--port_type", "PCIE", "--show_eye")
+}
+
 // RunBaseline executes only the original module and counter queries. The
 // poller uses it to preserve base telemetry when an optional query makes
 // mlxlink exit unsuccessfully.

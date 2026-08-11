@@ -19,6 +19,8 @@ const (
 	sectionCounters     = "counters_info"
 	sectionFECHistogram = "fec_histogram"
 	sectionSerDesTX     = "serdes_tx"
+	sectionEye          = "eye"
+	sectionPCIeEye      = "pcie_eye"
 
 	fieldState           = "state"
 	fieldPhysicalState   = "physical_state"
@@ -74,13 +76,16 @@ const millisPerUnit = 1000
 //
 // Verified against the MFT 4.34.1 captures in
 // testdata/mlxlink/mft-4.34.1-400g-dr4.json and
-// testdata/mlxlink/mft-4.34.1-400g-fec-serdes.json.
+// testdata/mlxlink/mft-4.34.1-400g-fec-serdes.json, plus the network and PCIe
+// Eye captures in the same directory.
 var fieldAliases = map[string][]string{
 	sectionModule:       {"Module Info"},
 	sectionOperational:  {"Operational Info"},
 	sectionCounters:     {"Physical Counters and BER Info"},
 	sectionFECHistogram: {"Histogram of FEC Errors"},
 	sectionSerDesTX:     {"Serdes Tuning Transmitter Info"},
+	sectionEye:          {"EYE Opening Info"},
+	sectionPCIeEye:      {"EYE Opening Info (PCIe)"},
 
 	fieldState:           {"State"},
 	fieldPhysicalState:   {"Physical state"},
@@ -142,9 +147,8 @@ type section map[string]json.RawMessage
 
 // Decode converts raw mlxlink JSON into a PortData.
 //
-// Lane numbers are zero based: a lane number is the index within the reported
-// lane list, for both shapes mlxlink uses (a "values" array and a comma
-// separated string).
+// Per-lane fields without an explicit lane list use their zero-based position.
+// Eye fields instead use the lane numbers in mlxlink's explicit "Lane" list.
 //
 // Only a response that cannot be trusted as a whole fails: malformed JSON, a
 // non-zero status, or a missing result.output. A missing section or field
@@ -155,15 +159,41 @@ type section map[string]json.RawMessage
 // ErrorReason is the caller's job, which keeps this parsing layer free of
 // metric concerns.
 func Decode(raw []byte) (PortData, error) {
+	output, err := decodeOutput(raw)
+	if err != nil {
+		return PortData{}, err
+	}
+
+	return PortData{
+		Link:         decodeLink(sectionOf(output, sectionOperational)),
+		Counters:     decodeCounters(sectionOf(output, sectionCounters)),
+		Module:       decodeModule(sectionOf(output, sectionModule)),
+		FECHistogram: decodeFECHistogram(sectionOf(output, sectionFECHistogram)),
+		SerDesTX:     decodeSerDesTX(sectionOf(output, sectionSerDesTX)),
+		Eye:          decodeEye(sectionOf(output, sectionEye)),
+	}, nil
+}
+
+// DecodePCIeEye converts a PCIe mlxlink --json response into eye-opening
+// measurements. It applies the same envelope and status validation as Decode.
+func DecodePCIeEye(raw []byte) (PCIeEye, error) {
+	output, err := decodeOutput(raw)
+	if err != nil {
+		return PCIeEye{}, err
+	}
+	return decodePCIeEye(sectionOf(output, sectionPCIeEye)), nil
+}
+
+func decodeOutput(raw []byte) (map[string]json.RawMessage, error) {
 	var doc document
 	if err := json.Unmarshal(raw, &doc); err != nil {
-		return PortData{}, fmt.Errorf("decode mlxlink json: %w", err)
+		return nil, fmt.Errorf("decode mlxlink json: %w", err)
 	}
 	// Judged before the payload is even shaped: a failing mlxlink explains
 	// itself here, and losing that message to a type error would leave the
 	// operator with nothing to act on.
 	if doc.Status != nil && doc.Status.Code != 0 {
-		return PortData{}, fmt.Errorf("mlxlink returned status %d: %s", doc.Status.Code, doc.Status.Message)
+		return nil, fmt.Errorf("mlxlink returned status %d: %s", doc.Status.Code, doc.Status.Message)
 	}
 
 	var result struct {
@@ -171,20 +201,92 @@ func Decode(raw []byte) (PortData, error) {
 	}
 	if len(doc.Result) > 0 {
 		if err := json.Unmarshal(doc.Result, &result); err != nil {
-			return PortData{}, fmt.Errorf("decode mlxlink json: %w", err)
+			return nil, fmt.Errorf("decode mlxlink json: %w", err)
 		}
 	}
 	if result.Output == nil {
-		return PortData{}, fmt.Errorf("decode mlxlink json: %w", errNoOutput)
+		return nil, fmt.Errorf("decode mlxlink json: %w", errNoOutput)
+	}
+	return result.Output, nil
+}
+
+func decodeEye(sec section) Eye {
+	values, ok := decodeEyeLaneValues(sec,
+		"Initial FOM", "Last FOM", "Upper Grades", "Mid Grades", "Lower Grades")
+	if !ok {
+		return Eye{}
+	}
+	return Eye{
+		InitialFOM: values[0],
+		LastFOM:    values[1],
+		UpperGrade: values[2],
+		MidGrade:   values[3],
+		LowerGrade: values[4],
+	}
+}
+
+func decodePCIeEye(sec section) PCIeEye {
+	values, ok := decodeEyeLaneValues(sec, "Initial FOM", "Last FOM")
+	if !ok {
+		return PCIeEye{}
+	}
+	return PCIeEye{InitialFOM: values[0], LastFOM: values[1]}
+}
+
+func decodeEyeLaneValues(sec section, fields ...string) ([][]LaneValue, bool) {
+	if sec == nil {
+		return nil, false
 	}
 
-	return PortData{
-		Link:         decodeLink(sectionOf(result.Output, sectionOperational)),
-		Counters:     decodeCounters(sectionOf(result.Output, sectionCounters)),
-		Module:       decodeModule(sectionOf(result.Output, sectionModule)),
-		FECHistogram: decodeFECHistogram(sectionOf(result.Output, sectionFECHistogram)),
-		SerDesTX:     decodeSerDesTX(sectionOf(result.Output, sectionSerDesTX)),
-	}, nil
+	rawLanes, ok := rawValues(sec["Lane"])
+	if !ok || len(rawLanes) == 0 {
+		return nil, false
+	}
+	rawFamilies := make([][]string, len(fields))
+	for i, field := range fields {
+		rawFamilies[i], ok = rawValues(sec[field])
+		if !ok || len(rawFamilies[i]) != len(rawLanes) {
+			return nil, false
+		}
+	}
+
+	lanes := make([]int, len(rawLanes))
+	seen := make(map[int]struct{}, len(rawLanes))
+	for i, rawLane := range rawLanes {
+		lane, valid := parseNonnegativeInt(strings.TrimSpace(rawLane))
+		if !valid {
+			return nil, false
+		}
+		if _, duplicate := seen[lane]; duplicate {
+			return nil, false
+		}
+		seen[lane] = struct{}{}
+		lanes[i] = lane
+	}
+
+	decoded := make([][]LaneValue, len(fields))
+	for i, lane := range lanes {
+		laneValues := make([]float64, len(fields))
+		validLane := true
+		for family, rawFamily := range rawFamilies {
+			value, err := strconv.ParseFloat(strings.TrimSpace(rawFamily[i]), 64)
+			if err != nil || math.IsInf(value, 0) || math.IsNaN(value) {
+				validLane = false
+				break
+			}
+			laneValues[family] = value
+		}
+		if !validLane {
+			continue
+		}
+		for family, value := range laneValues {
+			decoded[family] = append(decoded[family], LaneValue{Lane: lane, Value: value})
+		}
+	}
+	for _, family := range decoded {
+		sort.Slice(family, func(i, j int) bool { return family[i].Lane < family[j].Lane })
+	}
+	return decoded, true
 }
 
 func decodeFECHistogram(sec section) []FECHistogramBin {

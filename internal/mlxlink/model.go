@@ -67,6 +67,23 @@ type PortData struct {
 	Module       Module
 	FECHistogram []FECHistogramBin
 	SerDesTX     SerDesTX
+	Eye          Eye
+}
+
+// Eye holds network link eye-opening measurements per lane. Each family uses
+// the lane numbers reported by mlxlink rather than positional labels.
+type Eye struct {
+	InitialFOM []LaneValue
+	LastFOM    []LaneValue
+	UpperGrade []LaneValue
+	MidGrade   []LaneValue
+	LowerGrade []LaneValue
+}
+
+// PCIeEye holds PCIe link eye-opening measurements per lane.
+type PCIeEye struct {
+	InitialFOM []LaneValue
+	LastFOM    []LaneValue
 }
 
 // FECHistogramBin counts received FEC codewords by the number of errors in a

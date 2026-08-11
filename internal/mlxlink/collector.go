@@ -46,6 +46,8 @@ type Collector struct {
 	rxFECCodewords *prometheus.Desc
 	serDesTXFIR    *prometheus.Desc
 	serDesTXDrive  *prometheus.Desc
+	eyeFOM         *prometheus.Desc
+	eyeGrade       *prometheus.Desc
 
 	moduleTemperature  *prometheus.Desc
 	moduleVoltage      *prometheus.Desc
@@ -116,6 +118,10 @@ func newCollector(source snapshotSource, staleAfter time.Duration, logger *slog.
 		"Vendor-defined transmitter FIR tuning code reported by mlxlink.", append(lane, "tap"))
 	c.serDesTXDrive = c.newDesc("mlxlink_serdes_tx_drive_amplitude",
 		"Vendor-defined transmitter drive amplitude tuning code reported by mlxlink.", lane)
+	c.eyeFOM = c.newDesc("mlxlink_eye_fom",
+		"Vendor-defined network Eye figure-of-merit score reported by mlxlink.", append(lane, "stage"))
+	c.eyeGrade = c.newDesc("mlxlink_eye_grade",
+		"Vendor-defined network Eye grade reported by mlxlink.", append(lane, "position"))
 
 	c.moduleTemperature = c.newDesc("mlxlink_module_temperature_celsius",
 		"Optical module temperature in degrees Celsius.", base)
@@ -153,7 +159,7 @@ func newCollector(source snapshotSource, staleAfter time.Duration, logger *slog.
 	c.up = c.newDesc("mlxlink_collector_up",
 		"Whether the most recent mlxlink poll for this device succeeded.", base)
 	c.collectionDuration = c.newDesc("mlxlink_collection_duration_seconds",
-		"Duration of the latest mlxlink collection attempt, including baseline fallback, for this device in seconds.", base)
+		"Duration of the latest mlxlink collection attempt, including all fallback invocations, for this device in seconds.", base)
 	c.lastSuccess = c.newDesc("mlxlink_collection_last_success_timestamp_seconds",
 		"Unix timestamp of the most recent successful mlxlink collection for this device.", base)
 
@@ -223,6 +229,7 @@ func (c *Collector) collectDevice(ch chan<- prometheus.Metric, snapshot DeviceSn
 	c.collectModule(ch, snapshot.Data.Module, labels)
 	c.collectFECHistogram(ch, snapshot.Data.FECHistogram, labels)
 	c.collectSerDesTX(ch, snapshot.Data.SerDesTX, labels)
+	c.collectEye(ch, snapshot.Data.Eye, labels)
 }
 
 // isStale reports whether the cached data is too old to publish. Data that was
@@ -303,6 +310,14 @@ func (c *Collector) collectSerDesTX(ch chan<- prometheus.Metric, serdes SerDesTX
 	sendLanes(ch, c.serDesTXDrive, prometheus.GaugeValue, serdes.DriveAmplitude, labels)
 }
 
+func (c *Collector) collectEye(ch chan<- prometheus.Metric, eye Eye, labels []string) {
+	sendLanesWithLabel(ch, c.eyeFOM, eye.InitialFOM, labels, "initial")
+	sendLanesWithLabel(ch, c.eyeFOM, eye.LastFOM, labels, "last")
+	sendLanesWithLabel(ch, c.eyeGrade, eye.UpperGrade, labels, "upper")
+	sendLanesWithLabel(ch, c.eyeGrade, eye.MidGrade, labels, "mid")
+	sendLanesWithLabel(ch, c.eyeGrade, eye.LowerGrade, labels, "lower")
+}
+
 // sendValue drops samples the decoder could not read: a missing field must not
 // become a zero in the time series.
 func sendValue(ch chan<- prometheus.Metric, desc *prometheus.Desc, valueType prometheus.ValueType, value Value, labels []string) {
@@ -316,6 +331,14 @@ func sendLanes(ch chan<- prometheus.Metric, desc *prometheus.Desc, valueType pro
 	for _, lane := range lanes {
 		ch <- prometheus.MustNewConstMetric(desc, valueType, lane.Value,
 			concatLabels(labels, []string{strconv.Itoa(lane.Lane)})...)
+	}
+}
+
+func sendLanesWithLabel(ch chan<- prometheus.Metric, desc *prometheus.Desc, lanes []LaneValue, labels []string, extra string) {
+	for _, lane := range lanes {
+		values := []string{strconv.Itoa(lane.Lane), extra}
+		ch <- prometheus.MustNewConstMetric(desc, prometheus.GaugeValue, lane.Value,
+			concatLabels(labels, values)...)
 	}
 }
 

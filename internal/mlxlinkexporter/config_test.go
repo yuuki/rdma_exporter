@@ -18,6 +18,8 @@ var exporterEnvVars = []string{
 	"MLXLINK_EXPORTER_EXCLUDE_DEVICES",
 	"MLXLINK_EXPORTER_POLL_INTERVAL",
 	"MLXLINK_EXPORTER_COMMAND_TIMEOUT",
+	"MLXLINK_EXPORTER_SHOW_EYE",
+	"MLXLINK_EXPORTER_SHOW_PCIE_EYE",
 }
 
 // clearExporterEnv neutralises ambient MLXLINK_EXPORTER_* variables so tests
@@ -70,6 +72,12 @@ func TestParse_Defaults(t *testing.T) {
 	if cfg.ShowVersion {
 		t.Errorf("expected show version to be false by default")
 	}
+	if cfg.ShowEye {
+		t.Errorf("expected show eye to be false by default")
+	}
+	if cfg.ShowPCIeEye {
+		t.Errorf("expected show PCIe eye to be false by default")
+	}
 	if got, want := cfg.StaleAfter(), defaultPollInterval*staleAfterFactor; got != want {
 		t.Errorf("expected stale after %v, got %v", want, got)
 	}
@@ -87,6 +95,8 @@ func TestParse_EnvOverridesDefaults(t *testing.T) {
 	t.Setenv("MLXLINK_EXPORTER_EXCLUDE_DEVICES", "mlx5_3")
 	t.Setenv("MLXLINK_EXPORTER_POLL_INTERVAL", "45s")
 	t.Setenv("MLXLINK_EXPORTER_COMMAND_TIMEOUT", "7s")
+	t.Setenv("MLXLINK_EXPORTER_SHOW_EYE", "true")
+	t.Setenv("MLXLINK_EXPORTER_SHOW_PCIE_EYE", "1")
 
 	cfg, err := Parse(nil)
 	if err != nil {
@@ -123,6 +133,12 @@ func TestParse_EnvOverridesDefaults(t *testing.T) {
 	if cfg.CommandTimeout != 7*time.Second {
 		t.Errorf("expected command timeout 7s from env, got %v", cfg.CommandTimeout)
 	}
+	if !cfg.ShowEye {
+		t.Errorf("expected show eye from env")
+	}
+	if !cfg.ShowPCIeEye {
+		t.Errorf("expected show PCIe eye from env")
+	}
 	if got, want := cfg.StaleAfter(), 45*time.Second*staleAfterFactor; got != want {
 		t.Errorf("expected stale after %v, got %v", want, got)
 	}
@@ -134,12 +150,16 @@ func TestParse_FlagsOverrideEnv(t *testing.T) {
 	t.Setenv("MLXLINK_EXPORTER_MLXLINK_PATH", "/opt/mft/bin/mlxlink")
 	t.Setenv("MLXLINK_EXPORTER_POLL_INTERVAL", "45s")
 	t.Setenv("MLXLINK_EXPORTER_COMMAND_TIMEOUT", "7s")
+	t.Setenv("MLXLINK_EXPORTER_SHOW_EYE", "true")
+	t.Setenv("MLXLINK_EXPORTER_SHOW_PCIE_EYE", "true")
 
 	cfg, err := Parse([]string{
 		"--listen-address", "0.0.0.0:1234",
 		"--mlxlink-path", "/usr/local/bin/mlxlink",
 		"--poll-interval", "10s",
 		"--command-timeout", "2s",
+		"--show-eye=false",
+		"--show-pcie-eye=false",
 	})
 	if err != nil {
 		t.Fatalf("Parse returned error: %v", err)
@@ -156,6 +176,40 @@ func TestParse_FlagsOverrideEnv(t *testing.T) {
 	}
 	if cfg.CommandTimeout != 2*time.Second {
 		t.Errorf("expected command timeout 2s from flag, got %v", cfg.CommandTimeout)
+	}
+	if cfg.ShowEye {
+		t.Errorf("expected CLI to disable show eye")
+	}
+	if cfg.ShowPCIeEye {
+		t.Errorf("expected CLI to disable show PCIe eye")
+	}
+}
+
+func TestParse_ShowEyeFlags(t *testing.T) {
+	clearExporterEnv(t)
+
+	cfg, err := Parse([]string{"--show-eye", "--show-pcie-eye"})
+	if err != nil {
+		t.Fatalf("Parse returned error: %v", err)
+	}
+	if !cfg.ShowEye {
+		t.Errorf("expected --show-eye to enable network eye collection")
+	}
+	if !cfg.ShowPCIeEye {
+		t.Errorf("expected --show-pcie-eye to enable PCIe eye collection")
+	}
+}
+
+func TestParse_InvalidBooleanFromEnv(t *testing.T) {
+	for _, key := range []string{"MLXLINK_EXPORTER_SHOW_EYE", "MLXLINK_EXPORTER_SHOW_PCIE_EYE"} {
+		t.Run(key, func(t *testing.T) {
+			clearExporterEnv(t)
+			t.Setenv(key, "sometimes")
+
+			if _, err := Parse(nil); err == nil {
+				t.Fatalf("expected invalid boolean error for %s", key)
+			}
+		})
 	}
 }
 
