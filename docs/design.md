@@ -1,6 +1,6 @@
 # rdma_exporter Design
 
-This document covers the sysfs-based `rdma_exporter`. The companion `mlxlink_exporter`, which polls NVIDIA MFT tooling for physical layer and optical module telemetry, has its own design document: [mlxlink_exporter_design.md](mlxlink_exporter_design.md).
+This document covers the sysfs-based `rdma_exporter`.
 
 ## 1. Background and Goals
 High-performance computing clusters and low-latency trading platforms increasingly rely on RDMA-capable network adapters to reduce CPU overhead and latency. Operators need continuous visibility into link health, error counters, and configuration drift. `rdma_exporter` collects RDMA NIC statistics from Linux hosts and exposes them as Prometheus metrics, providing the following goals:
