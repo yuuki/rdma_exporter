@@ -22,6 +22,7 @@ const (
 	defaultEnableRoCEPFC          = true
 	defaultEnableNetDevHW         = false
 	defaultEnableOptionalCounters = false
+	defaultEnableQPCounters       = false
 )
 
 // Config captures runtime configuration options.
@@ -35,6 +36,7 @@ type Config struct {
 	EnableRoCEPFCMetrics   bool
 	EnableNetDevHWMetrics  bool
 	EnableOptionalCounters bool
+	EnableQPCounters       bool
 	ExcludeDevices         []string
 	ShowVersion            bool
 }
@@ -71,6 +73,12 @@ func Parse(args []string) (Config, error) {
 	}
 	enableOptionalCounters := fs.Bool("enable-rdma-optional-counters", enableOptionalDefault, "Enable optional RDMA hardware counters (e.g. mlx5 cc_*) via NETLINK_RDMA. The exporter never enables counters; use rdma statistic set.")
 
+	enableQPDefault, err := boolEnvOrDefault("RDMA_EXPORTER_ENABLE_RDMA_QP_COUNTERS", defaultEnableQPCounters)
+	if err != nil {
+		return cfg, err
+	}
+	enableQPCounters := fs.Bool("enable-rdma-qp-counters", enableQPDefault, "Enable live auto-type QP counters via NETLINK_RDMA GET/DUMP. The exporter never binds QPs or enables auto mode; use rdma statistic qp set.")
+
 	timeoutDefault := defaultTimeout
 	if envTimeout := os.Getenv("RDMA_EXPORTER_SCRAPE_TIMEOUT"); envTimeout != "" {
 		parsed, err := time.ParseDuration(envTimeout)
@@ -104,6 +112,7 @@ func Parse(args []string) (Config, error) {
 		EnableRoCEPFCMetrics:   *enableRoCEPFCMetrics,
 		EnableNetDevHWMetrics:  *enableNetDevHWMetrics,
 		EnableOptionalCounters: *enableOptionalCounters,
+		EnableQPCounters:       *enableQPCounters,
 		ExcludeDevices:         parseDeviceList(*excludeDevices),
 		ShowVersion:            *showVersion,
 	}

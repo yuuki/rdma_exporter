@@ -22,12 +22,35 @@ const (
 	attrDevIndex                = 1
 	attrDevName                 = 2
 	attrPortIndex               = 3
+	attrResQP                   = 19
+	attrResQPEntry              = 20
+	attrResLQPN                 = 21
+	attrResType                 = 26
+	attrResPID                  = 28
+	attrStatMode                = 74
+	attrStatRes                 = 75
+	attrStatAutoModeMask        = 76
+	attrStatCounter             = 77
+	attrStatCounterEntry        = 78
+	attrStatCounterID           = 79
 	attrStatHWCounters          = 80
 	attrStatHWCounterEntry      = 81
 	attrStatHWCounterEntryName  = 82
 	attrStatHWCounterEntryValue = 83
 	attrStatHWCounterIndex      = 94
 	attrStatHWCounterDynamic    = 95
+)
+
+const (
+	counterModeNone   = 0
+	counterModeAuto   = 1
+	counterModeManual = 2
+
+	counterMaskQPType = 1
+	counterMaskPID    = 1 << 1
+
+	ibQPTCRC = 2
+	ibQPTCUD = 4
 )
 
 const (

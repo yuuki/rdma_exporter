@@ -30,6 +30,9 @@ func TestParseNlMsgs_DataAndAck(t *testing.T) {
 	if got[0].typ != nlType(cmdStatGetStatus) || got[0].seq != 7 {
 		t.Fatalf("data msg: %+v", got[0])
 	}
+	if got[0].flags != 0 {
+		t.Fatalf("data flags %d", got[0].flags)
+	}
 	if got[1].typ != nlmsgError {
 		t.Fatalf("ack type %d", got[1].typ)
 	}
@@ -58,5 +61,39 @@ func TestParseNlMsgs_Truncated(t *testing.T) {
 
 	if _, err := parseNlMsgs([]byte{1, 2, 3}); err == nil {
 		t.Fatal("expected truncated header error")
+	}
+}
+
+func TestParseNlMsgs_DumpIntrFlag(t *testing.T) {
+	t.Parallel()
+
+	buf := make([]byte, nlmsgHdrLen+4)
+	binary.LittleEndian.PutUint32(buf[0:4], uint32(nlmsgHdrLen+4))
+	binary.LittleEndian.PutUint16(buf[4:6], nlType(cmdStatGet))
+	binary.LittleEndian.PutUint16(buf[6:8], nlmFDumpIntr)
+	binary.LittleEndian.PutUint32(buf[8:12], 1)
+
+	got, err := parseNlMsgs(buf)
+	if err != nil {
+		t.Fatalf("parseNlMsgs: %v", err)
+	}
+	if len(got) != 1 || got[0].flags&nlmFDumpIntr == 0 {
+		t.Fatalf("flags %+v", got)
+	}
+}
+
+func TestParseNlMsgs_OverrunType(t *testing.T) {
+	t.Parallel()
+
+	buf := make([]byte, nlmsgHdrLen)
+	binary.LittleEndian.PutUint32(buf[0:4], uint32(nlmsgHdrLen))
+	binary.LittleEndian.PutUint16(buf[4:6], nlmsgOverrun)
+
+	got, err := parseNlMsgs(buf)
+	if err != nil {
+		t.Fatalf("parseNlMsgs: %v", err)
+	}
+	if len(got) != 1 || got[0].typ != nlmsgOverrun {
+		t.Fatalf("got %+v", got)
 	}
 }
