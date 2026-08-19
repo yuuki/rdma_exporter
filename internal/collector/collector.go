@@ -362,10 +362,18 @@ var (
 		"rx_write_requests",
 		"rx_read_requests",
 		"rx_atomic_requests",
+		"rdma_rx_bytes",
+		"rdma_tx_bytes",
+		"rdma_rx_packets",
+		"rdma_tx_packets",
 	}
 
 	qpCounterHelp = "Live auto-type bound user QP aggregate on this port. Port sysfs rdma_<name>_total already includes default + running sets + history; do not add these series to it. Not per-LQPN. A successful dump can still contain retained values if the hardware query failed."
 )
+
+func qpCounterMetricName(dumpName string) string {
+	return "rdma_qp_" + strings.TrimPrefix(dumpName, "rdma_") + "_total"
+}
 
 type rocePFCMetricKind int
 
@@ -726,7 +734,7 @@ func New(provider Provider, logger *slog.Logger, opts ...Option) *RdmaCollector 
 
 	for _, name := range qpCounterValueNames {
 		c.qpValueDescs[name] = prometheus.NewDesc(
-			"rdma_qp_"+name+"_total",
+			qpCounterMetricName(name),
 			qpCounterHelp,
 			[]string{"device", "port", "qp_type"},
 			nil,
