@@ -70,7 +70,7 @@ The repository includes a multi-stage Dockerfile at the repository root.
      rdma-exporter:latest
    ```
 
-   `--network host` keeps the default listen address. Alternatively, expose port `9879/tcp` explicitly with `-p 9879:9879` and set `--listen-address=:9879` or another value fitting your environment.
+   `--network host` keeps the default listen address and allows NETLINK_RDMA optional-counter scrapes to reach the host RDMA subsystem. Alternatively, expose port `9879/tcp` explicitly with `-p 9879:9879` and set `--listen-address=:9879` or another value fitting your environment.
 
 3. **Persist configuration** (optional)
 

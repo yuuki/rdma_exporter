@@ -19,6 +19,7 @@ import (
 	"github.com/yuuki/rdma_exporter/internal/config"
 	"github.com/yuuki/rdma_exporter/internal/netdev"
 	"github.com/yuuki/rdma_exporter/internal/rdma"
+	"github.com/yuuki/rdma_exporter/internal/rdmanl"
 	"github.com/yuuki/rdma_exporter/internal/server"
 )
 
@@ -51,6 +52,7 @@ func main() {
 		"sysfs_root", cfg.SysfsRoot,
 		"enable_roce_pfc_metrics", cfg.EnableRoCEPFCMetrics,
 		"enable_netdev_hw_metrics", cfg.EnableNetDevHWMetrics,
+		"enable_rdma_optional_counters", cfg.EnableOptionalCounters,
 	)
 
 	provider := rdma.NewSysfsProvider()
@@ -62,7 +64,7 @@ func main() {
 		logger.Info("excluding devices from monitoring", "devices", cfg.ExcludeDevices)
 	}
 
-	collectorOpts := make([]collector.Option, 0, 3)
+	collectorOpts := make([]collector.Option, 0, 4)
 	var ethtoolProvider *netdev.EthtoolStatsProvider
 	if cfg.EnableRoCEPFCMetrics || cfg.EnableNetDevHWMetrics {
 		ethtoolStatsProvider, err := netdev.NewEthtoolStatsProvider()
@@ -77,6 +79,17 @@ func main() {
 			if cfg.EnableNetDevHWMetrics {
 				collectorOpts = append(collectorOpts, collector.WithNetDevHWMetrics(true))
 			}
+		}
+	}
+
+	var optionalProvider *rdmanl.Provider
+	if cfg.EnableOptionalCounters {
+		optionalCounters, err := rdmanl.New()
+		if err != nil {
+			logger.Warn("failed to initialize optional RDMA counter provider; optional counters are disabled", "err", err)
+		} else {
+			optionalProvider = optionalCounters
+			collectorOpts = append(collectorOpts, collector.WithOptionalCounterProvider(optionalCounters))
 		}
 	}
 
@@ -124,6 +137,11 @@ func main() {
 	if ethtoolProvider != nil {
 		if err := ethtoolProvider.Close(); err != nil {
 			logger.Warn("failed to close netdev ethtool stats provider", "err", err)
+		}
+	}
+	if optionalProvider != nil {
+		if err := optionalProvider.Close(); err != nil {
+			logger.Warn("failed to close optional RDMA counter provider", "err", err)
 		}
 	}
 

@@ -5,6 +5,7 @@ import (
 	"errors"
 	"io"
 	"log/slog"
+	"strconv"
 	"strings"
 	"sync"
 	"testing"
@@ -14,6 +15,7 @@ import (
 	dto "github.com/prometheus/client_model/go"
 
 	"github.com/yuuki/rdma_exporter/internal/rdma"
+	"github.com/yuuki/rdma_exporter/internal/rdmanl"
 )
 
 type stubProvider struct {
@@ -67,6 +69,61 @@ func (s *stubNetDevStatsProvider) CallCount(netDev string) int {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	return s.calls[netDev]
+}
+
+type stubOptionalCounterProvider struct {
+	mu         sync.Mutex
+	prepareN   int
+	counters   map[string][]rdmanl.OptionalCounter
+	errs       map[string]error
+	calls      map[string]int
+	prepareErr error
+}
+
+func newStubOptionalCounterProvider() *stubOptionalCounterProvider {
+	return &stubOptionalCounterProvider{
+		counters: make(map[string][]rdmanl.OptionalCounter),
+		errs:     make(map[string]error),
+		calls:    make(map[string]int),
+	}
+}
+
+func optionalKey(device string, port int) string {
+	return device + "/" + strconv.Itoa(port)
+}
+
+func (s *stubOptionalCounterProvider) Prepare(context.Context) error {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.prepareN++
+	return s.prepareErr
+}
+
+func (s *stubOptionalCounterProvider) Counters(_ context.Context, device string, port int) ([]rdmanl.OptionalCounter, error) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+
+	key := optionalKey(device, port)
+	s.calls[key]++
+	if err, ok := s.errs[key]; ok {
+		return nil, err
+	}
+	src := s.counters[key]
+	out := make([]rdmanl.OptionalCounter, len(src))
+	copy(out, src)
+	return out, nil
+}
+
+func (s *stubOptionalCounterProvider) PrepareCount() int {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return s.prepareN
+}
+
+func (s *stubOptionalCounterProvider) CallCount(device string, port int) int {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return s.calls[optionalKey(device, port)]
 }
 
 func newDiscardLogger() *slog.Logger {
@@ -798,6 +855,326 @@ func TestCollectorIncrementsBothNetDevErrorCountersWhenBothEnabled(t *testing.T)
 	}
 	if got := findMetricValue(t, mfs, "rdma_netdev_scrape_errors_total"); got != 1 {
 		t.Fatalf("expected netdev scrape error counter to be 1, got %v", got)
+	}
+}
+
+func TestCollectorExportsOptionalCounters(t *testing.T) {
+	t.Parallel()
+
+	provider := &stubProvider{
+		devices: []rdma.Device{
+			{
+				Name: "mlx5_0",
+				Ports: []rdma.Port{
+					{ID: 1},
+				},
+			},
+		},
+	}
+	opt := newStubOptionalCounterProvider()
+	opt.counters["mlx5_0/1"] = []rdmanl.OptionalCounter{
+		{Name: "cc_rx_ce_pkts", Enabled: true, Value: 11, HasValue: true},
+		{Name: "cc_rx_cnp_pkts", Enabled: false},
+		{Name: "cc_tx_cnp_pkts", Enabled: true, Value: 22, HasValue: true},
+	}
+
+	c := New(provider, newDiscardLogger(), WithOptionalCounterProvider(opt))
+	reg := prometheus.NewRegistry()
+	reg.MustRegister(c)
+
+	expected := `
+# HELP rdma_cc_rx_ce_pkts_total The number of received RoCEv2 packets marked Congestion Experienced (ECN CE). Optional mlx5 counter read via RDMA netlink; not present in sysfs hw_counters.
+# TYPE rdma_cc_rx_ce_pkts_total counter
+rdma_cc_rx_ce_pkts_total{device="mlx5_0",port="1"} 11
+# HELP rdma_cc_tx_cnp_pkts_total The number of congestion notification packets (CNP) transmitted. Optional mlx5 counter read via RDMA netlink; not present in sysfs hw_counters.
+# TYPE rdma_cc_tx_cnp_pkts_total counter
+rdma_cc_tx_cnp_pkts_total{device="mlx5_0",port="1"} 22
+# HELP rdma_optional_counter_enabled Whether an optional RDMA hardware counter is enabled on the port. 1 means currently enabled; 0 means supported but disabled. The exporter never enables counters.
+# TYPE rdma_optional_counter_enabled gauge
+rdma_optional_counter_enabled{counter="cc_rx_ce_pkts",device="mlx5_0",port="1"} 1
+rdma_optional_counter_enabled{counter="cc_rx_cnp_pkts",device="mlx5_0",port="1"} 0
+rdma_optional_counter_enabled{counter="cc_tx_cnp_pkts",device="mlx5_0",port="1"} 1
+`
+	if err := testutil.GatherAndCompare(reg, strings.NewReader(expected),
+		"rdma_optional_counter_enabled",
+		"rdma_cc_rx_ce_pkts_total",
+		"rdma_cc_rx_cnp_pkts_total",
+		"rdma_cc_tx_cnp_pkts_total",
+	); err != nil {
+		t.Fatalf("unexpected optional counter metrics: %v", err)
+	}
+}
+
+func TestCollectorOptionalCountersIncludeVirtualFunctions(t *testing.T) {
+	t.Parallel()
+
+	provider := &stubProvider{
+		devices: []rdma.Device{
+			{
+				Name: "mlx5_12",
+				IsVF: true,
+				Ports: []rdma.Port{
+					{ID: 1},
+				},
+			},
+		},
+	}
+	opt := newStubOptionalCounterProvider()
+	opt.counters["mlx5_12/1"] = []rdmanl.OptionalCounter{
+		{Name: "cc_rx_ce_pkts", Enabled: true, Value: 3, HasValue: true},
+	}
+
+	c := New(provider, newDiscardLogger(), WithOptionalCounterProvider(opt))
+	reg := prometheus.NewRegistry()
+	reg.MustRegister(c)
+
+	expected := `
+# HELP rdma_cc_rx_ce_pkts_total The number of received RoCEv2 packets marked Congestion Experienced (ECN CE). Optional mlx5 counter read via RDMA netlink; not present in sysfs hw_counters.
+# TYPE rdma_cc_rx_ce_pkts_total counter
+rdma_cc_rx_ce_pkts_total{device="mlx5_12",port="1"} 3
+# HELP rdma_optional_counter_enabled Whether an optional RDMA hardware counter is enabled on the port. 1 means currently enabled; 0 means supported but disabled. The exporter never enables counters.
+# TYPE rdma_optional_counter_enabled gauge
+rdma_optional_counter_enabled{counter="cc_rx_ce_pkts",device="mlx5_12",port="1"} 1
+`
+	if err := testutil.GatherAndCompare(reg, strings.NewReader(expected),
+		"rdma_optional_counter_enabled",
+		"rdma_cc_rx_ce_pkts_total",
+	); err != nil {
+		t.Fatalf("unexpected VF optional counter metrics: %v", err)
+	}
+}
+
+func TestCollectorSkipsOptionalTotalWhenPresentInSysfs(t *testing.T) {
+	t.Parallel()
+
+	provider := &stubProvider{
+		devices: []rdma.Device{
+			{
+				Name: "mlx5_0",
+				Ports: []rdma.Port{
+					{
+						ID: 1,
+						HwStats: map[string]uint64{
+							"cc_rx_ce_pkts": 5,
+						},
+					},
+				},
+			},
+		},
+	}
+	opt := newStubOptionalCounterProvider()
+	opt.counters["mlx5_0/1"] = []rdmanl.OptionalCounter{
+		{Name: "cc_rx_ce_pkts", Enabled: true, Value: 99, HasValue: true},
+	}
+
+	c := New(provider, newDiscardLogger(), WithOptionalCounterProvider(opt))
+	reg := prometheus.NewRegistry()
+	reg.MustRegister(c)
+
+	expected := `
+# HELP rdma_cc_rx_ce_pkts_total The number of received RoCEv2 packets marked Congestion Experienced (ECN CE). Optional mlx5 counter read via RDMA netlink; not present in sysfs hw_counters.
+# TYPE rdma_cc_rx_ce_pkts_total counter
+rdma_cc_rx_ce_pkts_total{device="mlx5_0",port="1"} 5
+# HELP rdma_optional_counter_enabled Whether an optional RDMA hardware counter is enabled on the port. 1 means currently enabled; 0 means supported but disabled. The exporter never enables counters.
+# TYPE rdma_optional_counter_enabled gauge
+rdma_optional_counter_enabled{counter="cc_rx_ce_pkts",device="mlx5_0",port="1"} 1
+`
+	if err := testutil.GatherAndCompare(reg, strings.NewReader(expected),
+		"rdma_cc_rx_ce_pkts_total",
+		"rdma_optional_counter_enabled",
+	); err != nil {
+		t.Fatalf("unexpected overlapping optional metrics: %v", err)
+	}
+}
+
+func TestCollectorIncrementsOptionalCounterError(t *testing.T) {
+	t.Parallel()
+
+	provider := &stubProvider{
+		devices: []rdma.Device{
+			{
+				Name:  "mlx5_0",
+				Ports: []rdma.Port{{ID: 1}},
+			},
+		},
+	}
+	opt := newStubOptionalCounterProvider()
+	opt.errs["mlx5_0/1"] = errors.New("boom")
+
+	c := New(provider, newDiscardLogger(), WithOptionalCounterProvider(opt))
+	reg := prometheus.NewRegistry()
+	reg.MustRegister(c)
+
+	mfs, err := reg.Gather()
+	if err != nil {
+		t.Fatalf("unexpected gather error: %v", err)
+	}
+	value := findMetricValue(t, mfs, "rdma_optional_counter_scrape_errors_total")
+	if value != 1 {
+		t.Fatalf("expected optional counter scrape errors to be 1, got %v", value)
+	}
+}
+
+func TestCollectorOmitsUndocumentedOptionalTotals(t *testing.T) {
+	t.Parallel()
+
+	provider := &stubProvider{
+		devices: []rdma.Device{
+			{
+				Name:  "mlx5_0",
+				Ports: []rdma.Port{{ID: 1}},
+			},
+		},
+	}
+	opt := newStubOptionalCounterProvider()
+	opt.counters["mlx5_0/1"] = []rdmanl.OptionalCounter{
+		{Name: "rdma_rx_packets", Enabled: true, Value: 99, HasValue: true},
+		{Name: "cc_rx_ce_pkts", Enabled: true, Value: 11, HasValue: true},
+	}
+
+	c := New(provider, newDiscardLogger(), WithOptionalCounterProvider(opt))
+	reg := prometheus.NewRegistry()
+	reg.MustRegister(c)
+
+	expected := `
+# HELP rdma_cc_rx_ce_pkts_total The number of received RoCEv2 packets marked Congestion Experienced (ECN CE). Optional mlx5 counter read via RDMA netlink; not present in sysfs hw_counters.
+# TYPE rdma_cc_rx_ce_pkts_total counter
+rdma_cc_rx_ce_pkts_total{device="mlx5_0",port="1"} 11
+# HELP rdma_optional_counter_enabled Whether an optional RDMA hardware counter is enabled on the port. 1 means currently enabled; 0 means supported but disabled. The exporter never enables counters.
+# TYPE rdma_optional_counter_enabled gauge
+rdma_optional_counter_enabled{counter="cc_rx_ce_pkts",device="mlx5_0",port="1"} 1
+rdma_optional_counter_enabled{counter="rdma_rx_packets",device="mlx5_0",port="1"} 1
+`
+	if err := testutil.GatherAndCompare(reg, strings.NewReader(expected),
+		"rdma_optional_counter_enabled",
+		"rdma_cc_rx_ce_pkts_total",
+		"rdma_rdma_rx_packets_total",
+	); err != nil {
+		t.Fatalf("unexpected optional counter metrics: %v", err)
+	}
+}
+
+func TestCollectorOptionalEnabledWithoutValueIncrementsError(t *testing.T) {
+	t.Parallel()
+
+	provider := &stubProvider{
+		devices: []rdma.Device{
+			{
+				Name:  "mlx5_0",
+				Ports: []rdma.Port{{ID: 1}},
+			},
+		},
+	}
+	opt := newStubOptionalCounterProvider()
+	opt.counters["mlx5_0/1"] = []rdmanl.OptionalCounter{
+		{Name: "cc_rx_ce_pkts", Enabled: true, HasValue: false},
+	}
+
+	c := New(provider, newDiscardLogger(), WithOptionalCounterProvider(opt))
+	reg := prometheus.NewRegistry()
+	reg.MustRegister(c)
+
+	mfs, err := reg.Gather()
+	if err != nil {
+		t.Fatalf("unexpected gather error: %v", err)
+	}
+	value := findMetricValue(t, mfs, "rdma_optional_counter_scrape_errors_total")
+	if value != 1 {
+		t.Fatalf("expected enabled-without-value to increment scrape errors, got %v", value)
+	}
+}
+
+func TestCollectorOptionalPrepareFailureSkipsPorts(t *testing.T) {
+	t.Parallel()
+
+	provider := &stubProvider{
+		devices: []rdma.Device{
+			{
+				Name:  "mlx5_0",
+				Ports: []rdma.Port{{ID: 1}},
+			},
+		},
+	}
+	opt := newStubOptionalCounterProvider()
+	opt.prepareErr = errors.New("dump failed")
+	opt.counters["mlx5_0/1"] = []rdmanl.OptionalCounter{
+		{Name: "cc_rx_ce_pkts", Enabled: true, Value: 1, HasValue: true},
+	}
+
+	c := New(provider, newDiscardLogger(), WithOptionalCounterProvider(opt))
+	reg := prometheus.NewRegistry()
+	reg.MustRegister(c)
+
+	mfs, err := reg.Gather()
+	if err != nil {
+		t.Fatalf("unexpected gather error: %v", err)
+	}
+	value := findMetricValue(t, mfs, "rdma_optional_counter_scrape_errors_total")
+	if value != 1 {
+		t.Fatalf("expected prepare failure to increment scrape errors, got %v", value)
+	}
+	if got := opt.CallCount("mlx5_0", 1); got != 0 {
+		t.Fatalf("expected Counters not to run after Prepare failure, got %d", got)
+	}
+}
+
+func TestCollectorPreparesOptionalCountersOncePerScrape(t *testing.T) {
+	t.Parallel()
+
+	provider := &stubProvider{
+		devices: []rdma.Device{
+			{
+				Name: "mlx5_0",
+				Ports: []rdma.Port{
+					{ID: 1},
+					{ID: 2},
+				},
+			},
+		},
+	}
+	opt := newStubOptionalCounterProvider()
+
+	c := New(provider, newDiscardLogger(), WithOptionalCounterProvider(opt))
+	reg := prometheus.NewRegistry()
+	reg.MustRegister(c)
+
+	if _, err := reg.Gather(); err != nil {
+		t.Fatalf("unexpected gather error: %v", err)
+	}
+	if got := opt.PrepareCount(); got != 1 {
+		t.Fatalf("expected Prepare once per scrape, got %d", got)
+	}
+	if got := opt.CallCount("mlx5_0", 1); got != 1 {
+		t.Fatalf("expected Counters for port 1 once, got %d", got)
+	}
+	if got := opt.CallCount("mlx5_0", 2); got != 1 {
+		t.Fatalf("expected Counters for port 2 once, got %d", got)
+	}
+}
+
+func TestCollectorOmitsOptionalMetricsWithoutProvider(t *testing.T) {
+	t.Parallel()
+
+	provider := &stubProvider{
+		devices: []rdma.Device{
+			{
+				Name:  "mlx5_0",
+				Ports: []rdma.Port{{ID: 1}},
+			},
+		},
+	}
+	c := New(provider, newDiscardLogger())
+	reg := prometheus.NewRegistry()
+	reg.MustRegister(c)
+
+	mfs, err := reg.Gather()
+	if err != nil {
+		t.Fatalf("unexpected gather error: %v", err)
+	}
+	for _, mf := range mfs {
+		if mf.GetName() == "rdma_optional_counter_scrape_errors_total" || mf.GetName() == "rdma_optional_counter_enabled" {
+			t.Fatalf("unexpected metric %s without optional provider", mf.GetName())
+		}
 	}
 }
 

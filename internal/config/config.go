@@ -13,28 +13,30 @@ import (
 )
 
 const (
-	defaultListenAddress  = ":9879"
-	defaultMetricsPath    = "/metrics"
-	defaultHealthPath     = "/healthz"
-	defaultLogLevel       = "info"
-	defaultSysfsRoot      = "/sys"
-	defaultTimeout        = 5 * time.Second
-	defaultEnableRoCEPFC  = true
-	defaultEnableNetDevHW = false
+	defaultListenAddress          = ":9879"
+	defaultMetricsPath            = "/metrics"
+	defaultHealthPath             = "/healthz"
+	defaultLogLevel               = "info"
+	defaultSysfsRoot              = "/sys"
+	defaultTimeout                = 5 * time.Second
+	defaultEnableRoCEPFC          = true
+	defaultEnableNetDevHW         = false
+	defaultEnableOptionalCounters = false
 )
 
 // Config captures runtime configuration options.
 type Config struct {
-	ListenAddress         string
-	MetricsPath           string
-	HealthPath            string
-	LogLevel              slog.Level
-	SysfsRoot             string
-	ScrapeTimeout         time.Duration
-	EnableRoCEPFCMetrics  bool
-	EnableNetDevHWMetrics bool
-	ExcludeDevices        []string
-	ShowVersion           bool
+	ListenAddress          string
+	MetricsPath            string
+	HealthPath             string
+	LogLevel               slog.Level
+	SysfsRoot              string
+	ScrapeTimeout          time.Duration
+	EnableRoCEPFCMetrics   bool
+	EnableNetDevHWMetrics  bool
+	EnableOptionalCounters bool
+	ExcludeDevices         []string
+	ShowVersion            bool
 }
 
 // Parse constructs a Config from command-line flags and environment variables.
@@ -63,6 +65,12 @@ func Parse(args []string) (Config, error) {
 	}
 	enableNetDevHWMetrics := fs.Bool("enable-netdev-hw-metrics", enableNetDevHWDefault, "Enable collection of netdev ethtool hardware counters (buffer, PCIe, PHY/FEC). Linux only, opt-in.")
 
+	enableOptionalDefault, err := boolEnvOrDefault("RDMA_EXPORTER_ENABLE_RDMA_OPTIONAL_COUNTERS", defaultEnableOptionalCounters)
+	if err != nil {
+		return cfg, err
+	}
+	enableOptionalCounters := fs.Bool("enable-rdma-optional-counters", enableOptionalDefault, "Enable optional RDMA hardware counters (e.g. mlx5 cc_*) via NETLINK_RDMA. The exporter never enables counters; use rdma statistic set.")
+
 	timeoutDefault := defaultTimeout
 	if envTimeout := os.Getenv("RDMA_EXPORTER_SCRAPE_TIMEOUT"); envTimeout != "" {
 		parsed, err := time.ParseDuration(envTimeout)
@@ -87,16 +95,17 @@ func Parse(args []string) (Config, error) {
 	}
 
 	cfg = Config{
-		ListenAddress:         *listen,
-		MetricsPath:           *metricsPath,
-		HealthPath:            *healthPath,
-		LogLevel:              level,
-		SysfsRoot:             *sysfsRoot,
-		ScrapeTimeout:         *scrapeTimeout,
-		EnableRoCEPFCMetrics:  *enableRoCEPFCMetrics,
-		EnableNetDevHWMetrics: *enableNetDevHWMetrics,
-		ExcludeDevices:        parseDeviceList(*excludeDevices),
-		ShowVersion:           *showVersion,
+		ListenAddress:          *listen,
+		MetricsPath:            *metricsPath,
+		HealthPath:             *healthPath,
+		LogLevel:               level,
+		SysfsRoot:              *sysfsRoot,
+		ScrapeTimeout:          *scrapeTimeout,
+		EnableRoCEPFCMetrics:   *enableRoCEPFCMetrics,
+		EnableNetDevHWMetrics:  *enableNetDevHWMetrics,
+		EnableOptionalCounters: *enableOptionalCounters,
+		ExcludeDevices:         parseDeviceList(*excludeDevices),
+		ShowVersion:            *showVersion,
 	}
 	return cfg, nil
 }

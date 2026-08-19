@@ -32,6 +32,9 @@ func TestParseDefaults(t *testing.T) {
 	if cfg.EnableNetDevHWMetrics {
 		t.Fatalf("expected netdev hardware metrics to be disabled by default")
 	}
+	if cfg.EnableOptionalCounters {
+		t.Fatalf("expected optional RDMA counters to be disabled by default")
+	}
 	if cfg.ShowVersion {
 		t.Fatalf("expected show version to be false by default")
 	}
@@ -128,6 +131,50 @@ func TestNetDevHWMetricsToggleRejectsInvalidEnv(t *testing.T) {
 
 	if _, err := Parse(nil); err == nil {
 		t.Fatalf("expected error for invalid RDMA_EXPORTER_ENABLE_NETDEV_HW_METRICS")
+	}
+}
+
+func TestOptionalCountersDisabledByDefault(t *testing.T) {
+	t.Parallel()
+
+	cfg, err := Parse(nil)
+	if err != nil {
+		t.Fatalf("Parse returned error: %v", err)
+	}
+	if cfg.EnableOptionalCounters {
+		t.Fatal("expected optional RDMA counters to be disabled by default")
+	}
+}
+
+func TestOptionalCountersToggleFromEnv(t *testing.T) {
+	t.Setenv("RDMA_EXPORTER_ENABLE_RDMA_OPTIONAL_COUNTERS", "true")
+
+	cfg, err := Parse(nil)
+	if err != nil {
+		t.Fatalf("Parse returned error: %v", err)
+	}
+	if !cfg.EnableOptionalCounters {
+		t.Fatal("expected optional RDMA counters to be enabled by env")
+	}
+}
+
+func TestOptionalCountersToggleFromFlag(t *testing.T) {
+	t.Setenv("RDMA_EXPORTER_ENABLE_RDMA_OPTIONAL_COUNTERS", "false")
+
+	cfg, err := Parse([]string{"--enable-rdma-optional-counters=true"})
+	if err != nil {
+		t.Fatalf("Parse returned error: %v", err)
+	}
+	if !cfg.EnableOptionalCounters {
+		t.Fatal("expected optional RDMA counters to be enabled by flag")
+	}
+}
+
+func TestOptionalCountersToggleRejectsInvalidEnv(t *testing.T) {
+	t.Setenv("RDMA_EXPORTER_ENABLE_RDMA_OPTIONAL_COUNTERS", "notabool")
+
+	if _, err := Parse(nil); err == nil {
+		t.Fatal("expected error for invalid RDMA_EXPORTER_ENABLE_RDMA_OPTIONAL_COUNTERS")
 	}
 }
 
