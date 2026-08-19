@@ -1418,7 +1418,7 @@ func TestCollectorOmitsUndocumentedQPTotals(t *testing.T) {
 			QPType: "RC",
 			Stats: map[string]uint64{
 				"out_of_buffer": 4,
-				"rdma_rx_bytes": 123,
+				"weird_counter": 123,
 			},
 		},
 	}
@@ -1434,9 +1434,76 @@ rdma_qp_out_of_buffer_total{device="mlx5_0",port="1",qp_type="RC"} 4
 `
 	if err := testutil.GatherAndCompare(reg, strings.NewReader(expected),
 		"rdma_qp_out_of_buffer_total",
-		"rdma_qp_rdma_rx_bytes_total",
+		"rdma_qp_weird_counter_total",
 	); err != nil {
 		t.Fatalf("unexpected QP allowlist metrics: %v", err)
+	}
+}
+
+func TestCollectorExportsQPOptionalTraffic(t *testing.T) {
+	t.Parallel()
+
+	provider := &stubProvider{
+		devices: []rdma.Device{
+			{
+				Name:  "mlx5_0",
+				Ports: []rdma.Port{{ID: 1}},
+			},
+		},
+	}
+	qp := newStubQPProvider()
+	qp.modes["mlx5_0/1"] = rdmanl.QPMode{Mode: "auto", MaskType: true}
+	qp.sets["mlx5_0/1"] = []rdmanl.QPSet{
+		{
+			Mode:   "auto",
+			QPType: "RC",
+			Stats: map[string]uint64{
+				"rdma_rx_bytes":   1,
+				"rdma_tx_bytes":   2,
+				"rdma_rx_packets": 3,
+				"rdma_tx_packets": 4,
+				"out_of_buffer":   5,
+			},
+		},
+		{
+			Mode:   "manual",
+			QPType: "RC",
+			Stats: map[string]uint64{
+				"rdma_rx_bytes": 99,
+			},
+		},
+	}
+
+	c := New(provider, newDiscardLogger(), WithQPCounterProvider(qp))
+	reg := prometheus.NewRegistry()
+	reg.MustRegister(c)
+
+	expected := `
+# HELP rdma_qp_out_of_buffer_total ` + qpCounterHelp + `
+# TYPE rdma_qp_out_of_buffer_total counter
+rdma_qp_out_of_buffer_total{device="mlx5_0",port="1",qp_type="RC"} 5
+# HELP rdma_qp_rx_bytes_total ` + qpCounterHelp + `
+# TYPE rdma_qp_rx_bytes_total counter
+rdma_qp_rx_bytes_total{device="mlx5_0",port="1",qp_type="RC"} 1
+# HELP rdma_qp_rx_packets_total ` + qpCounterHelp + `
+# TYPE rdma_qp_rx_packets_total counter
+rdma_qp_rx_packets_total{device="mlx5_0",port="1",qp_type="RC"} 3
+# HELP rdma_qp_tx_bytes_total ` + qpCounterHelp + `
+# TYPE rdma_qp_tx_bytes_total counter
+rdma_qp_tx_bytes_total{device="mlx5_0",port="1",qp_type="RC"} 2
+# HELP rdma_qp_tx_packets_total ` + qpCounterHelp + `
+# TYPE rdma_qp_tx_packets_total counter
+rdma_qp_tx_packets_total{device="mlx5_0",port="1",qp_type="RC"} 4
+`
+	if err := testutil.GatherAndCompare(reg, strings.NewReader(expected),
+		"rdma_qp_out_of_buffer_total",
+		"rdma_qp_rx_bytes_total",
+		"rdma_qp_rx_packets_total",
+		"rdma_qp_tx_bytes_total",
+		"rdma_qp_tx_packets_total",
+		"rdma_qp_rdma_rx_bytes_total",
+	); err != nil {
+		t.Fatalf("unexpected QP optional traffic metrics: %v", err)
 	}
 }
 
