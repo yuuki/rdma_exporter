@@ -17,6 +17,7 @@ import (
 	"github.com/prometheus/client_golang/prometheus"
 
 	"github.com/yuuki/rdma_exporter/internal/rdma"
+	"github.com/yuuki/rdma_exporter/internal/rdmanl"
 )
 
 // Provider defines the subset of the rdma.Provider interface required by the collector.
@@ -27,6 +28,12 @@ type Provider interface {
 // NetDevStatsProvider fetches ethtool-like statistics for a network device.
 type NetDevStatsProvider interface {
 	Stats(ctx context.Context, netDev string) (map[string]uint64, error)
+}
+
+// OptionalCounterProvider fetches optional RDMA hardware counters via netlink.
+type OptionalCounterProvider interface {
+	Prepare(ctx context.Context) error
+	Counters(ctx context.Context, device string, port int) ([]rdmanl.OptionalCounter, error)
 }
 
 // Option configures collector behavior.
@@ -43,6 +50,9 @@ type RdmaCollector struct {
 	portStatLookup   map[string]string
 	portHwMetrics    map[string]metricEntry
 	portHwStatLookup map[string]string
+
+	portOptionalMetrics    map[string]metricEntry
+	portOptionalStatLookup map[string]string
 
 	rocePFCPauseFramesDesc      *prometheus.Desc
 	rocePFCPauseDurationDesc    *prometheus.Desc
@@ -68,13 +78,17 @@ type RdmaCollector struct {
 	phyRxCRCErrorsDesc     *prometheus.Desc
 	phyLinkDownEventsDesc  *prometheus.Desc
 
-	scrapeErrors         prometheus.Counter
-	rocePFCScrapeErrors  prometheus.Counter
-	netDevHWScrapeErrors prometheus.Counter
+	optionalCounterEnabledDesc *prometheus.Desc
 
-	netDevStatsProvider NetDevStatsProvider
-	collectRoCEPFC      bool
-	collectNetDevHW     bool
+	scrapeErrors                prometheus.Counter
+	rocePFCScrapeErrors         prometheus.Counter
+	netDevHWScrapeErrors        prometheus.Counter
+	optionalCounterScrapeErrors prometheus.Counter
+
+	netDevStatsProvider     NetDevStatsProvider
+	optionalCounterProvider OptionalCounterProvider
+	collectRoCEPFC          bool
+	collectNetDevHW         bool
 
 	collectMu sync.Mutex
 	ctxValue  atomic.Pointer[context.Context]
@@ -275,6 +289,18 @@ var (
 			DocName: "rp_cnp_ignored",
 			Help:    "The number of CNP packets received and ignored by the Reaction Point HCA. This counter should not raise if RoCE Congestion Control was enabled in the network. If this counter rises, verify that ECN was enabled on the adapter. Added in MLNX_OFED 4.1.",
 		},
+		"cc_rx_ce_pkts": {
+			DocName: "cc_rx_ce_pkts",
+			Help:    "The number of received RoCEv2 packets marked Congestion Experienced (ECN CE). Optional mlx5 counter read via RDMA netlink; not present in sysfs hw_counters.",
+		},
+		"cc_rx_cnp_pkts": {
+			DocName: "cc_rx_cnp_pkts",
+			Help:    "The number of congestion notification packets (CNP) received. Optional mlx5 counter read via RDMA netlink; not present in sysfs hw_counters.",
+		},
+		"cc_tx_cnp_pkts": {
+			DocName: "cc_tx_cnp_pkts",
+			Help:    "The number of congestion notification packets (CNP) transmitted. Optional mlx5 counter read via RDMA netlink; not present in sysfs hw_counters.",
+		},
 		"rx_atomic_requests": {
 			DocName: "rx_atomic_requests",
 			Help:    "The number of received ATOMIC requests for the associated QPs.",
@@ -298,6 +324,14 @@ var (
 	}
 
 	metricHelpByDocName = buildMetricHelpByDocName()
+
+	// Values are emitted only for these optional counters. Other optional names
+	// still appear on rdma_optional_counter_enabled so operators can see them.
+	optionalCounterValueNames = map[string]struct{}{
+		"cc_rx_ce_pkts":  {},
+		"cc_rx_cnp_pkts": {},
+		"cc_tx_cnp_pkts": {},
+	}
 )
 
 type rocePFCMetricKind int
@@ -327,6 +361,11 @@ func buildMetricHelpByDocName() map[string]string {
 func (c *RdmaCollector) hwMetricDesc(stat string) *prometheus.Desc {
 	docName := canonicalDocName(stat)
 	return c.metricDesc(stat, docName, "RDMA port hardware counter sourced from sysfs hw_counters.", c.portHwMetrics, c.portHwStatLookup)
+}
+
+func (c *RdmaCollector) optionalMetricDesc(stat string) *prometheus.Desc {
+	docName := canonicalDocName(stat)
+	return c.metricDesc(stat, docName, "RDMA optional hardware counter sourced from RDMA netlink.", c.portOptionalMetrics, c.portOptionalStatLookup)
 }
 
 func (c *RdmaCollector) statMetricDesc(stat string) *prometheus.Desc {
@@ -575,6 +614,12 @@ func New(provider Provider, logger *slog.Logger, opts ...Option) *RdmaCollector 
 			[]string{"device", "port", "netdev"},
 			nil,
 		),
+		optionalCounterEnabledDesc: prometheus.NewDesc(
+			"rdma_optional_counter_enabled",
+			"Whether an optional RDMA hardware counter is enabled on the port. 1 means currently enabled; 0 means supported but disabled. The exporter never enables counters.",
+			[]string{"device", "port", "counter"},
+			nil,
+		),
 		scrapeErrors: prometheus.NewCounter(prometheus.CounterOpts{
 			Name: "rdma_scrape_errors_total",
 			Help: "Total number of errors encountered while scraping RDMA sysfs.",
@@ -587,10 +632,16 @@ func New(provider Provider, logger *slog.Logger, opts ...Option) *RdmaCollector 
 			Name: "rdma_netdev_scrape_errors_total",
 			Help: "Total number of errors encountered while scraping netdev ethtool hardware stats.",
 		}),
-		portStatMetrics:  make(map[string]metricEntry),
-		portStatLookup:   make(map[string]string),
-		portHwMetrics:    make(map[string]metricEntry),
-		portHwStatLookup: make(map[string]string),
+		optionalCounterScrapeErrors: prometheus.NewCounter(prometheus.CounterOpts{
+			Name: "rdma_optional_counter_scrape_errors_total",
+			Help: "Total number of errors encountered while scraping optional RDMA counters via netlink.",
+		}),
+		portStatMetrics:        make(map[string]metricEntry),
+		portStatLookup:         make(map[string]string),
+		portHwMetrics:          make(map[string]metricEntry),
+		portHwStatLookup:       make(map[string]string),
+		portOptionalMetrics:    make(map[string]metricEntry),
+		portOptionalStatLookup: make(map[string]string),
 	}
 
 	for _, opt := range opts {
@@ -629,6 +680,13 @@ func WithRoCEPFCMetrics(enabled bool) Option {
 func WithNetDevHWMetrics(enabled bool) Option {
 	return func(c *RdmaCollector) {
 		c.collectNetDevHW = enabled
+	}
+}
+
+// WithOptionalCounterProvider enables optional RDMA hardware counters via netlink.
+func WithOptionalCounterProvider(provider OptionalCounterProvider) Option {
+	return func(c *RdmaCollector) {
+		c.optionalCounterProvider = provider
 	}
 }
 
@@ -671,6 +729,10 @@ func (c *RdmaCollector) Describe(ch chan<- *prometheus.Desc) {
 	c.scrapeErrors.Describe(ch)
 	c.rocePFCScrapeErrors.Describe(ch)
 	c.netDevHWScrapeErrors.Describe(ch)
+	if c.optionalCounterProvider != nil {
+		ch <- c.optionalCounterEnabledDesc
+		c.optionalCounterScrapeErrors.Describe(ch)
+	}
 
 	c.collectMu.Lock()
 	statDescs := make([]*prometheus.Desc, 0, len(c.portStatMetrics))
@@ -681,12 +743,19 @@ func (c *RdmaCollector) Describe(ch chan<- *prometheus.Desc) {
 	for _, entry := range c.portHwMetrics {
 		hwDescs = append(hwDescs, entry.desc)
 	}
+	optionalDescs := make([]*prometheus.Desc, 0, len(c.portOptionalMetrics))
+	for _, entry := range c.portOptionalMetrics {
+		optionalDescs = append(optionalDescs, entry.desc)
+	}
 	c.collectMu.Unlock()
 
 	for _, desc := range statDescs {
 		ch <- desc
 	}
 	for _, desc := range hwDescs {
+		ch <- desc
+	}
+	for _, desc := range optionalDescs {
 		ch <- desc
 	}
 }
@@ -715,6 +784,19 @@ func (c *RdmaCollector) Collect(ch chan<- prometheus.Metric) {
 
 	netDevStatsCache := make(map[string]netDevStatsCacheEntry)
 	netDevHWEmitted := make(map[string]struct{})
+	optionalReady := false
+	if c.optionalCounterProvider != nil {
+		if err := c.optionalCounterProvider.Prepare(ctx); err != nil {
+			if ctx.Err() != nil {
+				c.logger.Warn("optional rdma counter scrape aborted by context", "err", ctx.Err())
+			} else {
+				c.logger.Warn("optional rdma counter dump failed", "err", err)
+			}
+			c.optionalCounterScrapeErrors.Inc()
+		} else {
+			optionalReady = true
+		}
+	}
 
 	for _, device := range devices {
 		deviceStart := time.Now()
@@ -753,6 +835,10 @@ func (c *RdmaCollector) Collect(ch chan<- prometheus.Metric) {
 				}
 			}
 
+			if optionalReady {
+				c.collectOptionalCounters(ctx, ch, device.Name, port.ID, portID, port.HwStats)
+			}
+
 			attr := port.Attributes
 			c.collectNetDevMetrics(ctx, ch, device.Name, portID, attr, device.IsVF, netDevStatsCache, netDevHWEmitted)
 
@@ -781,6 +867,9 @@ func (c *RdmaCollector) Collect(ch chan<- prometheus.Metric) {
 	c.scrapeErrors.Collect(ch)
 	c.rocePFCScrapeErrors.Collect(ch)
 	c.netDevHWScrapeErrors.Collect(ch)
+	if c.optionalCounterProvider != nil {
+		c.optionalCounterScrapeErrors.Collect(ch)
+	}
 }
 
 func sortedKeys(m map[string]uint64) []string {
@@ -793,6 +882,64 @@ func sortedKeys(m map[string]uint64) []string {
 	}
 	slices.Sort(keys)
 	return keys
+}
+
+func (c *RdmaCollector) collectOptionalCounters(
+	ctx context.Context,
+	ch chan<- prometheus.Metric,
+	deviceName string,
+	portID int,
+	portLabel string,
+	hwStats map[string]uint64,
+) {
+	counters, err := c.optionalCounterProvider.Counters(ctx, deviceName, portID)
+	if err != nil {
+		if ctx.Err() != nil {
+			c.logger.Warn("optional rdma counter scrape aborted by context", "device", deviceName, "port", portLabel, "err", ctx.Err())
+			return
+		}
+		c.logger.Warn("optional rdma counter scrape failed", "device", deviceName, "port", portLabel, "err", err)
+		c.optionalCounterScrapeErrors.Inc()
+		return
+	}
+
+	for _, counter := range counters {
+		if counter.Name == "" {
+			continue
+		}
+		enabled := 0.0
+		if counter.Enabled {
+			enabled = 1
+		}
+		ch <- prometheus.MustNewConstMetric(
+			c.optionalCounterEnabledDesc,
+			prometheus.GaugeValue,
+			enabled,
+			deviceName,
+			portLabel,
+			counter.Name,
+		)
+		if counter.Enabled && !counter.HasValue {
+			c.optionalCounterScrapeErrors.Inc()
+			continue
+		}
+		if !counter.Enabled || !counter.HasValue {
+			continue
+		}
+		if _, ok := optionalCounterValueNames[counter.Name]; !ok {
+			continue
+		}
+		if _, exists := hwStats[counter.Name]; exists {
+			continue
+		}
+		ch <- prometheus.MustNewConstMetric(
+			c.optionalMetricDesc(counter.Name),
+			prometheus.CounterValue,
+			float64(counter.Value),
+			deviceName,
+			portLabel,
+		)
+	}
 }
 
 func (c *RdmaCollector) collectNetDevMetrics(

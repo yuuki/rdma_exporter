@@ -23,6 +23,7 @@ For details on GitHub Actions status badges, see the [official documentation](ht
 - Honors a configurable scrape timeout (`--scrape-timeout`) to protect long-running sysfs reads.
 - Optionally enriches RoCEv2 visibility with PFC counters from netdev ethtool stats (Linux only, best effort).
 - Optionally exports mlx5 ethtool hardware counters for NIC buffer drops, PCIe stalls, and PHY/FEC (opt-in, `--enable-netdev-hw-metrics`).
+- Optionally exports mlx5 congestion-control counters (`cc_*`) that sysfs omits, via RDMA netlink (`--enable-rdma-optional-counters`). The exporter never enables counters.
 
 ## Requirements
 - Go 1.26.6 or newer.
@@ -54,6 +55,67 @@ To exclude specific devices that trigger firmware errors (e.g., on NVIDIA DGX/GB
 ./rdma_exporter --exclude-devices=mlx5_0,mlx5_1
 ```
 
+Optional mlx5 congestion-control counters (`cc_*`) are omitted from sysfs. They are **disabled by default** and `rdma statistic set` is **not persistent**: enablement lives in the in-kernel `rdma_hw_stats` bitmap (and, on mlx5, in flow-steering rules created at enable time). A reboot, `mlx5_ib` reload, or device unbind/rebind returns them to disabled. There is no sysfs, module parameter, or `mlxconfig` knob. Reading them needs Linux 5.16+ (`STAT_GET_STATUS`). The exporter never calls `rdma statistic set`.
+
+`rdma statistic set link DEV/PORT optional-counters A,B` **replaces** the enabled set. Counters not listed are disabled, including other mlx5 optional counters such as `rdma_rx_packets` / `rdma_tx_bytes`. Enabling optional counters allocates mlx5 flow counters and steering rules and may affect datapath performance; measure before leaving them on fleet-wide.
+
+Enable once (`CAP_NET_ADMIN`), then scrape. Confirm with `rdma statistic mode` before trusting `/metrics`:
+```bash
+rdma statistic mode supported link mlx5_0/1
+sudo rdma statistic set link mlx5_0/1 optional-counters cc_rx_ce_pkts,cc_rx_cnp_pkts,cc_tx_cnp_pkts
+rdma statistic mode link mlx5_0/1
+./rdma_exporter --enable-rdma-optional-counters
+```
+
+To re-apply after boot or hotplug, use a root oneshot (not the `rdma_exporter` user). This example **owns** the complete optional-counter set as the three `cc_*` names; include any other optional counters you must keep in the same `set` line. Skip ports that do not advertise `cc_*`, and do not hide `set` failures:
+
+```bash
+#!/bin/sh
+set -eu
+counters=cc_rx_ce_pkts,cc_rx_cnp_pkts,cc_tx_cnp_pkts
+status=0
+for port_dir in /sys/class/infiniband/*/ports/*; do
+  [ -d "$port_dir" ] || continue
+  dev=$(basename "$(dirname "$(dirname "$port_dir")")")
+  port=$(basename "$port_dir")
+  link="$dev/$port"
+  if ! rdma statistic mode supported link "$link" | grep -q cc_rx_ce_pkts; then
+    continue
+  fi
+  rdma statistic set link "$link" optional-counters "$counters" || status=1
+done
+exit "$status"
+```
+
+Install it as `/usr/local/sbin/rdma-enable-optional-counters` and hook it like other RDMA user services ([rdma-core udev.md](https://github.com/linux-rdma/rdma-core/blob/master/Documentation/udev.md)). Do not use udev `RUN+=` (it blocks the udev queue). Activate a oneshot via systemd:
+
+```ini
+# /etc/systemd/system/rdma-optional-counters.service
+[Unit]
+Description=Enable mlx5 optional RDMA hardware counters
+Documentation=man:rdma-statistic(8)
+After=rdma-hw.target
+
+[Service]
+Type=oneshot
+ExecStart=/usr/local/sbin/rdma-enable-optional-counters
+
+[Install]
+WantedBy=rdma-hw.target
+```
+
+```
+# /etc/udev/rules.d/90-rdma-optional-counters.rules
+ACTION=="add", SUBSYSTEM=="infiniband", TAG+="systemd", ENV{SYSTEMD_WANTS}="rdma-optional-counters.service"
+```
+
+```bash
+sudo systemctl daemon-reload
+sudo systemctl enable rdma-optional-counters.service
+```
+
+`enable` without `--now` lets the first hardware appearance start `rdma-hw.target`. `SYSTEMD_WANTS` re-runs the oneshot on later `add` events (VF, driver reload). If `rdma-hw.target` is absent, use `After=network-online.target` and `WantedBy=multi-user.target`, and keep the udev rule for hotplug. After applying, `rdma statistic mode` should list the intended Optional-set.
+
 To print build information without starting the server, add `--version`.
 
 ## Configuration
@@ -69,6 +131,7 @@ Every CLI flag has an equivalent environment variable. Environment values provid
 | `--scrape-timeout` | `RDMA_EXPORTER_SCRAPE_TIMEOUT` | `5s` | Upper bound for metric gathering per scrape |
 | `--enable-roce-pfc-metrics` | `RDMA_EXPORTER_ENABLE_ROCE_PFC_METRICS` | `true` | Enable RoCEv2 PFC metric collection from netdev ethtool stats (Linux only). Does not enable buffer/PCIe/PHY counters. |
 | `--enable-netdev-hw-metrics` | `RDMA_EXPORTER_ENABLE_NETDEV_HW_METRICS` | `false` | Enable ethtool hardware counters for NIC buffer drops, PCIe stalls, and PHY/FEC (Linux only, opt-in). |
+| `--enable-rdma-optional-counters` | `RDMA_EXPORTER_ENABLE_RDMA_OPTIONAL_COUNTERS` | `false` | Enable optional RDMA hardware counters (Linux only, NETLINK_RDMA). The exporter never turns counters on. |
 | `--exclude-devices` | `RDMA_EXPORTER_EXCLUDE_DEVICES` | `` | Comma-separated list of RDMA devices to exclude (e.g., `mlx5_0,mlx5_1`) |
 
 ## Metrics
@@ -81,6 +144,11 @@ Every CLI flag has an equivalent environment variable. Environment values provid
 - `rdma_roce_pfc_scrape_errors_total{}` – Counter incremented when PFC ethtool collection fails.
 - `rdma_netdev_*` / `rdma_pcie_*` / `rdma_phy_*` – Opt-in ethtool hardware counters (`--enable-netdev-hw-metrics`). See below.
 - `rdma_netdev_scrape_errors_total{}` – Counter incremented when netdev hardware ethtool collection fails.
+- `rdma_optional_counter_enabled{device,port,counter}` – Gauge (`1`/`0`) for each optional hardware counter advertised by `rdma statistic mode`. Opt-in (`--enable-rdma-optional-counters`, Linux 5.16+).
+- `rdma_optional_counter_scrape_errors_total{}` – Counter incremented when optional-counter netlink collection fails, including an enabled counter whose value was missing in the same scrape.
+- `rdma_cc_rx_ce_pkts_total`, `rdma_cc_rx_cnp_pkts_total`, `rdma_cc_tx_cnp_pkts_total` – Optional mlx5 congestion-control counters from RDMA netlink. These never appear in sysfs `hw_counters` (`IB_STAT_FLAG_OPTIONAL`). They are distinct from the always-on NP/RP counters (`rdma_np_*`, `rdma_rp_*`). Values are emitted only for these three names, and only while the counter is enabled and a value was read. Other optional names (for example `rdma_rx_packets`) appear only on `rdma_optional_counter_enabled` until they are explicitly added.
+
+See the [Run](#run) section for the operator enablement sequence (`rdma statistic set` plus `--enable-rdma-optional-counters`).
 
 The Go and process collectors from `client_golang` are registered automatically.
 
@@ -123,7 +191,7 @@ Enabling these counters adds one series per present allowlisted ethtool key (not
 
 ### RoCEv2 congestion control
 
-Default sysfs `hw_counters` already export Notification Point / Reaction Point counters (`rdma_np_cnp_sent_total`, `rdma_np_ecn_marked_roce_packets_total`, `rdma_rp_cnp_handled_total`, `rdma_rp_cnp_ignored_total`). mlx5 optional counters (`cc_rx_ce_pkts`, `cc_rx_cnp_pkts`, `cc_tx_cnp_pkts`) are **not** exposed in sysfs even when enabled with `rdma statistic set`; this exporter does not read them yet.
+Default sysfs `hw_counters` already export Notification Point / Reaction Point counters (`rdma_np_cnp_sent_total`, `rdma_np_ecn_marked_roce_packets_total`, `rdma_rp_cnp_handled_total`, `rdma_rp_cnp_ignored_total`). mlx5 optional counters (`cc_rx_ce_pkts`, `cc_rx_cnp_pkts`, `cc_tx_cnp_pkts`) are **not** in sysfs even when enabled with `rdma statistic set`; scrape them with `--enable-rdma-optional-counters` as described in [Run](#run).
 
 ## Dashboards
 - Bundled JSON: [`dashboards/rdma_exporter_dashboard.json`](dashboards/rdma_exporter_dashboard.json) includes PFC occupancy, PCIe stall, and PHY/FEC panels. PCIe/PHY panels need `--enable-netdev-hw-metrics`.
