@@ -7,11 +7,15 @@ import (
 )
 
 var (
-	netdevPrioStatPattern  = regexp.MustCompile(`^rx_prio([0-7])_(buf_discard|cong_discard|discards|marked)$`)
-	pciStallPercentPattern = regexp.MustCompile(`^outbound_pci_stalled_(rd|wr)$`)
-	pciStallSecondsPattern = regexp.MustCompile(`^outbound_pci_stalled_(rd|wr)_events$`)
-	pciSignalPattern       = regexp.MustCompile(`^(rx|tx)_pci_signal_integrity$`)
-	phyLanePattern         = regexp.MustCompile(`^rx_err_lane_([0-9]+)_phy$`)
+	netdevPrioStatPattern        = regexp.MustCompile(`^rx_prio([0-7])_(buf_discard|cong_discard|discards|marked)$`)
+	pciStallPercentPattern       = regexp.MustCompile(`^outbound_pci_stalled_(rd|wr)$`)
+	pciStallSecondsPattern       = regexp.MustCompile(`^outbound_pci_stalled_(rd|wr)_events$`)
+	pciSignalPattern             = regexp.MustCompile(`^(rx|tx)_pci_signal_integrity$`)
+	phyLanePattern               = regexp.MustCompile(`^rx_err_lane_([0-9]+)_phy$`)
+	globalPauseFramesPattern     = regexp.MustCompile(`^(rx|tx)_global_pause$`)
+	globalPauseDurationPattern   = regexp.MustCompile(`^(rx|tx)_global_pause_duration$`)
+	globalPauseTransitionPattern = regexp.MustCompile(`^rx_global_pause_transition$`)
+	pauseStormEventsPattern      = regexp.MustCompile(`^tx_pause_storm_(warning|error)_events$`)
 )
 
 func (c *RdmaCollector) emitNetDevHWMetrics(
@@ -59,6 +63,42 @@ func (c *RdmaCollector) emitNetDevHWMetrics(
 		if matches := phyLanePattern.FindStringSubmatch(name); matches != nil {
 			ch <- prometheus.MustNewConstMetric(
 				c.phyRxErrLaneDesc,
+				prometheus.CounterValue,
+				value,
+				deviceName, portID, netDev, matches[1],
+			)
+			continue
+		}
+		if matches := globalPauseFramesPattern.FindStringSubmatch(name); matches != nil {
+			ch <- prometheus.MustNewConstMetric(
+				c.netdevGlobalPauseFramesDesc,
+				prometheus.CounterValue,
+				value,
+				deviceName, portID, netDev, matches[1],
+			)
+			continue
+		}
+		if matches := globalPauseDurationPattern.FindStringSubmatch(name); matches != nil {
+			ch <- prometheus.MustNewConstMetric(
+				c.netdevGlobalPauseDurationDesc,
+				prometheus.CounterValue,
+				value,
+				deviceName, portID, netDev, matches[1],
+			)
+			continue
+		}
+		if globalPauseTransitionPattern.MatchString(name) {
+			ch <- prometheus.MustNewConstMetric(
+				c.netdevGlobalPauseTransitionsDesc,
+				prometheus.CounterValue,
+				value,
+				deviceName, portID, netDev,
+			)
+			continue
+		}
+		if matches := pauseStormEventsPattern.FindStringSubmatch(name); matches != nil {
+			ch <- prometheus.MustNewConstMetric(
+				c.netdevPauseStormEventsDesc,
 				prometheus.CounterValue,
 				value,
 				deviceName, portID, netDev, matches[1],
