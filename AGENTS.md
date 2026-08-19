@@ -1,40 +1,30 @@
 # Repository Guidelines
 
-## Project Structure & Module Organization
-- `main.go` is the CLI entry point; it wires configuration, structured logging, and the HTTP server that exposes `/metrics` and `/healthz`.
-- `internal/collector`, `internal/config`, `internal/rdma`, and `internal/server` separate exporter logic by concern, each with co-located unit tests under the same directory.
-- Architectural and roadmap notes live in `docs/`. Synthetic RDMA fixtures reside under `internal/rdma/testdata/<scenario>/`; extend or refresh them whenever you model new hardware or kernel behaviour.
+Local cache prefixes: `GOCACHE=$(pwd)/.gocache GOMODCACHE=$(pwd)/.gomodcache`.
 
-## Build, Test, and Development Commands
-- `GOCACHE=$(pwd)/.gocache GOMODCACHE=$(pwd)/.gomodcache make build` compiles the exporter into `bin/rdma_exporter`, suitable for local runs or packaging.
-- `GOCACHE=$(pwd)/.gocache GOMODCACHE=$(pwd)/.gomodcache make test` or `GOCACHE=$(pwd)/.gocache GOMODCACHE=$(pwd)/.gomodcache go test ./...` executes every unit test plus fixture-driven checks to catch regressions early.
-- `GOCACHE=$(pwd)/.gocache GOMODCACHE=$(pwd)/.gomodcache make lint` runs `go vet ./...` to surface static-analysis warnings before code review.
-- `GOCACHE=$(pwd)/.gocache GOMODCACHE=$(pwd)/.gomodcache make fmt` applies `gofmt` across all Go sources so diffs stay minimal and consistent.
+## Layout
+- `main.go`: CLI; wires config, `log/slog`, and HTTP `/metrics` + `/healthz`.
+- Packages: `internal/collector`, `internal/config`, `internal/rdma`, `internal/server` (tests alongside).
+- Architecture/roadmap: `docs/`. RDMA fixtures: `internal/rdma/testdata/<scenario>/` (extend when modeling new hardware or kernel behaviour).
 
-## Coding Style & Naming Conventions
-- Always rely on `gofmt`; do not hand-tune indentation or spacing.
-- Prefer lowerCamelCase for unexported identifiers and PascalCase for exported APIs; keep packages focused and cohesive.
-- When using `log/slog`, attach contextual keys such as `device`, `port`, and `duration` to aid observability.
-- Limit comments to intent, invariants, or non-obvious decisions—avoid restating what the code already communicates.
+## Commands
+- `make build` → `./rdma_exporter`
+- `make test` or `go test ./...`
+- `make lint` (`go vet ./...`)
+- `make fmt`
 
-## Testing Guidelines
-- Use table-driven tests with the standard `testing` package; leverage `prometheus/testutil` to assert metric output.
-- Reference fixtures under `internal/rdma/testdata/` via relative paths so tests remain hermetic.
-- Name test functions `Test<Component>_<Scenario>` to make failing cases self-explanatory.
-- Run `GOCACHE=$(pwd)/.gocache GOMODCACHE=$(pwd)/.gomodcache go test ./...` before every pull request to keep the suite green and flake-free.
+## Conventions
+- `slog` keys: `device`, `port`, `duration`.
+- Tests: table-driven; `prometheus/testutil` for metric output; fixtures via relative paths under `internal/rdma/testdata/`; names `Test<Component>_<Scenario>`.
+- Commits: `type(scope): subject` (imperative). Types: `feat`, `fix`, `docs`, `style`, `refactor`, `test`, `chore`, `init`, `rearrange`, `update`. Body sections: `Motivation`, `Changes`, `Tests` (complete sentences, no abbreviations). Ticket IDs in the subject when applicable.
+- PRs: summary, test evidence, issue links. New metrics: include a sample `/metrics` snippet.
 
-## Commit & Pull Request Guidelines
-- Write commits as `type(scope): subject`, imperative; keep the subject descriptive so it captures both change and rationale, append related ticket IDs when applicable, and include a multiline body with labeled sections `Motivation`, `Changes`, and `Tests` that explain context, behavioural impact, and verification steps in complete sentences without abbreviations.
-- Accepted types include `feat`, `fix`, `docs`, `style`, `refactor`, `test`, `chore`, `init`, `rearrange`, and `update`; choose a scope that pinpoints the touched package or feature.
-- Pull requests should include a concise summary, test evidence (logs, screenshots, or metric samples), and links to relevant issues. When introducing new metrics, paste a sample `/metrics` snippet for reviewers.
+## Ops
+- Default scrape timeout is 5s (`--scrape-timeout`).
+- Run unprivileged with read-only `/sys/class/infiniband`.
+- Internet-facing: expose only `/metrics` and `/healthz`; terminate TLS upstream.
 
-## Security & Operational Tips
-- The default scrape timeout is five seconds; adjust with `--scrape-timeout` for slower fabrics.
-- Run the exporter as an unprivileged user with read-only access to `/sys/class/infiniband`; never grant write permissions.
-- In internet-facing deployments, expose only `/metrics` and `/healthz` and terminate TLS upstream (sidecar or ingress) to minimize attack surface.
-
-## Release Flow
-- Update the `version` variable in `main.go`, refresh any release documentation, and ensure `go test ./...` passes.
-- Commit the changes and create an annotated tag using `git tag -a vX.Y.Z -m "Release X.Y.Z"`.
-- Push the branch and tag with `git push origin main --tags`.
-- The `release` GitHub Actions workflow (using `goreleaser/goreleaser-action@v6` with `version: \"~> v2\"`) triggers GoReleaser, which builds Linux (amd64/arm64) binaries, archives, and checksum files and publishes them to GitHub Releases.
+## Release
+1. Bump `version` in `main.go`; refresh release docs.
+2. Annotated tag: `git tag -a vX.Y.Z -m "Release X.Y.Z"`.
+3. `git push origin main --tags` (GitHub Actions `release` + GoReleaser: Linux amd64/arm64).
