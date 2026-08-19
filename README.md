@@ -22,7 +22,7 @@ For details on GitHub Actions status badges, see the [official documentation](ht
 - Supports an alternative sysfs root (`--sysfs-root`) for testing or chroot environments.
 - Honors a configurable scrape timeout (`--scrape-timeout`) to protect long-running sysfs reads.
 - Optionally enriches RoCEv2 visibility with PFC counters from netdev ethtool stats (Linux only, best effort).
-- Optionally exports mlx5 ethtool hardware counters for NIC buffer drops, PCIe stalls, and PHY/FEC (opt-in, `--enable-netdev-hw-metrics`).
+- Optionally exports mlx5 ethtool hardware counters for NIC buffer drops, PCIe stalls, PHY/FEC, IEEE 802.3x global pause, and pause storm (opt-in, `--enable-netdev-hw-metrics`).
 - Optionally exports mlx5 congestion-control counters (`cc_*`) that sysfs omits, via RDMA netlink (`--enable-rdma-optional-counters`). The exporter never enables counters.
 - Optionally exports live auto-type QP hardware counters (`rdma_qp_*`) via a separate RDMA netlink socket (`--enable-rdma-qp-counters`). The exporter never binds QPs or enables auto mode.
 
@@ -143,8 +143,8 @@ Every CLI flag has an equivalent environment variable. Environment values provid
 | `--log-level` | `RDMA_EXPORTER_LOG_LEVEL` | `info` | Log verbosity (`debug`, `info`, `warn`, `error`) |
 | `--sysfs-root` | `RDMA_EXPORTER_SYSFS_ROOT` | `/sys` | Root directory used to read RDMA sysfs data |
 | `--scrape-timeout` | `RDMA_EXPORTER_SCRAPE_TIMEOUT` | `5s` | Upper bound for metric gathering per scrape |
-| `--enable-roce-pfc-metrics` | `RDMA_EXPORTER_ENABLE_ROCE_PFC_METRICS` | `true` | Enable RoCEv2 PFC metric collection from netdev ethtool stats (Linux only). Does not enable buffer/PCIe/PHY counters. |
-| `--enable-netdev-hw-metrics` | `RDMA_EXPORTER_ENABLE_NETDEV_HW_METRICS` | `false` | Enable ethtool hardware counters for NIC buffer drops, PCIe stalls, and PHY/FEC (Linux only, opt-in). |
+| `--enable-roce-pfc-metrics` | `RDMA_EXPORTER_ENABLE_ROCE_PFC_METRICS` | `true` | Enable RoCEv2 PFC metric collection from netdev ethtool stats (Linux only). Does not enable buffer/PCIe/PHY, global pause, or pause-storm counters. |
+| `--enable-netdev-hw-metrics` | `RDMA_EXPORTER_ENABLE_NETDEV_HW_METRICS` | `false` | Enable ethtool hardware counters for NIC buffer drops, PCIe stalls, PHY/FEC, IEEE 802.3x global pause, and pause storm (Linux only, opt-in). |
 | `--enable-rdma-optional-counters` | `RDMA_EXPORTER_ENABLE_RDMA_OPTIONAL_COUNTERS` | `false` | Enable optional RDMA hardware counters (Linux only, NETLINK_RDMA). The exporter never turns counters on. |
 | `--enable-rdma-qp-counters` | `RDMA_EXPORTER_ENABLE_RDMA_QP_COUNTERS` | `false` | Enable live auto-type QP counters (Linux only, separate NETLINK_RDMA socket). The exporter never binds QPs or enables auto mode. |
 | `--exclude-devices` | `RDMA_EXPORTER_EXCLUDE_DEVICES` | `` | Comma-separated list of RDMA devices to exclude (e.g., `mlx5_0,mlx5_1`) |
@@ -195,6 +195,8 @@ Enable with `--enable-netdev-hw-metrics`. These are mlx5 netdev/device statistic
 - Buffer/drop: `rdma_netdev_prio_buf_discard_total`, `rdma_netdev_prio_cong_discard_total`, `rdma_netdev_prio_discards_total`, `rdma_netdev_prio_ecn_marked_total`, `rdma_netdev_dev_out_of_buffer_total`, `rdma_netdev_rx_out_of_buffer_total`, `rdma_netdev_rx_discards_phy_total`. Distinct from the sysfs QP WQE counter `rdma_out_of_buffer_total`.
 - PCIe: `rdma_pcie_outbound_stalled_percent` is a **gauge** of the last 1 second (kernel 0–100) and can miss stalls shorter than the scrape interval. Alert on `rate(rdma_pcie_outbound_stalled_seconds_total[$interval])`, the fraction of time stall exceeded 30%. Also `rdma_pcie_outbound_buffer_overflow_total` and `rdma_pcie_signal_integrity_total`.
 - PHY/FEC: `rdma_phy_rx_corrected_bits_total`, `rdma_phy_rx_pcs_symbol_err_total`, `rdma_phy_rx_bits_total`, `rdma_phy_rx_err_lane_total`, `rdma_phy_rx_crc_errors_total`, `rdma_phy_link_down_events_total`.
+- IEEE 802.3x global pause (not PFC; keys exist only when global pause mode is on): `rdma_netdev_global_pause_frames_total{device,port,netdev,direction}`, `rdma_netdev_global_pause_duration_total` (microseconds; occupancy is `rate()/1e6`), `rdma_netdev_global_pause_transitions_total` (mlx5 receive/`rx` only). Direction is observation only: `rx` means this NIC received a pause request (was asked to stop transmitting); `tx` means this NIC transmitted a pause request (asked the peer to stop). Do not treat as root cause.
+- Pause storm: `rdma_netdev_pause_storm_events_total{device,port,netdev,severity}`. `warning` is stalled past a watermark; `error` is timeout and pause TX disabled (drops may have occurred). Observation only; do not assert root cause.
 
 Interval FEC/BER ratio (not a lifetime or instantaneous instrument):
 
@@ -213,7 +215,7 @@ Enabling these counters adds one series per present allowlisted ethtool key (not
 Default sysfs `hw_counters` already export Notification Point / Reaction Point counters (`rdma_np_cnp_sent_total`, `rdma_np_ecn_marked_roce_packets_total`, `rdma_rp_cnp_handled_total`, `rdma_rp_cnp_ignored_total`). mlx5 optional counters (`cc_rx_ce_pkts`, `cc_rx_cnp_pkts`, `cc_tx_cnp_pkts`) are **not** in sysfs even when enabled with `rdma statistic set`; scrape them with `--enable-rdma-optional-counters` as described in [Run](#run).
 
 ## Dashboards
-- Bundled JSON: [`dashboards/rdma_exporter_dashboard.json`](dashboards/rdma_exporter_dashboard.json) includes PFC occupancy, PCIe stall, and PHY/FEC panels. PCIe/PHY panels need `--enable-netdev-hw-metrics`.
+- Bundled JSON: [`dashboards/rdma_exporter_dashboard.json`](dashboards/rdma_exporter_dashboard.json) includes PFC occupancy, PCIe stall, and PHY/FEC panels. PCIe/PHY panels need `--enable-netdev-hw-metrics`. Global pause and pause storm are scraped with the same flag but are not on the bundled dashboard yet.
 - Grafana.com: [RDMA/RoCE NIC Telemetry](https://grafana.com/grafana/dashboards/24241-rdma-roce-nic-telemetry/) – community copy; updating that listing is a separate publish step.
 
 ## Testing

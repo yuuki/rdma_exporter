@@ -594,10 +594,17 @@ func TestCollectorOmitsNetDevHWMetricsByDefault(t *testing.T) {
 	t.Parallel()
 
 	provider, netDevProvider := ethernetPFWithStats(map[string]uint64{
-		"rx_prio3_buf_discard":    4,
-		"outbound_pci_stalled_rd": 12,
-		"rx_corrected_bits_phy":   8,
-		"rx_prio0_pause":          1,
+		"rx_prio3_buf_discard":          4,
+		"outbound_pci_stalled_rd":       12,
+		"rx_corrected_bits_phy":         8,
+		"rx_prio0_pause":                1,
+		"rx_global_pause":               1,
+		"tx_global_pause":               2,
+		"rx_global_pause_duration":      3,
+		"tx_global_pause_duration":      4,
+		"rx_global_pause_transition":    5,
+		"tx_pause_storm_warning_events": 6,
+		"tx_pause_storm_error_events":   7,
 	})
 
 	c := New(provider, newDiscardLogger(), WithNetDevStatsProvider(netDevProvider))
@@ -607,7 +614,11 @@ func TestCollectorOmitsNetDevHWMetricsByDefault(t *testing.T) {
 	if err := testutil.GatherAndCompare(reg, strings.NewReader(""),
 		"rdma_netdev_prio_buf_discard_total",
 		"rdma_pcie_outbound_stalled_percent",
-		"rdma_phy_rx_corrected_bits_total"); err != nil {
+		"rdma_phy_rx_corrected_bits_total",
+		"rdma_netdev_global_pause_frames_total",
+		"rdma_netdev_global_pause_duration_total",
+		"rdma_netdev_global_pause_transitions_total",
+		"rdma_netdev_pause_storm_events_total"); err != nil {
 		t.Fatalf("expected no netdev hardware metrics without the opt-in: %v", err)
 	}
 }
@@ -730,6 +741,56 @@ rdma_phy_rx_pcs_symbol_err_total{device="mlx5_0",netdev="ens1f0np0",port="1"} 19
 	}
 }
 
+func TestCollectorExportsGlobalPauseAndPauseStorm(t *testing.T) {
+	t.Parallel()
+
+	provider, netDevProvider := ethernetPFWithStats(map[string]uint64{
+		"rx_global_pause":               1,
+		"tx_global_pause":               2,
+		"rx_global_pause_duration":      3,
+		"tx_global_pause_duration":      4,
+		"rx_global_pause_transition":    5,
+		"tx_pause_storm_warning_events": 6,
+		"tx_pause_storm_error_events":   7,
+		"rx_prio0_pause":                9,
+	})
+
+	c := New(provider, newDiscardLogger(),
+		WithNetDevStatsProvider(netDevProvider),
+		WithRoCEPFCMetrics(false),
+		WithNetDevHWMetrics(true),
+	)
+	reg := prometheus.NewRegistry()
+	reg.MustRegister(c)
+
+	expected := `
+# HELP rdma_netdev_global_pause_duration_total Cumulative IEEE 802.3x pause duration in microseconds from ethtool. Occupancy is rate()/1e6. Direction has the same meaning as rdma_netdev_global_pause_frames_total. Present only when global pause mode is enabled.
+# TYPE rdma_netdev_global_pause_duration_total counter
+rdma_netdev_global_pause_duration_total{device="mlx5_0",direction="rx",netdev="ens1f0np0",port="1"} 3
+rdma_netdev_global_pause_duration_total{device="mlx5_0",direction="tx",netdev="ens1f0np0",port="1"} 4
+# HELP rdma_netdev_global_pause_frames_total IEEE 802.3x pause frames on the physical port from ethtool. direction=rx: pause frames received (this NIC was asked to stop transmitting). direction=tx: pause frames transmitted (this NIC asked the peer to stop transmitting). Present only when global pause mode is enabled, not PFC. Observation only.
+# TYPE rdma_netdev_global_pause_frames_total counter
+rdma_netdev_global_pause_frames_total{device="mlx5_0",direction="rx",netdev="ens1f0np0",port="1"} 1
+rdma_netdev_global_pause_frames_total{device="mlx5_0",direction="tx",netdev="ens1f0np0",port="1"} 2
+# HELP rdma_netdev_global_pause_transitions_total IEEE 802.3x XOFF-to-XON transitions on the physical port from ethtool rx_global_pause_transition. mlx5 exposes receive only. Present only when global pause mode is enabled.
+# TYPE rdma_netdev_global_pause_transitions_total counter
+rdma_netdev_global_pause_transitions_total{device="mlx5_0",netdev="ens1f0np0",port="1"} 5
+# HELP rdma_netdev_pause_storm_events_total Times the device sent pause frames for a long period. severity=warning: stalled past a watermark. severity=error: timed out and pause transmission was disabled; drops may have occurred while pause TX was off. Ethtool tx_pause_storm_{warning,error}_events.
+# TYPE rdma_netdev_pause_storm_events_total counter
+rdma_netdev_pause_storm_events_total{device="mlx5_0",netdev="ens1f0np0",port="1",severity="error"} 7
+rdma_netdev_pause_storm_events_total{device="mlx5_0",netdev="ens1f0np0",port="1",severity="warning"} 6
+`
+	if err := testutil.GatherAndCompare(reg, strings.NewReader(expected),
+		"rdma_netdev_global_pause_frames_total",
+		"rdma_netdev_global_pause_duration_total",
+		"rdma_netdev_global_pause_transitions_total",
+		"rdma_netdev_pause_storm_events_total",
+		"rdma_roce_pfc_pause_frames_total",
+	); err != nil {
+		t.Fatalf("unexpected global pause metrics: %v", err)
+	}
+}
+
 func TestCollectorNetDevHWMetricsAreSparse(t *testing.T) {
 	t.Parallel()
 
@@ -752,7 +813,11 @@ rdma_netdev_prio_buf_discard_total{device="mlx5_0",netdev="ens1f0np0",port="1",p
 	if err := testutil.GatherAndCompare(reg, strings.NewReader(expected),
 		"rdma_netdev_prio_buf_discard_total",
 		"rdma_netdev_prio_cong_discard_total",
-		"rdma_netdev_prio_discards_total"); err != nil {
+		"rdma_netdev_prio_discards_total",
+		"rdma_netdev_global_pause_frames_total",
+		"rdma_netdev_global_pause_duration_total",
+		"rdma_netdev_global_pause_transitions_total",
+		"rdma_netdev_pause_storm_events_total"); err != nil {
 		t.Fatalf("expected sparse priority emission: %v", err)
 	}
 }

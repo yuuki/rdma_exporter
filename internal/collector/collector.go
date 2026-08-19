@@ -86,6 +86,11 @@ type RdmaCollector struct {
 	phyRxCRCErrorsDesc     *prometheus.Desc
 	phyLinkDownEventsDesc  *prometheus.Desc
 
+	netdevGlobalPauseFramesDesc      *prometheus.Desc
+	netdevGlobalPauseDurationDesc    *prometheus.Desc
+	netdevGlobalPauseTransitionsDesc *prometheus.Desc
+	netdevPauseStormEventsDesc       *prometheus.Desc
+
 	optionalCounterEnabledDesc *prometheus.Desc
 	qpCounterModeDesc          *prometheus.Desc
 	qpAutoMaskDesc             *prometheus.Desc
@@ -642,6 +647,30 @@ func New(provider Provider, logger *slog.Logger, opts ...Option) *RdmaCollector 
 			[]string{"device", "port", "netdev"},
 			nil,
 		),
+		netdevGlobalPauseFramesDesc: prometheus.NewDesc(
+			"rdma_netdev_global_pause_frames_total",
+			"IEEE 802.3x pause frames on the physical port from ethtool. direction=rx: pause frames received (this NIC was asked to stop transmitting). direction=tx: pause frames transmitted (this NIC asked the peer to stop transmitting). Present only when global pause mode is enabled, not PFC. Observation only.",
+			[]string{"device", "port", "netdev", "direction"},
+			nil,
+		),
+		netdevGlobalPauseDurationDesc: prometheus.NewDesc(
+			"rdma_netdev_global_pause_duration_total",
+			"Cumulative IEEE 802.3x pause duration in microseconds from ethtool. Occupancy is rate()/1e6. Direction has the same meaning as rdma_netdev_global_pause_frames_total. Present only when global pause mode is enabled.",
+			[]string{"device", "port", "netdev", "direction"},
+			nil,
+		),
+		netdevGlobalPauseTransitionsDesc: prometheus.NewDesc(
+			"rdma_netdev_global_pause_transitions_total",
+			"IEEE 802.3x XOFF-to-XON transitions on the physical port from ethtool rx_global_pause_transition. mlx5 exposes receive only. Present only when global pause mode is enabled.",
+			[]string{"device", "port", "netdev"},
+			nil,
+		),
+		netdevPauseStormEventsDesc: prometheus.NewDesc(
+			"rdma_netdev_pause_storm_events_total",
+			"Times the device sent pause frames for a long period. severity=warning: stalled past a watermark. severity=error: timed out and pause transmission was disabled; drops may have occurred while pause TX was off. Ethtool tx_pause_storm_{warning,error}_events.",
+			[]string{"device", "port", "netdev", "severity"},
+			nil,
+		),
 		optionalCounterEnabledDesc: prometheus.NewDesc(
 			"rdma_optional_counter_enabled",
 			"Whether an optional RDMA hardware counter is enabled on the port. 1 means currently enabled; 0 means supported but disabled. The exporter never enables counters.",
@@ -736,7 +765,7 @@ func WithRoCEPFCMetrics(enabled bool) Option {
 	}
 }
 
-// WithNetDevHWMetrics enables ethtool hardware counters (buffer, PCIe, PHY/FEC).
+// WithNetDevHWMetrics enables ethtool hardware counters (buffer, PCIe, PHY/FEC, IEEE 802.3x global pause, pause storm).
 func WithNetDevHWMetrics(enabled bool) Option {
 	return func(c *RdmaCollector) {
 		c.collectNetDevHW = enabled
@@ -793,6 +822,10 @@ func (c *RdmaCollector) Describe(ch chan<- *prometheus.Desc) {
 	ch <- c.phyRxErrLaneDesc
 	ch <- c.phyRxCRCErrorsDesc
 	ch <- c.phyLinkDownEventsDesc
+	ch <- c.netdevGlobalPauseFramesDesc
+	ch <- c.netdevGlobalPauseDurationDesc
+	ch <- c.netdevGlobalPauseTransitionsDesc
+	ch <- c.netdevPauseStormEventsDesc
 	c.scrapeErrors.Describe(ch)
 	c.rocePFCScrapeErrors.Describe(ch)
 	c.netDevHWScrapeErrors.Describe(ch)
