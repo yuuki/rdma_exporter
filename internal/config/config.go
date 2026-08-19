@@ -13,26 +13,28 @@ import (
 )
 
 const (
-	defaultListenAddress = ":9879"
-	defaultMetricsPath   = "/metrics"
-	defaultHealthPath    = "/healthz"
-	defaultLogLevel      = "info"
-	defaultSysfsRoot     = "/sys"
-	defaultTimeout       = 5 * time.Second
-	defaultEnableRoCEPFC = true
+	defaultListenAddress  = ":9879"
+	defaultMetricsPath    = "/metrics"
+	defaultHealthPath     = "/healthz"
+	defaultLogLevel       = "info"
+	defaultSysfsRoot      = "/sys"
+	defaultTimeout        = 5 * time.Second
+	defaultEnableRoCEPFC  = true
+	defaultEnableNetDevHW = false
 )
 
 // Config captures runtime configuration options.
 type Config struct {
-	ListenAddress        string
-	MetricsPath          string
-	HealthPath           string
-	LogLevel             slog.Level
-	SysfsRoot            string
-	ScrapeTimeout        time.Duration
-	EnableRoCEPFCMetrics bool
-	ExcludeDevices       []string
-	ShowVersion          bool
+	ListenAddress         string
+	MetricsPath           string
+	HealthPath            string
+	LogLevel              slog.Level
+	SysfsRoot             string
+	ScrapeTimeout         time.Duration
+	EnableRoCEPFCMetrics  bool
+	EnableNetDevHWMetrics bool
+	ExcludeDevices        []string
+	ShowVersion           bool
 }
 
 // Parse constructs a Config from command-line flags and environment variables.
@@ -49,15 +51,17 @@ func Parse(args []string) (Config, error) {
 	sysfsRoot := fs.String("sysfs-root", envOrDefault("RDMA_EXPORTER_SYSFS_ROOT", defaultSysfsRoot), "Root of the sysfs tree to read RDMA data from.")
 	excludeDevices := fs.String("exclude-devices", envOrDefault("RDMA_EXPORTER_EXCLUDE_DEVICES", ""), "Comma-separated list of RDMA devices to exclude from monitoring (e.g., mlx5_0,mlx5_1).")
 
-	enableRoCEPFCDefault := defaultEnableRoCEPFC
-	if raw := strings.TrimSpace(os.Getenv("RDMA_EXPORTER_ENABLE_ROCE_PFC_METRICS")); raw != "" {
-		parsed, err := strconv.ParseBool(raw)
-		if err != nil {
-			return cfg, fmt.Errorf("invalid RDMA_EXPORTER_ENABLE_ROCE_PFC_METRICS: %w", err)
-		}
-		enableRoCEPFCDefault = parsed
+	enableRoCEPFCDefault, err := boolEnvOrDefault("RDMA_EXPORTER_ENABLE_ROCE_PFC_METRICS", defaultEnableRoCEPFC)
+	if err != nil {
+		return cfg, err
 	}
 	enableRoCEPFCMetrics := fs.Bool("enable-roce-pfc-metrics", enableRoCEPFCDefault, "Enable collection of RoCEv2 PFC metrics from netdev ethtool stats.")
+
+	enableNetDevHWDefault, err := boolEnvOrDefault("RDMA_EXPORTER_ENABLE_NETDEV_HW_METRICS", defaultEnableNetDevHW)
+	if err != nil {
+		return cfg, err
+	}
+	enableNetDevHWMetrics := fs.Bool("enable-netdev-hw-metrics", enableNetDevHWDefault, "Enable collection of netdev ethtool hardware counters (buffer, PCIe, PHY/FEC). Linux only, opt-in.")
 
 	timeoutDefault := defaultTimeout
 	if envTimeout := os.Getenv("RDMA_EXPORTER_SCRAPE_TIMEOUT"); envTimeout != "" {
@@ -83,15 +87,16 @@ func Parse(args []string) (Config, error) {
 	}
 
 	cfg = Config{
-		ListenAddress:        *listen,
-		MetricsPath:          *metricsPath,
-		HealthPath:           *healthPath,
-		LogLevel:             level,
-		SysfsRoot:            *sysfsRoot,
-		ScrapeTimeout:        *scrapeTimeout,
-		EnableRoCEPFCMetrics: *enableRoCEPFCMetrics,
-		ExcludeDevices:       parseDeviceList(*excludeDevices),
-		ShowVersion:          *showVersion,
+		ListenAddress:         *listen,
+		MetricsPath:           *metricsPath,
+		HealthPath:            *healthPath,
+		LogLevel:              level,
+		SysfsRoot:             *sysfsRoot,
+		ScrapeTimeout:         *scrapeTimeout,
+		EnableRoCEPFCMetrics:  *enableRoCEPFCMetrics,
+		EnableNetDevHWMetrics: *enableNetDevHWMetrics,
+		ExcludeDevices:        parseDeviceList(*excludeDevices),
+		ShowVersion:           *showVersion,
 	}
 	return cfg, nil
 }
@@ -101,6 +106,18 @@ func envOrDefault(key, fallback string) string {
 		return value
 	}
 	return fallback
+}
+
+func boolEnvOrDefault(key string, fallback bool) (bool, error) {
+	raw := strings.TrimSpace(os.Getenv(key))
+	if raw == "" {
+		return fallback, nil
+	}
+	parsed, err := strconv.ParseBool(raw)
+	if err != nil {
+		return fallback, fmt.Errorf("invalid %s: %w", key, err)
+	}
+	return parsed, nil
 }
 
 func parseLogLevel(value string) (slog.Level, error) {

@@ -24,8 +24,9 @@ This guide explains two supported deployment options for `rdma_exporter`: runnin
 3. **Optional: set environment defaults**
    ```bash
    sudo install -Dm0644 /dev/null /etc/rdma_exporter.env
-   echo 'RDMA_EXPORTER_LISTEN_ADDRESS=:9879' | sudo tee -a /etc/rdma_exporter.env
-   echo 'RDMA_EXPORTER_LOG_LEVEL=info' | sudo tee -a /etc/rdma_exporter.env
+	echo 'RDMA_EXPORTER_LISTEN_ADDRESS=:9879' | sudo tee -a /etc/rdma_exporter.env
+	   echo 'RDMA_EXPORTER_LOG_LEVEL=info' | sudo tee -a /etc/rdma_exporter.env
+	   echo 'RDMA_EXPORTER_ENABLE_NETDEV_HW_METRICS=true' | sudo tee -a /etc/rdma_exporter.env
    ```
    Adjust the environment variables to match your deployment.
 

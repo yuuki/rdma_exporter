@@ -55,6 +55,9 @@ Organize panels into three horizontal rows across a 24-column grid, following �
 ### Row 3 – Congestion & Error Deep Dive
 - **Time series: ECN / CNP Activity** – visualize `rdma_np_cnp_sent_total`, `rdma_np_ecn_marked_roce_packets_total`, `rdma_rp_cnp_handled_total`, `rdma_rp_cnp_ignored_total`.
 - **Time series: Adaptive Retransmission / Timeout** – highlight reliability and congestion control behavior.
+- **Time series: PFC pause occupancy** – `rate(rdma_roce_pfc_pause_duration_total[$interval]) / 1e6`, split by `direction`. Panel description states the observation (rx = peer XOFFed this NIC; tx = this NIC XOFFed the peer), not a root cause.
+- **Time series: PCIe stall seconds** – `rate(rdma_pcie_outbound_stalled_seconds_total[$interval])`. Requires `--enable-netdev-hw-metrics`. Do not `rate()` the 1-second percent gauge.
+- **Time series: PHY/FEC interval ratio** – `increase(rdma_phy_rx_corrected_bits_total[$interval]) / clamp_min(increase(rdma_phy_rx_bits_total[$interval]), 1)` and the PCS analogue. Requires `--enable-netdev-hw-metrics`.
 - **Stacked bars: Error Family Breakdown** – `rdma_port_rcv_errors_total`, `rdma_port_xmit_discards_total`, `rdma_port_rcv_remote_physical_errors_total`, `rdma_symbol_error_total`.
   Extend the stack with auxiliary counters exposed by the collector such as `rdma_port_rcv_switch_relay_errors_total`, `rdma_port_rcv_constraint_errors_total`, and `rdma_port_xmit_constraint_errors_total` to highlight switch-forwarding and congestion drops.
 - **Stat / Time series: TX Drop Ratio (%)** – ratio of discards to transmitted packets with `clamp_min` to prevent division by zero.
@@ -77,6 +80,9 @@ Organize panels into three horizontal rows across a 24-column grid, following �
 | Transmit wait | `rate(rdma_port_xmit_wait_total{job="$job", instance="$instance", device="$device", port="$port"}[$interval])` | Highlight sustained non-zero periods |
 | ECN / CNP signals | `rate(rdma_np_cnp_sent_total{...}[$interval])`, `rate(rdma_np_ecn_marked_roce_packets_total{...}[$interval])`, etc. | Group into repeating panel if needed |
 | Adaptive retransmission | `rate(rdma_roce_adp_retrans_total{...}[$interval])`, `rate(rdma_roce_adp_retrans_to_total{...}[$interval])` | Watch for spikes |
+| PFC occupancy | `rate(rdma_roce_pfc_pause_duration_total{...}[$interval]) / 1e6` | Microseconds in the counter; divide by 1e6. Split by `direction`. |
+| PCIe stall | `rate(rdma_pcie_outbound_stalled_seconds_total{...}[$interval])` | Fraction of time stall exceeded 30%. Opt-in ethtool family. |
+| PHY FEC ratio | `increase(rdma_phy_rx_corrected_bits_total{...}[$interval]) / clamp_min(increase(rdma_phy_rx_bits_total{...}[$interval]), 1)` | Interval sample ratio, not instantaneous BER. |
 | Error breakdown | `rate(rdma_port_rcv_errors_total{...}[$interval])`, `rate(rdma_port_xmit_discards_total{...}[$interval])`, `rate(rdma_port_rcv_remote_physical_errors_total{...}[$interval])`, `rate(rdma_symbol_error_total{...}[$interval])`, `rate(rdma_port_rcv_switch_relay_errors_total{...}[$interval])`, `rate(rdma_port_rcv_constraint_errors_total{...}[$interval])`, `rate(rdma_port_xmit_constraint_errors_total{...}[$interval])` | Stack by metric; toggle visibility for high-cardinality fabrics |
 | TX drop ratio % | `100 * rate(rdma_port_xmit_discards_total{...}[$interval]) / clamp_min(rate(rdma_port_xmit_packets_total{...}[$interval]), 1e-6)` | Apply percent unit |
 
@@ -132,3 +138,4 @@ Precompute heavy expressions to accelerate dashboards and keep query inspector r
 - Extend dashboard links to per-switch telemetry dashboards once available.
 - Evaluate Grafana 12+ Git Sync for two-way synchronization between hosted Grafana Cloud and repository-managed JSON.
 - Prototype optional deep-dive panels that visualize additional collector counters (`port_rcv_switch_relay_errors`, `port_rcv_constraint_errors`, `port_xmit_constraint_errors`, etc.) when operators need finer-grained failure attribution.
+- Republish Grafana.com dashboard 24241 after the bundled JSON change; that listing is not updated by this repository change alone.

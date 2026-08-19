@@ -48,10 +48,33 @@ type RdmaCollector struct {
 	rocePFCPauseDurationDesc    *prometheus.Desc
 	rocePFCPauseTransitionsDesc *prometheus.Desc
 
-	scrapeErrors        prometheus.Counter
-	rocePFCScrapeErrors prometheus.Counter
+	netdevPrioBufDiscardDesc  *prometheus.Desc
+	netdevPrioCongDiscardDesc *prometheus.Desc
+	netdevPrioDiscardsDesc    *prometheus.Desc
+	netdevPrioECNMarkedDesc   *prometheus.Desc
+	netdevDevOutOfBufferDesc  *prometheus.Desc
+	netdevRxOutOfBufferDesc   *prometheus.Desc
+	netdevRxDiscardsPhyDesc   *prometheus.Desc
+
+	pcieOutboundStalledPercentDesc *prometheus.Desc
+	pcieOutboundStalledSecondsDesc *prometheus.Desc
+	pcieOutboundOverflowDesc       *prometheus.Desc
+	pcieSignalIntegrityDesc        *prometheus.Desc
+
+	phyRxCorrectedBitsDesc *prometheus.Desc
+	phyRxPCSSymbolErrDesc  *prometheus.Desc
+	phyRxBitsDesc          *prometheus.Desc
+	phyRxErrLaneDesc       *prometheus.Desc
+	phyRxCRCErrorsDesc     *prometheus.Desc
+	phyLinkDownEventsDesc  *prometheus.Desc
+
+	scrapeErrors         prometheus.Counter
+	rocePFCScrapeErrors  prometheus.Counter
+	netDevHWScrapeErrors prometheus.Counter
 
 	netDevStatsProvider NetDevStatsProvider
+	collectRoCEPFC      bool
+	collectNetDevHW     bool
 
 	collectMu sync.Mutex
 	ctxValue  atomic.Pointer[context.Context]
@@ -434,20 +457,122 @@ func New(provider Provider, logger *slog.Logger, opts ...Option) *RdmaCollector 
 		),
 		rocePFCPauseFramesDesc: prometheus.NewDesc(
 			"rdma_roce_pfc_pause_frames_total",
-			"RoCEv2 PFC pause frame counter sourced from ethtool stats.",
+			"RoCEv2 PFC pause frames from ethtool stats. direction=rx: the peer XOFFed this NIC so this NIC cannot transmit on that priority. direction=tx: this NIC XOFFed the peer because it is not absorbing that priority.",
 			[]string{"device", "port", "netdev", "direction", "priority"},
 			nil,
 		),
 		rocePFCPauseDurationDesc: prometheus.NewDesc(
 			"rdma_roce_pfc_pause_duration_total",
-			"RoCEv2 PFC pause duration counter sourced from ethtool stats.",
+			"Cumulative RoCEv2 PFC pause duration in microseconds from ethtool stats. Pause occupancy is rate()/1e6. Direction has the same meaning as rdma_roce_pfc_pause_frames_total.",
 			[]string{"device", "port", "netdev", "direction", "priority"},
 			nil,
 		),
 		rocePFCPauseTransitionsDesc: prometheus.NewDesc(
 			"rdma_roce_pfc_pause_transitions_total",
-			"RoCEv2 PFC pause transition counter sourced from ethtool stats.",
+			"RoCEv2 PFC XOFF-to-XON transitions from ethtool stats. mlx5 exposes this for receive (direction=rx) only. Direction has the same meaning as rdma_roce_pfc_pause_frames_total.",
 			[]string{"device", "port", "netdev", "direction", "priority"},
+			nil,
+		),
+		netdevPrioBufDiscardDesc: prometheus.NewDesc(
+			"rdma_netdev_prio_buf_discard_total",
+			"Packets discarded due to lack of per-host receive buffers. Ethtool rx_prio[p]_buf_discard.",
+			[]string{"device", "port", "netdev", "priority"},
+			nil,
+		),
+		netdevPrioCongDiscardDesc: prometheus.NewDesc(
+			"rdma_netdev_prio_cong_discard_total",
+			"Packets discarded due to per-host congestion. Ethtool rx_prio[p]_cong_discard.",
+			[]string{"device", "port", "netdev", "priority"},
+			nil,
+		),
+		netdevPrioDiscardsDesc: prometheus.NewDesc(
+			"rdma_netdev_prio_discards_total",
+			"Packets discarded due to lack of receive buffers. Ethtool rx_prio[p]_discards.",
+			[]string{"device", "port", "netdev", "priority"},
+			nil,
+		),
+		netdevPrioECNMarkedDesc: prometheus.NewDesc(
+			"rdma_netdev_prio_ecn_marked_total",
+			"Packets ECN-marked due to per-host congestion. Ethtool rx_prio[p]_marked.",
+			[]string{"device", "port", "netdev", "priority"},
+			nil,
+		),
+		netdevDevOutOfBufferDesc: prometheus.NewDesc(
+			"rdma_netdev_dev_out_of_buffer_total",
+			"Number of times a device-owned queue lacked receive buffers. Ethtool dev_out_of_buffer; distinct from the sysfs QP WQE counter out_of_buffer.",
+			[]string{"device", "port", "netdev"},
+			nil,
+		),
+		netdevRxOutOfBufferDesc: prometheus.NewDesc(
+			"rdma_netdev_rx_out_of_buffer_total",
+			"Times the receive queue had no software buffers for incoming traffic. Ethtool rx_out_of_buffer; distinct from the sysfs QP WQE counter out_of_buffer.",
+			[]string{"device", "port", "netdev"},
+			nil,
+		),
+		netdevRxDiscardsPhyDesc: prometheus.NewDesc(
+			"rdma_netdev_rx_discards_phy_total",
+			"Packets dropped on the physical port due to lack of buffers. Ethtool rx_discards_phy.",
+			[]string{"device", "port", "netdev"},
+			nil,
+		),
+		pcieOutboundStalledPercentDesc: prometheus.NewDesc(
+			"rdma_pcie_outbound_stalled_percent",
+			"Percentage of the last 1 second that outbound PCI was stalled (kernel 0-100). Sampled at scrape time; stalls shorter than the scrape interval can be missed. Use rdma_pcie_outbound_stalled_seconds_total for alerting.",
+			[]string{"device", "port", "netdev", "op"},
+			nil,
+		),
+		pcieOutboundStalledSecondsDesc: prometheus.NewDesc(
+			"rdma_pcie_outbound_stalled_seconds_total",
+			"Cumulative seconds during which outbound PCI stall exceeded 30 percent. Primary stall signal; rate() is the fraction of time above the threshold.",
+			[]string{"device", "port", "netdev", "op"},
+			nil,
+		),
+		pcieOutboundOverflowDesc: prometheus.NewDesc(
+			"rdma_pcie_outbound_buffer_overflow_total",
+			"Packets dropped due to outbound PCI buffer overflow. Ethtool outbound_pci_buffer_overflow.",
+			[]string{"device", "port", "netdev"},
+			nil,
+		),
+		pcieSignalIntegrityDesc: prometheus.NewDesc(
+			"rdma_pcie_signal_integrity_total",
+			"PCIe physical-layer signal integrity errors. Ethtool {rx,tx}_pci_signal_integrity.",
+			[]string{"device", "port", "netdev", "direction"},
+			nil,
+		),
+		phyRxCorrectedBitsDesc: prometheus.NewDesc(
+			"rdma_phy_rx_corrected_bits_total",
+			"FEC-corrected bits on the physical port. Ethtool rx_corrected_bits_phy.",
+			[]string{"device", "port", "netdev"},
+			nil,
+		),
+		phyRxPCSSymbolErrDesc: prometheus.NewDesc(
+			"rdma_phy_rx_pcs_symbol_err_total",
+			"Uncorrected or FEC-inactive symbol errors on the physical port. Ethtool rx_pcs_symbol_err_phy.",
+			[]string{"device", "port", "netdev"},
+			nil,
+		),
+		phyRxBitsDesc: prometheus.NewDesc(
+			"rdma_phy_rx_bits_total",
+			"Bits that could have been received on the physical port. Denominator for interval FEC/BER ratios. Ethtool rx_bits_phy.",
+			[]string{"device", "port", "netdev"},
+			nil,
+		),
+		phyRxErrLaneDesc: prometheus.NewDesc(
+			"rdma_phy_rx_err_lane_total",
+			"Physical raw errors per lane before FEC. Ethtool rx_err_lane_[l]_phy.",
+			[]string{"device", "port", "netdev", "lane"},
+			nil,
+		),
+		phyRxCRCErrorsDesc: prometheus.NewDesc(
+			"rdma_phy_rx_crc_errors_total",
+			"Packets dropped due to FCS errors on the physical port. Ethtool rx_crc_errors_phy.",
+			[]string{"device", "port", "netdev"},
+			nil,
+		),
+		phyLinkDownEventsDesc: prometheus.NewDesc(
+			"rdma_phy_link_down_events_total",
+			"Times the physical link operative state changed to down. Ethtool link_down_events_phy.",
+			[]string{"device", "port", "netdev"},
 			nil,
 		),
 		scrapeErrors: prometheus.NewCounter(prometheus.CounterOpts{
@@ -457,6 +582,10 @@ func New(provider Provider, logger *slog.Logger, opts ...Option) *RdmaCollector 
 		rocePFCScrapeErrors: prometheus.NewCounter(prometheus.CounterOpts{
 			Name: "rdma_roce_pfc_scrape_errors_total",
 			Help: "Total number of errors encountered while scraping RoCEv2 PFC ethtool stats.",
+		}),
+		netDevHWScrapeErrors: prometheus.NewCounter(prometheus.CounterOpts{
+			Name: "rdma_netdev_scrape_errors_total",
+			Help: "Total number of errors encountered while scraping netdev ethtool hardware stats.",
 		}),
 		portStatMetrics:  make(map[string]metricEntry),
 		portStatLookup:   make(map[string]string),
@@ -480,10 +609,26 @@ func (c *RdmaCollector) storeContext(ctx context.Context) {
 }
 
 // WithNetDevStatsProvider configures a provider used to fetch netdev statistics
-// for RoCEv2 PFC-related metrics.
+// for RoCEv2 PFC-related metrics. PFC collection is enabled by default when a
+// provider is configured; use WithRoCEPFCMetrics(false) to disable it.
 func WithNetDevStatsProvider(provider NetDevStatsProvider) Option {
 	return func(c *RdmaCollector) {
 		c.netDevStatsProvider = provider
+		c.collectRoCEPFC = true
+	}
+}
+
+// WithRoCEPFCMetrics enables or disables RoCEv2 PFC metric emission.
+func WithRoCEPFCMetrics(enabled bool) Option {
+	return func(c *RdmaCollector) {
+		c.collectRoCEPFC = enabled
+	}
+}
+
+// WithNetDevHWMetrics enables ethtool hardware counters (buffer, PCIe, PHY/FEC).
+func WithNetDevHWMetrics(enabled bool) Option {
+	return func(c *RdmaCollector) {
+		c.collectNetDevHW = enabled
 	}
 }
 
@@ -506,8 +651,26 @@ func (c *RdmaCollector) Describe(ch chan<- *prometheus.Desc) {
 	ch <- c.rocePFCPauseFramesDesc
 	ch <- c.rocePFCPauseDurationDesc
 	ch <- c.rocePFCPauseTransitionsDesc
+	ch <- c.netdevPrioBufDiscardDesc
+	ch <- c.netdevPrioCongDiscardDesc
+	ch <- c.netdevPrioDiscardsDesc
+	ch <- c.netdevPrioECNMarkedDesc
+	ch <- c.netdevDevOutOfBufferDesc
+	ch <- c.netdevRxOutOfBufferDesc
+	ch <- c.netdevRxDiscardsPhyDesc
+	ch <- c.pcieOutboundStalledPercentDesc
+	ch <- c.pcieOutboundStalledSecondsDesc
+	ch <- c.pcieOutboundOverflowDesc
+	ch <- c.pcieSignalIntegrityDesc
+	ch <- c.phyRxCorrectedBitsDesc
+	ch <- c.phyRxPCSSymbolErrDesc
+	ch <- c.phyRxBitsDesc
+	ch <- c.phyRxErrLaneDesc
+	ch <- c.phyRxCRCErrorsDesc
+	ch <- c.phyLinkDownEventsDesc
 	c.scrapeErrors.Describe(ch)
 	c.rocePFCScrapeErrors.Describe(ch)
+	c.netDevHWScrapeErrors.Describe(ch)
 
 	c.collectMu.Lock()
 	statDescs := make([]*prometheus.Desc, 0, len(c.portStatMetrics))
@@ -551,6 +714,7 @@ func (c *RdmaCollector) Collect(ch chan<- prometheus.Metric) {
 	}
 
 	netDevStatsCache := make(map[string]netDevStatsCacheEntry)
+	netDevHWEmitted := make(map[string]struct{})
 
 	for _, device := range devices {
 		deviceStart := time.Now()
@@ -590,7 +754,7 @@ func (c *RdmaCollector) Collect(ch chan<- prometheus.Metric) {
 			}
 
 			attr := port.Attributes
-			c.collectRoCEPFCMetrics(ctx, ch, device.Name, portID, attr, device.IsVF, netDevStatsCache)
+			c.collectNetDevMetrics(ctx, ch, device.Name, portID, attr, device.IsVF, netDevStatsCache, netDevHWEmitted)
 
 			ch <- prometheus.MustNewConstMetric(
 				c.portInfoDesc,
@@ -616,6 +780,7 @@ func (c *RdmaCollector) Collect(ch chan<- prometheus.Metric) {
 
 	c.scrapeErrors.Collect(ch)
 	c.rocePFCScrapeErrors.Collect(ch)
+	c.netDevHWScrapeErrors.Collect(ch)
 }
 
 func sortedKeys(m map[string]uint64) []string {
@@ -630,22 +795,26 @@ func sortedKeys(m map[string]uint64) []string {
 	return keys
 }
 
-func (c *RdmaCollector) collectRoCEPFCMetrics(
+func (c *RdmaCollector) collectNetDevMetrics(
 	ctx context.Context,
 	ch chan<- prometheus.Metric,
 	deviceName, portID string,
 	attr rdma.PortAttributes,
 	isVF bool,
 	cache map[string]netDevStatsCacheEntry,
+	hwEmitted map[string]struct{},
 ) {
 	if c.netDevStatsProvider == nil {
 		return
 	}
-	// PFC PAUSE frames are exchanged at the physical port level (PF only).
-	// VFs do not independently send/receive PFC frames; skip to avoid
-	// meaningless stats and blocking ethtool ioctls on VF interfaces.
+	if !c.collectRoCEPFC && !c.collectNetDevHW {
+		return
+	}
+	// Physical-port ethtool counters are PF-only. VFs do not independently
+	// send/receive PFC or expose physical-port/device counters; skip to
+	// avoid meaningless stats and blocking ethtool ioctls on VF interfaces.
 	if isVF {
-		c.logger.Debug("skipping PFC collection for VF device", "device", deviceName, "port", portID)
+		c.logger.Debug("skipping netdev collection for VF device", "device", deviceName, "port", portID)
 		return
 	}
 	if attr.LinkLayer != "Ethernet" || attr.NetDev == "" {
@@ -655,13 +824,30 @@ func (c *RdmaCollector) collectRoCEPFCMetrics(
 	stats, err := c.readNetDevStatsWithCache(ctx, attr.NetDev, cache)
 	if err != nil {
 		if ctx.Err() != nil {
-			c.logger.Warn("roce pfc scrape aborted by context", "device", deviceName, "port", portID, "netdev", attr.NetDev, "err", ctx.Err())
+			c.logger.Warn("netdev scrape aborted by context", "device", deviceName, "port", portID, "netdev", attr.NetDev, "err", ctx.Err())
 			return
 		}
-		c.logger.Warn("roce pfc scrape failed", "device", deviceName, "port", portID, "netdev", attr.NetDev, "err", err)
+		c.logger.Warn("netdev scrape failed", "device", deviceName, "port", portID, "netdev", attr.NetDev, "err", err)
 		return
 	}
 
+	if c.collectRoCEPFC {
+		c.emitRoCEPFCMetrics(ch, deviceName, portID, attr.NetDev, stats)
+	}
+	if c.collectNetDevHW {
+		if _, ok := hwEmitted[attr.NetDev]; ok {
+			return
+		}
+		hwEmitted[attr.NetDev] = struct{}{}
+		c.emitNetDevHWMetrics(ch, deviceName, portID, attr.NetDev, stats)
+	}
+}
+
+func (c *RdmaCollector) emitRoCEPFCMetrics(
+	ch chan<- prometheus.Metric,
+	deviceName, portID, netDev string,
+	stats map[string]uint64,
+) {
 	names := sortedKeys(stats)
 	for _, name := range names {
 		direction, priority, kind, ok := parseRoCEPFCMetricName(name)
@@ -682,7 +868,7 @@ func (c *RdmaCollector) collectRoCEPFCMetrics(
 			float64(stats[name]),
 			deviceName,
 			portID,
-			attr.NetDev,
+			netDev,
 			direction,
 			priority,
 		)
@@ -700,7 +886,12 @@ func (c *RdmaCollector) readNetDevStatsWithCache(
 
 	stats, err := c.netDevStatsProvider.Stats(ctx, netDev)
 	if err != nil {
-		c.rocePFCScrapeErrors.Inc()
+		if c.collectRoCEPFC {
+			c.rocePFCScrapeErrors.Inc()
+		}
+		if c.collectNetDevHW {
+			c.netDevHWScrapeErrors.Inc()
+		}
 	}
 	cache[netDev] = netDevStatsCacheEntry{
 		stats: stats,

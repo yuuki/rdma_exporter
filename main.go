@@ -50,6 +50,7 @@ func main() {
 		"scrape_timeout", cfg.ScrapeTimeout.String(),
 		"sysfs_root", cfg.SysfsRoot,
 		"enable_roce_pfc_metrics", cfg.EnableRoCEPFCMetrics,
+		"enable_netdev_hw_metrics", cfg.EnableNetDevHWMetrics,
 	)
 
 	provider := rdma.NewSysfsProvider()
@@ -61,15 +62,21 @@ func main() {
 		logger.Info("excluding devices from monitoring", "devices", cfg.ExcludeDevices)
 	}
 
-	collectorOpts := make([]collector.Option, 0, 1)
+	collectorOpts := make([]collector.Option, 0, 3)
 	var ethtoolProvider *netdev.EthtoolStatsProvider
-	if cfg.EnableRoCEPFCMetrics {
+	if cfg.EnableRoCEPFCMetrics || cfg.EnableNetDevHWMetrics {
 		ethtoolStatsProvider, err := netdev.NewEthtoolStatsProvider()
 		if err != nil {
-			logger.Warn("failed to initialize RoCE PFC stats provider; PFC metrics are disabled", "err", err)
+			logger.Warn("failed to initialize netdev ethtool stats provider; netdev metrics are disabled", "err", err)
 		} else {
 			ethtoolProvider = ethtoolStatsProvider
 			collectorOpts = append(collectorOpts, collector.WithNetDevStatsProvider(ethtoolStatsProvider))
+			if !cfg.EnableRoCEPFCMetrics {
+				collectorOpts = append(collectorOpts, collector.WithRoCEPFCMetrics(false))
+			}
+			if cfg.EnableNetDevHWMetrics {
+				collectorOpts = append(collectorOpts, collector.WithNetDevHWMetrics(true))
+			}
 		}
 	}
 
@@ -116,7 +123,7 @@ func main() {
 	}
 	if ethtoolProvider != nil {
 		if err := ethtoolProvider.Close(); err != nil {
-			logger.Warn("failed to close RoCE PFC stats provider", "err", err)
+			logger.Warn("failed to close netdev ethtool stats provider", "err", err)
 		}
 	}
 
