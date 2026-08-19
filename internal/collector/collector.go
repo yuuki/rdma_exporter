@@ -2,6 +2,7 @@ package collector
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"hash/fnv"
 	"log/slog"
@@ -34,6 +35,13 @@ type NetDevStatsProvider interface {
 type OptionalCounterProvider interface {
 	Prepare(ctx context.Context) error
 	Counters(ctx context.Context, device string, port int) ([]rdmanl.OptionalCounter, error)
+}
+
+// QPCounterProvider fetches live bound QP counter sets via netlink GET/DUMP.
+type QPCounterProvider interface {
+	Prepare(ctx context.Context) error
+	QPMode(ctx context.Context, device string, port int) (rdmanl.QPMode, error)
+	QPSets(ctx context.Context, device string, port int) ([]rdmanl.QPSet, error)
 }
 
 // Option configures collector behavior.
@@ -79,14 +87,20 @@ type RdmaCollector struct {
 	phyLinkDownEventsDesc  *prometheus.Desc
 
 	optionalCounterEnabledDesc *prometheus.Desc
+	qpCounterModeDesc          *prometheus.Desc
+	qpAutoMaskDesc             *prometheus.Desc
+	qpScrapeStatusDesc         *prometheus.Desc
+	qpValueDescs               map[string]*prometheus.Desc
 
 	scrapeErrors                prometheus.Counter
 	rocePFCScrapeErrors         prometheus.Counter
 	netDevHWScrapeErrors        prometheus.Counter
 	optionalCounterScrapeErrors prometheus.Counter
+	qpScrapeErrors              prometheus.Counter
 
 	netDevStatsProvider     NetDevStatsProvider
 	optionalCounterProvider OptionalCounterProvider
+	qpCounterProvider       QPCounterProvider
 	collectRoCEPFC          bool
 	collectNetDevHW         bool
 
@@ -332,6 +346,20 @@ var (
 		"cc_rx_cnp_pkts": {},
 		"cc_tx_cnp_pkts": {},
 	}
+
+	qpCounterValueNames = []string{
+		"duplicate_request",
+		"implied_nak_seq_err",
+		"local_ack_timeout_err",
+		"packet_seq_err",
+		"rnr_nak_retry_err",
+		"out_of_buffer",
+		"rx_write_requests",
+		"rx_read_requests",
+		"rx_atomic_requests",
+	}
+
+	qpCounterHelp = "Live auto-type bound user QP aggregate on this port. Port sysfs rdma_<name>_total already includes default + running sets + history; do not add these series to it. Not per-LQPN. A successful dump can still contain retained values if the hardware query failed."
 )
 
 type rocePFCMetricKind int
@@ -620,6 +648,25 @@ func New(provider Provider, logger *slog.Logger, opts ...Option) *RdmaCollector 
 			[]string{"device", "port", "counter"},
 			nil,
 		),
+		qpCounterModeDesc: prometheus.NewDesc(
+			"rdma_qp_counter_mode",
+			"QP statistic counter bind mode on the port. One series per mode; value 1 is the current mode.",
+			[]string{"device", "port", "mode"},
+			nil,
+		),
+		qpAutoMaskDesc: prometheus.NewDesc(
+			"rdma_qp_auto_mask",
+			"Whether auto-mode grouping includes this criterion. type and pid are independent bits.",
+			[]string{"device", "port", "criteria"},
+			nil,
+		),
+		qpScrapeStatusDesc: prometheus.NewDesc(
+			"rdma_qp_scrape_status",
+			"Result of the last QP counter dump for this port. overflow means the receive budget was exceeded and totals were omitted.",
+			[]string{"device", "port", "result"},
+			nil,
+		),
+		qpValueDescs: make(map[string]*prometheus.Desc, len(qpCounterValueNames)),
 		scrapeErrors: prometheus.NewCounter(prometheus.CounterOpts{
 			Name: "rdma_scrape_errors_total",
 			Help: "Total number of errors encountered while scraping RDMA sysfs.",
@@ -636,12 +683,25 @@ func New(provider Provider, logger *slog.Logger, opts ...Option) *RdmaCollector 
 			Name: "rdma_optional_counter_scrape_errors_total",
 			Help: "Total number of errors encountered while scraping optional RDMA counters via netlink.",
 		}),
+		qpScrapeErrors: prometheus.NewCounter(prometheus.CounterOpts{
+			Name: "rdma_qp_scrape_errors_total",
+			Help: "Total number of errors encountered while scraping QP counters via netlink, including dump overflow.",
+		}),
 		portStatMetrics:        make(map[string]metricEntry),
 		portStatLookup:         make(map[string]string),
 		portHwMetrics:          make(map[string]metricEntry),
 		portHwStatLookup:       make(map[string]string),
 		portOptionalMetrics:    make(map[string]metricEntry),
 		portOptionalStatLookup: make(map[string]string),
+	}
+
+	for _, name := range qpCounterValueNames {
+		c.qpValueDescs[name] = prometheus.NewDesc(
+			"rdma_qp_"+name+"_total",
+			qpCounterHelp,
+			[]string{"device", "port", "qp_type"},
+			nil,
+		)
 	}
 
 	for _, opt := range opts {
@@ -690,6 +750,13 @@ func WithOptionalCounterProvider(provider OptionalCounterProvider) Option {
 	}
 }
 
+// WithQPCounterProvider enables live bound QP counter sets via netlink GET/DUMP.
+func WithQPCounterProvider(provider QPCounterProvider) Option {
+	return func(c *RdmaCollector) {
+		c.qpCounterProvider = provider
+	}
+}
+
 // SetContext updates the context used by the next Collect invocation.
 func (c *RdmaCollector) SetContext(ctx context.Context) {
 	if ctx == nil {
@@ -732,6 +799,15 @@ func (c *RdmaCollector) Describe(ch chan<- *prometheus.Desc) {
 	if c.optionalCounterProvider != nil {
 		ch <- c.optionalCounterEnabledDesc
 		c.optionalCounterScrapeErrors.Describe(ch)
+	}
+	if c.qpCounterProvider != nil {
+		ch <- c.qpCounterModeDesc
+		ch <- c.qpAutoMaskDesc
+		ch <- c.qpScrapeStatusDesc
+		c.qpScrapeErrors.Describe(ch)
+		for _, name := range qpCounterValueNames {
+			ch <- c.qpValueDescs[name]
+		}
 	}
 
 	c.collectMu.Lock()
@@ -864,15 +940,22 @@ func (c *RdmaCollector) Collect(ch chan<- prometheus.Metric) {
 			"duration", time.Since(deviceStart))
 	}
 
+	if c.qpCounterProvider != nil {
+		c.collectQPCounters(ctx, ch, devices)
+	}
+
 	c.scrapeErrors.Collect(ch)
 	c.rocePFCScrapeErrors.Collect(ch)
 	c.netDevHWScrapeErrors.Collect(ch)
 	if c.optionalCounterProvider != nil {
 		c.optionalCounterScrapeErrors.Collect(ch)
 	}
+	if c.qpCounterProvider != nil {
+		c.qpScrapeErrors.Collect(ch)
+	}
 }
 
-func sortedKeys(m map[string]uint64) []string {
+func sortedKeys[V any](m map[string]V) []string {
 	if len(m) == 0 {
 		return nil
 	}
@@ -938,6 +1021,154 @@ func (c *RdmaCollector) collectOptionalCounters(
 			float64(counter.Value),
 			deviceName,
 			portLabel,
+		)
+	}
+}
+
+func (c *RdmaCollector) collectQPCounters(ctx context.Context, ch chan<- prometheus.Metric, devices []rdma.Device) {
+	if err := c.qpCounterProvider.Prepare(ctx); err != nil {
+		if ctx.Err() != nil {
+			c.logger.Warn("qp counter scrape aborted by context", "err", ctx.Err())
+		} else {
+			c.logger.Warn("qp counter dump failed", "err", err)
+		}
+		c.qpScrapeErrors.Inc()
+		return
+	}
+	for _, device := range devices {
+		for _, port := range device.Ports {
+			c.collectQPPort(ctx, ch, device.Name, port.ID)
+		}
+	}
+}
+
+func (c *RdmaCollector) collectQPPort(ctx context.Context, ch chan<- prometheus.Metric, deviceName string, portID int) {
+	portLabel := strconv.Itoa(portID)
+	mode, err := c.qpCounterProvider.QPMode(ctx, deviceName, portID)
+	if err != nil {
+		if ctx.Err() != nil {
+			c.logger.Warn("qp counter scrape aborted by context", "device", deviceName, "port", portLabel, "err", ctx.Err())
+			return
+		}
+		c.logger.Warn("qp counter mode scrape failed", "device", deviceName, "port", portLabel, "err", err)
+		if err != rdmanl.ErrQPUnsupported {
+			c.qpScrapeErrors.Inc()
+		}
+		c.emitQPScrapeStatus(ch, deviceName, portLabel, "error")
+		return
+	}
+	c.emitQPModeMetrics(ch, deviceName, portLabel, mode)
+
+	sets, err := c.qpCounterProvider.QPSets(ctx, deviceName, portID)
+	if err != nil {
+		if ctx.Err() != nil {
+			c.logger.Warn("qp counter scrape aborted by context", "device", deviceName, "port", portLabel, "err", ctx.Err())
+			return
+		}
+		result := "error"
+		if errors.Is(err, rdmanl.ErrDumpOverflow) {
+			result = "overflow"
+		}
+		c.logger.Warn("qp counter scrape failed", "device", deviceName, "port", portLabel, "err", err)
+		if err != rdmanl.ErrQPUnsupported {
+			c.qpScrapeErrors.Inc()
+		}
+		c.emitQPScrapeStatus(ch, deviceName, portLabel, result)
+		return
+	}
+
+	c.emitQPScrapeStatus(ch, deviceName, portLabel, "ok")
+	c.emitQPTotals(ch, deviceName, portLabel, sets)
+}
+
+func (c *RdmaCollector) emitQPTotals(ch chan<- prometheus.Metric, deviceName, portLabel string, sets []rdmanl.QPSet) {
+	totals := make(map[string]map[string]uint64)
+	for _, set := range sets {
+		if !set.AutoType() {
+			continue
+		}
+		byName := totals[set.QPType]
+		if byName == nil {
+			byName = make(map[string]uint64)
+			totals[set.QPType] = byName
+		}
+		for _, name := range qpCounterValueNames {
+			value, ok := set.Stats[name]
+			if !ok {
+				continue
+			}
+			byName[name] += value
+		}
+	}
+	for _, qpType := range sortedKeys(totals) {
+		for _, name := range qpCounterValueNames {
+			value, ok := totals[qpType][name]
+			if !ok {
+				continue
+			}
+			ch <- prometheus.MustNewConstMetric(
+				c.qpValueDescs[name],
+				prometheus.CounterValue,
+				float64(value),
+				deviceName,
+				portLabel,
+				qpType,
+			)
+		}
+	}
+}
+
+func (c *RdmaCollector) emitQPModeMetrics(ch chan<- prometheus.Metric, deviceName, portLabel string, mode rdmanl.QPMode) {
+	current := mode.Mode
+	if current != "none" && current != "auto" && current != "manual" {
+		current = "none"
+	}
+	for _, name := range []string{"none", "auto", "manual"} {
+		value := 0.0
+		if name == current {
+			value = 1
+		}
+		ch <- prometheus.MustNewConstMetric(
+			c.qpCounterModeDesc,
+			prometheus.GaugeValue,
+			value,
+			deviceName,
+			portLabel,
+			name,
+		)
+	}
+	for _, criteria := range []string{"type", "pid"} {
+		value := 0.0
+		if criteria == "type" && mode.MaskType {
+			value = 1
+		}
+		if criteria == "pid" && mode.MaskPID {
+			value = 1
+		}
+		ch <- prometheus.MustNewConstMetric(
+			c.qpAutoMaskDesc,
+			prometheus.GaugeValue,
+			value,
+			deviceName,
+			portLabel,
+			criteria,
+		)
+	}
+}
+
+func (c *RdmaCollector) emitQPScrapeStatus(ch chan<- prometheus.Metric, deviceName, portLabel, result string) {
+	for _, name := range []string{"ok", "overflow", "error"} {
+		value := 0.0
+		if name == result {
+			value = 1
+		}
+		ch <- prometheus.MustNewConstMetric(
+			c.qpScrapeStatusDesc,
+			prometheus.GaugeValue,
+			value,
+			deviceName,
+			portLabel,
+			name,
 		)
 	}
 }

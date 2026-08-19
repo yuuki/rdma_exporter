@@ -19,6 +19,7 @@ High-performance computing clusters and low-latency trading platforms increasing
   - RoCEv2 PFC counters from ethtool (`rdma_roce_pfc_*`), enabled by `--enable-roce-pfc-metrics`.
   - Opt-in ethtool hardware counters (`rdma_netdev_*`, `rdma_pcie_*`, `rdma_phy_*`) behind `--enable-netdev-hw-metrics`.
   - Opt-in optional hardware counters from RDMA netlink (`rdma_optional_counter_enabled`, `rdma_cc_*_total`) behind `--enable-rdma-optional-counters`. The exporter never enables counters.
+  - Opt-in live auto-type QP counters (`rdma_qp_*`) behind `--enable-rdma-qp-counters`. The exporter never binds QPs or enables auto mode. These are not a partition of sysfs port totals.
   - Exporter health metrics (Go/process collectors, HTTP instrumentation).
 - **Service Interface**:
   - HTTP server with configurable listen address and metrics path.
@@ -54,11 +55,12 @@ High-performance computing clusters and low-latency trading platforms increasing
 │ - Collect      │      └─────────────────────┘
 └──────┬─────────┘
        │
-       ├────────────────► NETLINK_RDMA (optional cc_*)
+       ├────────────────► NETLINK_RDMA socket A (optional cc_*)
+       ├────────────────► NETLINK_RDMA socket B (QP dump)
        └────────────────► ethtool (optional PFC / netdev HW)
 ```
 
-The `cmd/rdma_exporter` package wires configuration, logging, and the HTTP server. The server exposes `/metrics`, `/healthz`, and optional `/readyz` endpoints. The `internal/collector` package implements `prometheus.Collector`, delegating sysfs retrieval to `internal/rdma`, optional hardware counters to `internal/rdmanl` (NETLINK_RDMA), and PFC/netdev hardware stats to `internal/netdev`.
+The `cmd/rdma_exporter` package wires configuration, logging, and the HTTP server. The server exposes `/metrics`, `/healthz`, and optional `/readyz` endpoints. The `internal/collector` package implements `prometheus.Collector`, delegating sysfs retrieval to `internal/rdma`, optional hardware counters and QP dumps to separate `internal/rdmanl` sockets (NETLINK_RDMA), and PFC/netdev hardware stats to `internal/netdev`.
 
 ## 4. Data Flow
 1. A scrape hits `/metrics`.
@@ -70,7 +72,8 @@ The `cmd/rdma_exporter` package wires configuration, logging, and the HTTP serve
 4. The collector transforms each counter into const metrics. Every sysfs counter is published as `rdma_<counter>_total` using the exact counter names from the NVIDIA guide (e.g. `rdma_port_xmit_data_total`, `rdma_symbol_error_total`, `rdma_duplicate_request_total`) with labels `device` and `port`. Metadata metrics add labels like `link_layer`, `state`, `phys_state`, `link_width`, and `link_speed`.
 5. For Ethernet PFs, the collector may also read ethtool stats: PFC families when `--enable-roce-pfc-metrics` is on, and curated buffer/PCIe/PHY families when `--enable-netdev-hw-metrics` is on. Hardware families are emitted once per netdev.
 6. When `--enable-rdma-optional-counters` is on, the collector dumps RDMA devices over netlink, reads optional-counter status (`STAT_GET_STATUS`, Linux 5.16+), and fetches values (`STAT_GET`) only for ports with at least one enabled optional counter. `rdma_optional_counter_enabled` covers every optional name; `_total` series are emitted only for `cc_rx_ce_pkts`, `cc_rx_cnp_pkts`, and `cc_tx_cnp_pkts`. Static hw counters already published from sysfs are not re-exported. The exporter never issues `STAT_SET`. A missing `STAT_GET_STATUS` is treated as unsupported and not retried every scrape.
-7. Prometheus receives the serialized metrics response.
+7. After optional counters finish, `--enable-rdma-qp-counters` uses a second NETLINK_RDMA socket. The collector reads port-level mode (`STAT_GET` DOIT with a `STAT_MODE` sentinel) and dumps live bound sets (`STAT_GET` DUMP). Totals are emitted only for auto + type sets, labeled `{device,port,qp_type}`. LQPN lists, `counter_id`, `auto pid`, and manual sets are not exported as values. Dump receive size is budgeted (1 MiB or remaining scrape deadline, and a message cap); overflow omits that port's totals, sets `rdma_qp_scrape_status{result="overflow"}`, and continues other ports. Sysfs `hw_counters` already include default + running sets + history; `rdma_qp_*` must not be added to `rdma_<name>_total`. `STAT_GET` is unprivileged; enabling auto type (`rdma statistic qp set … auto type on`) requires `CAP_NET_ADMIN` and must happen before user QPs go INIT. Optional `rdma_{rx,tx}_{bytes,packets}` remain out of scope.
+8. Prometheus receives the serialized metrics response.
 
 ## 5. Error Handling and Resilience
 - **Partial Failures**: When an HCA or port fails to respond, the collector logs a warning and continues with remaining ports. Metrics for failed ports are omitted in that scrape to avoid publishing stale data.
@@ -94,23 +97,24 @@ The `cmd/rdma_exporter` package wires configuration, logging, and the HTTP serve
   - `--enable-roce-pfc-metrics=true` (RoCEv2 PFC ethtool metrics only)
   - `--enable-netdev-hw-metrics=false` (opt-in buffer/PCIe/PHY ethtool metrics)
   - `--enable-rdma-optional-counters=false` (NETLINK_RDMA; does not enable counters in the kernel)
+  - `--enable-rdma-qp-counters=false` (separate NETLINK_RDMA socket; does not bind QPs or enable auto mode)
 - **Environment Variables**: `RDMA_EXPORTER_LISTEN_ADDRESS`, etc., map one-to-one with flags and provide defaults when flags are unset. CLI flags override environment values to match typical Go flag semantics.
 - **Future Config**: A YAML file can be introduced under `config/` for static deployments (e.g., selecting devices).
 
 ## 8. Security Considerations
-- The exporter runs with minimal privileges but requires read access to `/sys/class/infiniband`. Optional counters use NETLINK_RDMA get/dump only; enabling counters remains an operator action (`rdma statistic set`). It should run as an unprivileged user with CAP_DAC_READ_SEARCH if necessary.
+- The exporter runs with minimal privileges but requires read access to `/sys/class/infiniband`. Optional counters and QP dumps use NETLINK_RDMA get/dump only; enabling optional counters or QP auto mode remains an operator action (`rdma statistic set` / `rdma statistic qp set`, `CAP_NET_ADMIN`). It should run as an unprivileged user with CAP_DAC_READ_SEARCH if necessary.
 - TLS termination and authentication are expected to be handled by an external sidecar or ingress controller when exposing metrics beyond localhost.
 - No dynamic configuration endpoints are exposed; health endpoints return a simple status payload.
 
 ## 9. Observability
 - The exporter emits structured logs with `time`, `level`, and `msg`, plus keys like `device`, `port`, and `duration`.
 - Scrape durations and HTTP status codes are captured via `promhttp.InstrumentMetricHandler`.
-- A custom counter `rdma_scrape_errors_total` tracks failures fetching sysfs data. `rdma_roce_pfc_scrape_errors_total` and `rdma_netdev_scrape_errors_total` track ethtool failures for their respective families. `rdma_optional_counter_scrape_errors_total` tracks NETLINK_RDMA optional-counter failures.
+- A custom counter `rdma_scrape_errors_total` tracks failures fetching sysfs data. `rdma_roce_pfc_scrape_errors_total` and `rdma_netdev_scrape_errors_total` track ethtool failures for their respective families. `rdma_optional_counter_scrape_errors_total` tracks NETLINK_RDMA optional-counter failures. `rdma_qp_scrape_errors_total` tracks QP dump/mode failures, including receive-budget overflow.
 
 ## 10. Testing Strategy
 - **Unit Tests**:
   - `internal/rdma`: Mock sysfs directory using fixtures; verify sysfs parsing.
-  - `internal/rdmanl`: Parse crafted netlink attributes; stub the socket for Prepare/Counters.
+  - `internal/rdmanl`: Parse crafted netlink attributes; stub the socket for Prepare/Counters and QP mode/dump, including dump receive budgets.
   - `internal/collector`: Use `prometheus/testutil` to assert metric contents, including label values.
 - **Integration Tests**:
   - Run exporter against recorded sysfs trees under `testdata/sysfs/<scenario>`.
@@ -130,4 +134,3 @@ The `cmd/rdma_exporter` package wires configuration, logging, and the HTTP serve
 - Support event-driven metrics (e.g., link-up changes) using optional polling loops.
 - Add `/readyz` endpoint integrating pending configuration validation (e.g., device allow lists).
 - Implement on-demand profiling through a dedicated debug build.
-- QP-bound `rdma statistic` counters (per-PID / per-QP-type) remain out of scope until a later phase.

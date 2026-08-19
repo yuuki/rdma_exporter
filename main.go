@@ -53,6 +53,7 @@ func main() {
 		"enable_roce_pfc_metrics", cfg.EnableRoCEPFCMetrics,
 		"enable_netdev_hw_metrics", cfg.EnableNetDevHWMetrics,
 		"enable_rdma_optional_counters", cfg.EnableOptionalCounters,
+		"enable_rdma_qp_counters", cfg.EnableQPCounters,
 	)
 
 	provider := rdma.NewSysfsProvider()
@@ -64,7 +65,7 @@ func main() {
 		logger.Info("excluding devices from monitoring", "devices", cfg.ExcludeDevices)
 	}
 
-	collectorOpts := make([]collector.Option, 0, 4)
+	collectorOpts := make([]collector.Option, 0, 5)
 	var ethtoolProvider *netdev.EthtoolStatsProvider
 	if cfg.EnableRoCEPFCMetrics || cfg.EnableNetDevHWMetrics {
 		ethtoolStatsProvider, err := netdev.NewEthtoolStatsProvider()
@@ -90,6 +91,17 @@ func main() {
 		} else {
 			optionalProvider = optionalCounters
 			collectorOpts = append(collectorOpts, collector.WithOptionalCounterProvider(optionalCounters))
+		}
+	}
+
+	var qpProvider *rdmanl.Provider
+	if cfg.EnableQPCounters {
+		qpCounters, err := rdmanl.New()
+		if err != nil {
+			logger.Warn("failed to initialize QP counter provider; QP counters are disabled", "err", err)
+		} else {
+			qpProvider = qpCounters
+			collectorOpts = append(collectorOpts, collector.WithQPCounterProvider(qpCounters))
 		}
 	}
 
@@ -142,6 +154,11 @@ func main() {
 	if optionalProvider != nil {
 		if err := optionalProvider.Close(); err != nil {
 			logger.Warn("failed to close optional RDMA counter provider", "err", err)
+		}
+	}
+	if qpProvider != nil {
+		if err := qpProvider.Close(); err != nil {
+			logger.Warn("failed to close QP counter provider", "err", err)
 		}
 	}
 

@@ -78,19 +78,47 @@ func (c *nlConn) Execute(ctx context.Context, typ uint16, flags uint16, payload 
 
 	dump := flags&nlmFDump != 0
 	wantAck := flags&nlmFAck != 0
+	budget, haveBudget := dumpBudgetFrom(ctx)
 	var out [][]byte
+	nBytes := 0
+	dumpDone := !dump
+	if dump {
+		defer func() {
+			if !dumpDone {
+				_ = c.reconnectLocked()
+			}
+		}()
+	}
 
 	for {
 		if err := ctx.Err(); err != nil {
 			return nil, err
 		}
-		msgs, err := c.recv()
+		msgs, n, err := c.recv()
 		if err != nil {
 			return nil, err
+		}
+		nBytes += n
+		pendingData := 0
+		for _, msg := range msgs {
+			if msg.seq == seq && msg.typ != unix.NLMSG_ERROR && msg.typ != unix.NLMSG_DONE && msg.typ != nlmsgOverrun {
+				pendingData++
+			}
+		}
+		if dump && haveBudget {
+			if err := budget.check(nBytes, len(out)+pendingData); err != nil {
+				return nil, err
+			}
 		}
 		for _, msg := range msgs {
 			if msg.seq != seq {
 				continue
+			}
+			if msg.typ == nlmsgOverrun {
+				return nil, ErrDumpInterrupted
+			}
+			if msg.flags&nlmFDumpIntr != 0 {
+				return nil, ErrDumpInterrupted
 			}
 			switch msg.typ {
 			case unix.NLMSG_ERROR:
@@ -102,6 +130,7 @@ func (c *nlConn) Execute(ctx context.Context, typ uint16, flags uint16, payload 
 					return nil, fmt.Errorf("rdma netlink: %w", unix.Errno(code))
 				}
 				if !dump {
+					dumpDone = true
 					return out, nil
 				}
 			case unix.NLMSG_DONE:
@@ -114,10 +143,12 @@ func (c *nlConn) Execute(ctx context.Context, typ uint16, flags uint16, payload 
 						return nil, fmt.Errorf("rdma netlink dump: %w", unix.Errno(code))
 					}
 				}
+				dumpDone = true
 				return out, nil
 			default:
 				out = append(out, msg.data)
 				if !dump && !wantAck {
+					dumpDone = true
 					return out, nil
 				}
 			}
@@ -128,12 +159,28 @@ func (c *nlConn) Execute(ctx context.Context, typ uint16, flags uint16, payload 
 func (c *nlConn) Close() error {
 	c.mu.Lock()
 	defer c.mu.Unlock()
+	return c.closeLocked()
+}
+
+func (c *nlConn) closeLocked() error {
 	if c.fd < 0 {
 		return nil
 	}
 	err := unix.Close(c.fd)
 	c.fd = -1
 	return err
+}
+
+// reconnectLocked drops an incomplete multipart dump by replacing the socket.
+func (c *nlConn) reconnectLocked() error {
+	_ = c.closeLocked()
+	n, err := dial()
+	if err != nil {
+		return err
+	}
+	c.fd = n.fd
+	c.pid = n.pid
+	return nil
 }
 
 func (c *nlConn) send(seq uint32, typ uint16, flags uint16, payload []byte) error {
@@ -152,13 +199,17 @@ func (c *nlConn) send(seq uint32, typ uint16, flags uint16, payload []byte) erro
 	return nil
 }
 
-func (c *nlConn) recv() ([]nlMsg, error) {
+func (c *nlConn) recv() ([]nlMsg, int, error) {
 	buf := make([]byte, netlinkReadBufSize)
 	n, _, err := unix.Recvfrom(c.fd, buf, 0)
 	if err != nil {
-		return nil, fmt.Errorf("recv rdma netlink: %w", err)
+		return nil, 0, fmt.Errorf("recv rdma netlink: %w", err)
 	}
-	return parseNlMsgs(buf[:n])
+	msgs, err := parseNlMsgs(buf[:n])
+	if err != nil {
+		return nil, n, err
+	}
+	return msgs, n, nil
 }
 
 func setConnDeadline(fd int, ctx context.Context) error {

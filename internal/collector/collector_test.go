@@ -126,6 +126,81 @@ func (s *stubOptionalCounterProvider) CallCount(device string, port int) int {
 	return s.calls[optionalKey(device, port)]
 }
 
+type stubQPProvider struct {
+	mu         sync.Mutex
+	prepareN   int
+	prepareErr error
+	modes      map[string]rdmanl.QPMode
+	sets       map[string][]rdmanl.QPSet
+	modeErrs   map[string]error
+	setErrs    map[string]error
+	modeCalls  map[string]int
+	setCalls   map[string]int
+}
+
+func newStubQPProvider() *stubQPProvider {
+	return &stubQPProvider{
+		modes:     make(map[string]rdmanl.QPMode),
+		sets:      make(map[string][]rdmanl.QPSet),
+		modeErrs:  make(map[string]error),
+		setErrs:   make(map[string]error),
+		modeCalls: make(map[string]int),
+		setCalls:  make(map[string]int),
+	}
+}
+
+func (s *stubQPProvider) Prepare(context.Context) error {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.prepareN++
+	return s.prepareErr
+}
+
+func (s *stubQPProvider) QPMode(_ context.Context, device string, port int) (rdmanl.QPMode, error) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+
+	key := optionalKey(device, port)
+	s.modeCalls[key]++
+	if err, ok := s.modeErrs[key]; ok {
+		return rdmanl.QPMode{}, err
+	}
+	return s.modes[key], nil
+}
+
+func (s *stubQPProvider) QPSets(_ context.Context, device string, port int) ([]rdmanl.QPSet, error) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+
+	key := optionalKey(device, port)
+	s.setCalls[key]++
+	if err, ok := s.setErrs[key]; ok {
+		return nil, err
+	}
+	src := s.sets[key]
+	out := make([]rdmanl.QPSet, len(src))
+	copy(out, src)
+	return out, nil
+}
+
+func (s *stubQPProvider) PrepareCount() int {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return s.prepareN
+}
+
+func (s *stubQPProvider) ModeCount(device string, port int) int {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return s.modeCalls[optionalKey(device, port)]
+}
+
+func (s *stubQPProvider) SetCount(device string, port int) int {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return s.setCalls[optionalKey(device, port)]
+}
+
 func newDiscardLogger() *slog.Logger {
 	return slog.New(slog.NewTextHandler(io.Discard, &slog.HandlerOptions{Level: slog.LevelDebug}))
 }
@@ -1174,6 +1249,437 @@ func TestCollectorOmitsOptionalMetricsWithoutProvider(t *testing.T) {
 	for _, mf := range mfs {
 		if mf.GetName() == "rdma_optional_counter_scrape_errors_total" || mf.GetName() == "rdma_optional_counter_enabled" {
 			t.Fatalf("unexpected metric %s without optional provider", mf.GetName())
+		}
+		if strings.HasPrefix(mf.GetName(), "rdma_qp_") {
+			t.Fatalf("unexpected metric %s without QP provider", mf.GetName())
+		}
+	}
+}
+
+func TestCollectorExportsAutoTypeQPCounters(t *testing.T) {
+	t.Parallel()
+
+	provider := &stubProvider{
+		devices: []rdma.Device{
+			{
+				Name: "mlx5_0",
+				Ports: []rdma.Port{
+					{ID: 1},
+				},
+			},
+		},
+	}
+	qp := newStubQPProvider()
+	qp.modes["mlx5_0/1"] = rdmanl.QPMode{Mode: "auto", MaskType: true}
+	qp.sets["mlx5_0/1"] = []rdmanl.QPSet{
+		{
+			Mode:   "auto",
+			QPType: "RC",
+			Stats: map[string]uint64{
+				"out_of_buffer":     7,
+				"duplicate_request": 3,
+			},
+		},
+		{
+			Mode:   "manual",
+			QPType: "RC",
+			Stats: map[string]uint64{
+				"out_of_buffer": 99,
+			},
+		},
+		{
+			Mode:   "auto",
+			QPType: "UD",
+			HasPID: true,
+			Stats: map[string]uint64{
+				"out_of_buffer": 88,
+			},
+		},
+	}
+
+	c := New(provider, newDiscardLogger(), WithQPCounterProvider(qp))
+	reg := prometheus.NewRegistry()
+	reg.MustRegister(c)
+
+	expected := `
+# HELP rdma_qp_auto_mask Whether auto-mode grouping includes this criterion. type and pid are independent bits.
+# TYPE rdma_qp_auto_mask gauge
+rdma_qp_auto_mask{criteria="pid",device="mlx5_0",port="1"} 0
+rdma_qp_auto_mask{criteria="type",device="mlx5_0",port="1"} 1
+# HELP rdma_qp_counter_mode QP statistic counter bind mode on the port. One series per mode; value 1 is the current mode.
+# TYPE rdma_qp_counter_mode gauge
+rdma_qp_counter_mode{device="mlx5_0",mode="auto",port="1"} 1
+rdma_qp_counter_mode{device="mlx5_0",mode="manual",port="1"} 0
+rdma_qp_counter_mode{device="mlx5_0",mode="none",port="1"} 0
+# HELP rdma_qp_duplicate_request_total ` + qpCounterHelp + `
+# TYPE rdma_qp_duplicate_request_total counter
+rdma_qp_duplicate_request_total{device="mlx5_0",port="1",qp_type="RC"} 3
+# HELP rdma_qp_out_of_buffer_total ` + qpCounterHelp + `
+# TYPE rdma_qp_out_of_buffer_total counter
+rdma_qp_out_of_buffer_total{device="mlx5_0",port="1",qp_type="RC"} 7
+# HELP rdma_qp_scrape_status Result of the last QP counter dump for this port. overflow means the receive budget was exceeded and totals were omitted.
+# TYPE rdma_qp_scrape_status gauge
+rdma_qp_scrape_status{device="mlx5_0",port="1",result="error"} 0
+rdma_qp_scrape_status{device="mlx5_0",port="1",result="ok"} 1
+rdma_qp_scrape_status{device="mlx5_0",port="1",result="overflow"} 0
+`
+	if err := testutil.GatherAndCompare(reg, strings.NewReader(expected),
+		"rdma_qp_counter_mode",
+		"rdma_qp_auto_mask",
+		"rdma_qp_scrape_status",
+		"rdma_qp_out_of_buffer_total",
+		"rdma_qp_duplicate_request_total",
+	); err != nil {
+		t.Fatalf("unexpected QP counter metrics: %v", err)
+	}
+}
+
+func TestCollectorOmitsUndocumentedQPTotals(t *testing.T) {
+	t.Parallel()
+
+	provider := &stubProvider{
+		devices: []rdma.Device{
+			{
+				Name:  "mlx5_0",
+				Ports: []rdma.Port{{ID: 1}},
+			},
+		},
+	}
+	qp := newStubQPProvider()
+	qp.modes["mlx5_0/1"] = rdmanl.QPMode{Mode: "auto", MaskType: true}
+	qp.sets["mlx5_0/1"] = []rdmanl.QPSet{
+		{
+			Mode:   "auto",
+			QPType: "RC",
+			Stats: map[string]uint64{
+				"out_of_buffer": 4,
+				"rdma_rx_bytes": 123,
+			},
+		},
+	}
+
+	c := New(provider, newDiscardLogger(), WithQPCounterProvider(qp))
+	reg := prometheus.NewRegistry()
+	reg.MustRegister(c)
+
+	expected := `
+# HELP rdma_qp_out_of_buffer_total ` + qpCounterHelp + `
+# TYPE rdma_qp_out_of_buffer_total counter
+rdma_qp_out_of_buffer_total{device="mlx5_0",port="1",qp_type="RC"} 4
+`
+	if err := testutil.GatherAndCompare(reg, strings.NewReader(expected),
+		"rdma_qp_out_of_buffer_total",
+		"rdma_qp_rdma_rx_bytes_total",
+	); err != nil {
+		t.Fatalf("unexpected QP allowlist metrics: %v", err)
+	}
+}
+
+func TestCollectorQPEmptyDumpEmitsModeOnly(t *testing.T) {
+	t.Parallel()
+
+	provider := &stubProvider{
+		devices: []rdma.Device{
+			{
+				Name:  "mlx5_0",
+				Ports: []rdma.Port{{ID: 1}},
+			},
+		},
+	}
+	qp := newStubQPProvider()
+	qp.modes["mlx5_0/1"] = rdmanl.QPMode{Mode: "auto", MaskType: true}
+
+	c := New(provider, newDiscardLogger(), WithQPCounterProvider(qp))
+	reg := prometheus.NewRegistry()
+	reg.MustRegister(c)
+
+	expected := `
+# HELP rdma_qp_auto_mask Whether auto-mode grouping includes this criterion. type and pid are independent bits.
+# TYPE rdma_qp_auto_mask gauge
+rdma_qp_auto_mask{criteria="pid",device="mlx5_0",port="1"} 0
+rdma_qp_auto_mask{criteria="type",device="mlx5_0",port="1"} 1
+# HELP rdma_qp_counter_mode QP statistic counter bind mode on the port. One series per mode; value 1 is the current mode.
+# TYPE rdma_qp_counter_mode gauge
+rdma_qp_counter_mode{device="mlx5_0",mode="auto",port="1"} 1
+rdma_qp_counter_mode{device="mlx5_0",mode="manual",port="1"} 0
+rdma_qp_counter_mode{device="mlx5_0",mode="none",port="1"} 0
+# HELP rdma_qp_scrape_status Result of the last QP counter dump for this port. overflow means the receive budget was exceeded and totals were omitted.
+# TYPE rdma_qp_scrape_status gauge
+rdma_qp_scrape_status{device="mlx5_0",port="1",result="error"} 0
+rdma_qp_scrape_status{device="mlx5_0",port="1",result="ok"} 1
+rdma_qp_scrape_status{device="mlx5_0",port="1",result="overflow"} 0
+`
+	if err := testutil.GatherAndCompare(reg, strings.NewReader(expected),
+		"rdma_qp_counter_mode",
+		"rdma_qp_auto_mask",
+		"rdma_qp_scrape_status",
+		"rdma_qp_out_of_buffer_total",
+	); err != nil {
+		t.Fatalf("unexpected empty QP dump metrics: %v", err)
+	}
+}
+
+func TestCollectorQPDumpOverflowOmitsTotals(t *testing.T) {
+	t.Parallel()
+
+	provider := &stubProvider{
+		devices: []rdma.Device{
+			{
+				Name:  "mlx5_0",
+				Ports: []rdma.Port{{ID: 1}},
+			},
+		},
+	}
+	opt := newStubOptionalCounterProvider()
+	opt.counters["mlx5_0/1"] = []rdmanl.OptionalCounter{
+		{Name: "cc_rx_ce_pkts", Enabled: true, Value: 11, HasValue: true},
+	}
+	qp := newStubQPProvider()
+	qp.modes["mlx5_0/1"] = rdmanl.QPMode{Mode: "auto", MaskType: true}
+	qp.sets["mlx5_0/1"] = []rdmanl.QPSet{
+		{
+			Mode:   "auto",
+			QPType: "RC",
+			Stats:  map[string]uint64{"out_of_buffer": 7},
+		},
+	}
+	qp.setErrs["mlx5_0/1"] = rdmanl.ErrDumpOverflow
+
+	c := New(provider, newDiscardLogger(), WithOptionalCounterProvider(opt), WithQPCounterProvider(qp))
+	reg := prometheus.NewRegistry()
+	reg.MustRegister(c)
+
+	expected := `
+# HELP rdma_cc_rx_ce_pkts_total The number of received RoCEv2 packets marked Congestion Experienced (ECN CE). Optional mlx5 counter read via RDMA netlink; not present in sysfs hw_counters.
+# TYPE rdma_cc_rx_ce_pkts_total counter
+rdma_cc_rx_ce_pkts_total{device="mlx5_0",port="1"} 11
+# HELP rdma_qp_scrape_errors_total Total number of errors encountered while scraping QP counters via netlink, including dump overflow.
+# TYPE rdma_qp_scrape_errors_total counter
+rdma_qp_scrape_errors_total 1
+# HELP rdma_qp_scrape_status Result of the last QP counter dump for this port. overflow means the receive budget was exceeded and totals were omitted.
+# TYPE rdma_qp_scrape_status gauge
+rdma_qp_scrape_status{device="mlx5_0",port="1",result="error"} 0
+rdma_qp_scrape_status{device="mlx5_0",port="1",result="ok"} 0
+rdma_qp_scrape_status{device="mlx5_0",port="1",result="overflow"} 1
+`
+	if err := testutil.GatherAndCompare(reg, strings.NewReader(expected),
+		"rdma_cc_rx_ce_pkts_total",
+		"rdma_qp_scrape_status",
+		"rdma_qp_scrape_errors_total",
+		"rdma_qp_out_of_buffer_total",
+	); err != nil {
+		t.Fatalf("unexpected overflow QP metrics: %v", err)
+	}
+	if got := opt.CallCount("mlx5_0", 1); got != 1 {
+		t.Fatalf("expected optional counters to run despite QP overflow, got %d", got)
+	}
+}
+
+func TestCollectorQPCountersIncludeVirtualFunctions(t *testing.T) {
+	t.Parallel()
+
+	provider := &stubProvider{
+		devices: []rdma.Device{
+			{
+				Name: "mlx5_12",
+				IsVF: true,
+				Ports: []rdma.Port{
+					{ID: 1},
+				},
+			},
+		},
+	}
+	qp := newStubQPProvider()
+	qp.modes["mlx5_12/1"] = rdmanl.QPMode{Mode: "auto", MaskType: true}
+	qp.sets["mlx5_12/1"] = []rdmanl.QPSet{
+		{
+			Mode:   "auto",
+			QPType: "RC",
+			Stats:  map[string]uint64{"out_of_buffer": 2},
+		},
+	}
+
+	c := New(provider, newDiscardLogger(), WithQPCounterProvider(qp))
+	reg := prometheus.NewRegistry()
+	reg.MustRegister(c)
+
+	expected := `
+# HELP rdma_qp_out_of_buffer_total ` + qpCounterHelp + `
+# TYPE rdma_qp_out_of_buffer_total counter
+rdma_qp_out_of_buffer_total{device="mlx5_12",port="1",qp_type="RC"} 2
+`
+	if err := testutil.GatherAndCompare(reg, strings.NewReader(expected),
+		"rdma_qp_out_of_buffer_total",
+	); err != nil {
+		t.Fatalf("unexpected VF QP metrics: %v", err)
+	}
+	if got := qp.ModeCount("mlx5_12", 1); got != 1 {
+		t.Fatalf("expected QPMode for VF once, got %d", got)
+	}
+	if got := qp.SetCount("mlx5_12", 1); got != 1 {
+		t.Fatalf("expected QPSets for VF once, got %d", got)
+	}
+}
+
+func TestCollectorSumsDuplicateAutoTypeSets(t *testing.T) {
+	t.Parallel()
+
+	provider := &stubProvider{
+		devices: []rdma.Device{
+			{
+				Name:  "mlx5_0",
+				Ports: []rdma.Port{{ID: 1}},
+			},
+		},
+	}
+	qp := newStubQPProvider()
+	qp.modes["mlx5_0/1"] = rdmanl.QPMode{Mode: "auto", MaskType: true}
+	qp.sets["mlx5_0/1"] = []rdmanl.QPSet{
+		{
+			Mode:   "auto",
+			QPType: "RC",
+			Stats:  map[string]uint64{"out_of_buffer": 3},
+		},
+		{
+			Mode:   "auto",
+			QPType: "RC",
+			Stats:  map[string]uint64{"out_of_buffer": 4},
+		},
+		{
+			Mode:   "manual",
+			QPType: "RC",
+			Stats:  map[string]uint64{"out_of_buffer": 99},
+		},
+	}
+
+	c := New(provider, newDiscardLogger(), WithQPCounterProvider(qp))
+	reg := prometheus.NewRegistry()
+	reg.MustRegister(c)
+
+	expected := `
+# HELP rdma_qp_out_of_buffer_total ` + qpCounterHelp + `
+# TYPE rdma_qp_out_of_buffer_total counter
+rdma_qp_out_of_buffer_total{device="mlx5_0",port="1",qp_type="RC"} 7
+`
+	if err := testutil.GatherAndCompare(reg, strings.NewReader(expected),
+		"rdma_qp_out_of_buffer_total",
+	); err != nil {
+		t.Fatalf("unexpected summed QP metrics: %v", err)
+	}
+}
+
+func TestCollectorQPUnsupportedOmitsModeAndOk(t *testing.T) {
+	t.Parallel()
+
+	provider := &stubProvider{
+		devices: []rdma.Device{
+			{
+				Name:  "mlx5_0",
+				Ports: []rdma.Port{{ID: 1}},
+			},
+		},
+	}
+	qp := newStubQPProvider()
+	qp.modeErrs["mlx5_0/1"] = rdmanl.ErrQPUnsupported
+
+	c := New(provider, newDiscardLogger(), WithQPCounterProvider(qp))
+	reg := prometheus.NewRegistry()
+	reg.MustRegister(c)
+
+	expected := `
+# HELP rdma_qp_scrape_errors_total Total number of errors encountered while scraping QP counters via netlink, including dump overflow.
+# TYPE rdma_qp_scrape_errors_total counter
+rdma_qp_scrape_errors_total 0
+# HELP rdma_qp_scrape_status Result of the last QP counter dump for this port. overflow means the receive budget was exceeded and totals were omitted.
+# TYPE rdma_qp_scrape_status gauge
+rdma_qp_scrape_status{device="mlx5_0",port="1",result="error"} 1
+rdma_qp_scrape_status{device="mlx5_0",port="1",result="ok"} 0
+rdma_qp_scrape_status{device="mlx5_0",port="1",result="overflow"} 0
+`
+	if err := testutil.GatherAndCompare(reg, strings.NewReader(expected),
+		"rdma_qp_counter_mode",
+		"rdma_qp_auto_mask",
+		"rdma_qp_scrape_status",
+		"rdma_qp_scrape_errors_total",
+		"rdma_qp_out_of_buffer_total",
+	); err != nil {
+		t.Fatalf("unexpected unsupported QP metrics: %v", err)
+	}
+}
+
+func TestCollectorQPOverflowContinuesOtherPorts(t *testing.T) {
+	t.Parallel()
+
+	provider := &stubProvider{
+		devices: []rdma.Device{
+			{
+				Name: "mlx5_0",
+				Ports: []rdma.Port{
+					{ID: 1},
+					{ID: 2},
+				},
+			},
+		},
+	}
+	qp := newStubQPProvider()
+	qp.modes["mlx5_0/1"] = rdmanl.QPMode{Mode: "auto", MaskType: true}
+	qp.modes["mlx5_0/2"] = rdmanl.QPMode{Mode: "auto", MaskType: true}
+	qp.setErrs["mlx5_0/1"] = rdmanl.ErrDumpOverflow
+	qp.sets["mlx5_0/2"] = []rdmanl.QPSet{
+		{
+			Mode:   "auto",
+			QPType: "RC",
+			Stats:  map[string]uint64{"out_of_buffer": 5},
+		},
+	}
+
+	c := New(provider, newDiscardLogger(), WithQPCounterProvider(qp))
+	reg := prometheus.NewRegistry()
+	reg.MustRegister(c)
+
+	expected := `
+# HELP rdma_qp_out_of_buffer_total ` + qpCounterHelp + `
+# TYPE rdma_qp_out_of_buffer_total counter
+rdma_qp_out_of_buffer_total{device="mlx5_0",port="2",qp_type="RC"} 5
+# HELP rdma_qp_scrape_status Result of the last QP counter dump for this port. overflow means the receive budget was exceeded and totals were omitted.
+# TYPE rdma_qp_scrape_status gauge
+rdma_qp_scrape_status{device="mlx5_0",port="1",result="error"} 0
+rdma_qp_scrape_status{device="mlx5_0",port="1",result="ok"} 0
+rdma_qp_scrape_status{device="mlx5_0",port="1",result="overflow"} 1
+rdma_qp_scrape_status{device="mlx5_0",port="2",result="error"} 0
+rdma_qp_scrape_status{device="mlx5_0",port="2",result="ok"} 1
+rdma_qp_scrape_status{device="mlx5_0",port="2",result="overflow"} 0
+`
+	if err := testutil.GatherAndCompare(reg, strings.NewReader(expected),
+		"rdma_qp_out_of_buffer_total",
+		"rdma_qp_scrape_status",
+	); err != nil {
+		t.Fatalf("unexpected multi-port overflow metrics: %v", err)
+	}
+}
+
+func TestCollectorOmitsQPMetricsWithoutProvider(t *testing.T) {
+	t.Parallel()
+
+	provider := &stubProvider{
+		devices: []rdma.Device{
+			{
+				Name:  "mlx5_0",
+				Ports: []rdma.Port{{ID: 1}},
+			},
+		},
+	}
+	c := New(provider, newDiscardLogger())
+	reg := prometheus.NewRegistry()
+	reg.MustRegister(c)
+
+	mfs, err := reg.Gather()
+	if err != nil {
+		t.Fatalf("unexpected gather error: %v", err)
+	}
+	for _, mf := range mfs {
+		if strings.HasPrefix(mf.GetName(), "rdma_qp_") {
+			t.Fatalf("unexpected metric %s without QP provider", mf.GetName())
 		}
 	}
 }

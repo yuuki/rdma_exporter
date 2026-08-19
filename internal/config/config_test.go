@@ -35,6 +35,9 @@ func TestParseDefaults(t *testing.T) {
 	if cfg.EnableOptionalCounters {
 		t.Fatalf("expected optional RDMA counters to be disabled by default")
 	}
+	if cfg.EnableQPCounters {
+		t.Fatalf("expected QP RDMA counters to be disabled by default")
+	}
 	if cfg.ShowVersion {
 		t.Fatalf("expected show version to be false by default")
 	}
@@ -175,6 +178,50 @@ func TestOptionalCountersToggleRejectsInvalidEnv(t *testing.T) {
 
 	if _, err := Parse(nil); err == nil {
 		t.Fatal("expected error for invalid RDMA_EXPORTER_ENABLE_RDMA_OPTIONAL_COUNTERS")
+	}
+}
+
+func TestQPCountersDisabledByDefault(t *testing.T) {
+	t.Parallel()
+
+	cfg, err := Parse(nil)
+	if err != nil {
+		t.Fatalf("Parse returned error: %v", err)
+	}
+	if cfg.EnableQPCounters {
+		t.Fatal("expected QP RDMA counters to be disabled by default")
+	}
+}
+
+func TestQPCountersToggleFromEnv(t *testing.T) {
+	t.Setenv("RDMA_EXPORTER_ENABLE_RDMA_QP_COUNTERS", "true")
+
+	cfg, err := Parse(nil)
+	if err != nil {
+		t.Fatalf("Parse returned error: %v", err)
+	}
+	if !cfg.EnableQPCounters {
+		t.Fatal("expected QP RDMA counters to be enabled by env")
+	}
+}
+
+func TestQPCountersToggleFromFlag(t *testing.T) {
+	t.Setenv("RDMA_EXPORTER_ENABLE_RDMA_QP_COUNTERS", "false")
+
+	cfg, err := Parse([]string{"--enable-rdma-qp-counters=true"})
+	if err != nil {
+		t.Fatalf("Parse returned error: %v", err)
+	}
+	if !cfg.EnableQPCounters {
+		t.Fatal("expected QP RDMA counters to be enabled by flag")
+	}
+}
+
+func TestQPCountersToggleRejectsInvalidEnv(t *testing.T) {
+	t.Setenv("RDMA_EXPORTER_ENABLE_RDMA_QP_COUNTERS", "notabool")
+
+	if _, err := Parse(nil); err == nil {
+		t.Fatal("expected error for invalid RDMA_EXPORTER_ENABLE_RDMA_QP_COUNTERS")
 	}
 }
 
