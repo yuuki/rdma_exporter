@@ -13,6 +13,7 @@ import (
 	"time"
 
 	"github.com/prometheus/client_golang/prometheus"
+	"github.com/prometheus/client_golang/prometheus/collectors"
 
 	"github.com/yuuki/rdma_exporter/internal/collector"
 	"github.com/yuuki/rdma_exporter/internal/config"
@@ -76,8 +77,8 @@ func main() {
 
 	registry := prometheus.NewRegistry()
 	registry.MustRegister(
-		prometheus.NewProcessCollector(prometheus.ProcessCollectorOpts{}),
-		prometheus.NewGoCollector(),
+		collectors.NewProcessCollector(collectors.ProcessCollectorOpts{}),
+		collectors.NewGoCollector(),
 		rdmaCollector,
 	)
 

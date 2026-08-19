@@ -1,4 +1,4 @@
-FROM alpine:3.20
+FROM alpine:3.24
 RUN addgroup -S rdma_exporter \
   && adduser -S -G rdma_exporter rdma_exporter \
   && apk add --no-cache ca-certificates

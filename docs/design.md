@@ -10,7 +10,7 @@ High-performance computing clusters and low-latency trading platforms increasing
 - Offer predictable performance under concurrent scrape load and degraded hardware states.
 
 ## 2. Requirements
-- **Platform**: Linux only, running Go 1.26.2+ binaries.
+- **Platform**: Linux only, running Go 1.26.6+ binaries.
 - **Dependencies**:
   - [`github.com/prometheus/client_golang`](https://pkg.go.dev/github.com/prometheus/client_golang) for instrumentation and HTTP handlers.
 - **Metrics**:
