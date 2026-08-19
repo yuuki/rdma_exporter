@@ -29,6 +29,9 @@ func TestParseDefaults(t *testing.T) {
 	if !cfg.EnableRoCEPFCMetrics {
 		t.Fatalf("expected RoCE PFC metrics to be enabled by default")
 	}
+	if cfg.EnableNetDevHWMetrics {
+		t.Fatalf("expected netdev hardware metrics to be disabled by default")
+	}
 	if cfg.ShowVersion {
 		t.Fatalf("expected show version to be false by default")
 	}
@@ -93,6 +96,38 @@ func TestRoCEPFCMetricsToggleRejectsInvalidEnv(t *testing.T) {
 
 	if _, err := Parse(nil); err == nil {
 		t.Fatalf("expected error for invalid RDMA_EXPORTER_ENABLE_ROCE_PFC_METRICS")
+	}
+}
+
+func TestNetDevHWMetricsToggleFromEnv(t *testing.T) {
+	t.Setenv("RDMA_EXPORTER_ENABLE_NETDEV_HW_METRICS", "true")
+
+	cfg, err := Parse(nil)
+	if err != nil {
+		t.Fatalf("Parse returned error: %v", err)
+	}
+	if !cfg.EnableNetDevHWMetrics {
+		t.Fatalf("expected netdev hardware metrics to be enabled by env")
+	}
+}
+
+func TestNetDevHWMetricsToggleFromFlag(t *testing.T) {
+	t.Setenv("RDMA_EXPORTER_ENABLE_NETDEV_HW_METRICS", "false")
+
+	cfg, err := Parse([]string{"--enable-netdev-hw-metrics=true"})
+	if err != nil {
+		t.Fatalf("Parse returned error: %v", err)
+	}
+	if !cfg.EnableNetDevHWMetrics {
+		t.Fatalf("expected netdev hardware metrics to be enabled by flag")
+	}
+}
+
+func TestNetDevHWMetricsToggleRejectsInvalidEnv(t *testing.T) {
+	t.Setenv("RDMA_EXPORTER_ENABLE_NETDEV_HW_METRICS", "notabool")
+
+	if _, err := Parse(nil); err == nil {
+		t.Fatalf("expected error for invalid RDMA_EXPORTER_ENABLE_NETDEV_HW_METRICS")
 	}
 }
 

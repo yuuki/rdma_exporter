@@ -16,6 +16,8 @@ High-performance computing clusters and low-latency trading platforms increasing
 - **Metrics**:
   - Port-level and hardware counters (`rdma_<counter>_total`) aligned with NVIDIA documentation (e.g. `rdma_port_xmit_data_total`, `rdma_symbol_error_total`, `rdma_duplicate_request_total`).
   - Port metadata (`rdma_port_info`) with value `1` and descriptive labels.
+  - RoCEv2 PFC counters from ethtool (`rdma_roce_pfc_*`), enabled by `--enable-roce-pfc-metrics`.
+  - Opt-in ethtool hardware counters (`rdma_netdev_*`, `rdma_pcie_*`, `rdma_phy_*`) behind `--enable-netdev-hw-metrics`.
   - Exporter health metrics (Go/process collectors, HTTP instrumentation).
 - **Service Interface**:
   - HTTP server with configurable listen address and metrics path.
@@ -66,8 +68,9 @@ The `cmd/rdma_exporter` package wires configuration, logging, and the HTTP serve
    - Host Channel Adapter (HCA) inventory.
    - Per-port standard stats.
    - Per-port hardware stats (if available).
-4. The collector transforms each counter into const metrics. Every counter is published as `rdma_<counter>_total` using the exact counter names from the NVIDIA guide (e.g. `rdma_port_xmit_data_total`, `rdma_symbol_error_total`, `rdma_duplicate_request_total`) with labels `device` and `port`. Metadata metrics add labels like `link_layer`, `state`, `phys_state`, `link_width`, and `link_speed`.
-5. Prometheus receives the serialized metrics response.
+4. The collector transforms each counter into const metrics. Every sysfs counter is published as `rdma_<counter>_total` using the exact counter names from the NVIDIA guide (e.g. `rdma_port_xmit_data_total`, `rdma_symbol_error_total`, `rdma_duplicate_request_total`) with labels `device` and `port`. Metadata metrics add labels like `link_layer`, `state`, `phys_state`, `link_width`, and `link_speed`.
+5. For Ethernet PFs, the collector may also read ethtool stats: PFC families when `--enable-roce-pfc-metrics` is on, and curated buffer/PCIe/PHY families when `--enable-netdev-hw-metrics` is on. Hardware families are emitted once per netdev.
+6. Prometheus receives the serialized metrics response.
 
 ## 5. Error Handling and Resilience
 - **Partial Failures**: When an HCA or port fails to respond, the collector logs a warning and continues with remaining ports. Metrics for failed ports are omitted in that scrape to avoid publishing stale data.
@@ -88,6 +91,8 @@ The `cmd/rdma_exporter` package wires configuration, logging, and the HTTP serve
   - `--log-level="info"` (`debug`, `warn`, `error` supported)
   - `--sysfs-root="/sys"`
   - `--scrape-timeout="5s"` (upper bound applied to scrape processing via context and goroutine)
+  - `--enable-roce-pfc-metrics=true` (RoCEv2 PFC ethtool metrics only)
+  - `--enable-netdev-hw-metrics=false` (opt-in buffer/PCIe/PHY ethtool metrics)
 - **Environment Variables**: `RDMA_EXPORTER_LISTEN_ADDRESS`, etc., map one-to-one with flags and provide defaults when flags are unset. CLI flags override environment values to match typical Go flag semantics.
 - **Future Config**: A YAML file can be introduced under `config/` for static deployments (e.g., selecting devices).
 
@@ -99,7 +104,7 @@ The `cmd/rdma_exporter` package wires configuration, logging, and the HTTP serve
 ## 9. Observability
 - The exporter emits structured logs with `time`, `level`, and `msg`, plus keys like `device`, `port`, and `duration`.
 - Scrape durations and HTTP status codes are captured via `promhttp.InstrumentMetricHandler`.
-- A custom counter `rdma_scrape_errors_total` tracks failures fetching sysfs data.
+- A custom counter `rdma_scrape_errors_total` tracks failures fetching sysfs data. `rdma_roce_pfc_scrape_errors_total` and `rdma_netdev_scrape_errors_total` track ethtool failures for their respective families.
 
 ## 10. Testing Strategy
 - **Unit Tests**:
@@ -123,3 +128,4 @@ The `cmd/rdma_exporter` package wires configuration, logging, and the HTTP serve
 - Support event-driven metrics (e.g., link-up changes) using optional polling loops.
 - Add `/readyz` endpoint integrating pending configuration validation (e.g., device allow lists).
 - Implement on-demand profiling through a dedicated debug build.
+- Read mlx5 optional congestion counters (`cc_rx_ce_pkts`, `cc_rx_cnp_pkts`, `cc_tx_cnp_pkts`) via RDMA netlink. They are not present in sysfs `hw_counters`.

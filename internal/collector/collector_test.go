@@ -191,14 +191,14 @@ func TestCollectorExportsRoCEPFCMetrics(t *testing.T) {
 	reg.MustRegister(c)
 
 	expected := `
-# HELP rdma_roce_pfc_pause_duration_total RoCEv2 PFC pause duration counter sourced from ethtool stats.
+# HELP rdma_roce_pfc_pause_duration_total Cumulative RoCEv2 PFC pause duration in microseconds from ethtool stats. Pause occupancy is rate()/1e6. Direction has the same meaning as rdma_roce_pfc_pause_frames_total.
 # TYPE rdma_roce_pfc_pause_duration_total counter
 rdma_roce_pfc_pause_duration_total{device="mlx5_0",direction="rx",netdev="ens1f0np0",port="1",priority="4"} 30
-# HELP rdma_roce_pfc_pause_frames_total RoCEv2 PFC pause frame counter sourced from ethtool stats.
+# HELP rdma_roce_pfc_pause_frames_total RoCEv2 PFC pause frames from ethtool stats. direction=rx: the peer XOFFed this NIC so this NIC cannot transmit on that priority. direction=tx: this NIC XOFFed the peer because it is not absorbing that priority.
 # TYPE rdma_roce_pfc_pause_frames_total counter
 rdma_roce_pfc_pause_frames_total{device="mlx5_0",direction="rx",netdev="ens1f0np0",port="1",priority="0"} 10
 rdma_roce_pfc_pause_frames_total{device="mlx5_0",direction="tx",netdev="ens1f0np0",port="1",priority="3"} 20
-# HELP rdma_roce_pfc_pause_transitions_total RoCEv2 PFC pause transition counter sourced from ethtool stats.
+# HELP rdma_roce_pfc_pause_transitions_total RoCEv2 PFC XOFF-to-XON transitions from ethtool stats. mlx5 exposes this for receive (direction=rx) only. Direction has the same meaning as rdma_roce_pfc_pause_frames_total.
 # TYPE rdma_roce_pfc_pause_transitions_total counter
 rdma_roce_pfc_pause_transitions_total{device="mlx5_0",direction="tx",netdev="ens1f0np0",port="1",priority="7"} 40
 `
@@ -321,8 +321,8 @@ func TestCollectorSkipsRoCEPFCForVirtualFunction(t *testing.T) {
 	provider := &stubProvider{
 		devices: []rdma.Device{
 			{
-				Name:  "mlx5_12",
-				IsVF:  true,
+				Name: "mlx5_12",
+				IsVF: true,
 				Ports: []rdma.Port{
 					{
 						ID: 1,
@@ -400,7 +400,7 @@ func TestCollectorPFCMixedPFAndVF(t *testing.T) {
 	reg.MustRegister(c)
 
 	expected := `
-# HELP rdma_roce_pfc_pause_frames_total RoCEv2 PFC pause frame counter sourced from ethtool stats.
+# HELP rdma_roce_pfc_pause_frames_total RoCEv2 PFC pause frames from ethtool stats. direction=rx: the peer XOFFed this NIC so this NIC cannot transmit on that priority. direction=tx: this NIC XOFFed the peer because it is not absorbing that priority.
 # TYPE rdma_roce_pfc_pause_frames_total counter
 rdma_roce_pfc_pause_frames_total{device="mlx5_0",direction="tx",netdev="enp26s0np0",port="1",priority="3"} 7
 `
@@ -456,6 +456,373 @@ func TestCollectorFetchesNetDevStatsOncePerScrape(t *testing.T) {
 	if got := netDevProvider.CallCount("ens1f0np0"); got != 1 {
 		t.Fatalf("expected netdev provider to be called once, got %d", got)
 	}
+}
+
+func TestCollectorOmitsNetDevHWMetricsByDefault(t *testing.T) {
+	t.Parallel()
+
+	provider, netDevProvider := ethernetPFWithStats(map[string]uint64{
+		"rx_prio3_buf_discard":    4,
+		"outbound_pci_stalled_rd": 12,
+		"rx_corrected_bits_phy":   8,
+		"rx_prio0_pause":          1,
+	})
+
+	c := New(provider, newDiscardLogger(), WithNetDevStatsProvider(netDevProvider))
+	reg := prometheus.NewRegistry()
+	reg.MustRegister(c)
+
+	if err := testutil.GatherAndCompare(reg, strings.NewReader(""),
+		"rdma_netdev_prio_buf_discard_total",
+		"rdma_pcie_outbound_stalled_percent",
+		"rdma_phy_rx_corrected_bits_total"); err != nil {
+		t.Fatalf("expected no netdev hardware metrics without the opt-in: %v", err)
+	}
+}
+
+func TestCollectorExportsNetDevHWMetrics(t *testing.T) {
+	t.Parallel()
+
+	provider, netDevProvider := ethernetPFWithStats(map[string]uint64{
+		"rx_prio3_buf_discard":           4,
+		"rx_prio3_cong_discard":          5,
+		"rx_prio3_discards":              6,
+		"rx_prio4_marked":                7,
+		"dev_out_of_buffer":              8,
+		"rx_out_of_buffer":               9,
+		"rx_discards_phy":                10,
+		"outbound_pci_stalled_rd":        11,
+		"outbound_pci_stalled_wr":        12,
+		"outbound_pci_stalled_rd_events": 13,
+		"outbound_pci_stalled_wr_events": 14,
+		"outbound_pci_buffer_overflow":   15,
+		"rx_pci_signal_integrity":        16,
+		"tx_pci_signal_integrity":        17,
+		"rx_corrected_bits_phy":          18,
+		"rx_pcs_symbol_err_phy":          19,
+		"rx_bits_phy":                    20,
+		"rx_err_lane_0_phy":              21,
+		"rx_err_lane_1_phy":              22,
+		"rx_crc_errors_phy":              23,
+		"link_down_events_phy":           24,
+		"rx_prio0_pause":                 1,
+		"rx0_packets":                    99,
+		"rx_prio2_packets":               50,
+	})
+
+	c := New(provider, newDiscardLogger(),
+		WithNetDevStatsProvider(netDevProvider),
+		WithNetDevHWMetrics(true),
+	)
+	reg := prometheus.NewRegistry()
+	reg.MustRegister(c)
+
+	expected := `
+# HELP rdma_netdev_dev_out_of_buffer_total Number of times a device-owned queue lacked receive buffers. Ethtool dev_out_of_buffer; distinct from the sysfs QP WQE counter out_of_buffer.
+# TYPE rdma_netdev_dev_out_of_buffer_total counter
+rdma_netdev_dev_out_of_buffer_total{device="mlx5_0",netdev="ens1f0np0",port="1"} 8
+# HELP rdma_netdev_prio_buf_discard_total Packets discarded due to lack of per-host receive buffers. Ethtool rx_prio[p]_buf_discard.
+# TYPE rdma_netdev_prio_buf_discard_total counter
+rdma_netdev_prio_buf_discard_total{device="mlx5_0",netdev="ens1f0np0",port="1",priority="3"} 4
+# HELP rdma_netdev_prio_cong_discard_total Packets discarded due to per-host congestion. Ethtool rx_prio[p]_cong_discard.
+# TYPE rdma_netdev_prio_cong_discard_total counter
+rdma_netdev_prio_cong_discard_total{device="mlx5_0",netdev="ens1f0np0",port="1",priority="3"} 5
+# HELP rdma_netdev_prio_discards_total Packets discarded due to lack of receive buffers. Ethtool rx_prio[p]_discards.
+# TYPE rdma_netdev_prio_discards_total counter
+rdma_netdev_prio_discards_total{device="mlx5_0",netdev="ens1f0np0",port="1",priority="3"} 6
+# HELP rdma_netdev_prio_ecn_marked_total Packets ECN-marked due to per-host congestion. Ethtool rx_prio[p]_marked.
+# TYPE rdma_netdev_prio_ecn_marked_total counter
+rdma_netdev_prio_ecn_marked_total{device="mlx5_0",netdev="ens1f0np0",port="1",priority="4"} 7
+# HELP rdma_netdev_rx_discards_phy_total Packets dropped on the physical port due to lack of buffers. Ethtool rx_discards_phy.
+# TYPE rdma_netdev_rx_discards_phy_total counter
+rdma_netdev_rx_discards_phy_total{device="mlx5_0",netdev="ens1f0np0",port="1"} 10
+# HELP rdma_netdev_rx_out_of_buffer_total Times the receive queue had no software buffers for incoming traffic. Ethtool rx_out_of_buffer; distinct from the sysfs QP WQE counter out_of_buffer.
+# TYPE rdma_netdev_rx_out_of_buffer_total counter
+rdma_netdev_rx_out_of_buffer_total{device="mlx5_0",netdev="ens1f0np0",port="1"} 9
+# HELP rdma_pcie_outbound_buffer_overflow_total Packets dropped due to outbound PCI buffer overflow. Ethtool outbound_pci_buffer_overflow.
+# TYPE rdma_pcie_outbound_buffer_overflow_total counter
+rdma_pcie_outbound_buffer_overflow_total{device="mlx5_0",netdev="ens1f0np0",port="1"} 15
+# HELP rdma_pcie_outbound_stalled_percent Percentage of the last 1 second that outbound PCI was stalled (kernel 0-100). Sampled at scrape time; stalls shorter than the scrape interval can be missed. Use rdma_pcie_outbound_stalled_seconds_total for alerting.
+# TYPE rdma_pcie_outbound_stalled_percent gauge
+rdma_pcie_outbound_stalled_percent{device="mlx5_0",netdev="ens1f0np0",op="rd",port="1"} 11
+rdma_pcie_outbound_stalled_percent{device="mlx5_0",netdev="ens1f0np0",op="wr",port="1"} 12
+# HELP rdma_pcie_outbound_stalled_seconds_total Cumulative seconds during which outbound PCI stall exceeded 30 percent. Primary stall signal; rate() is the fraction of time above the threshold.
+# TYPE rdma_pcie_outbound_stalled_seconds_total counter
+rdma_pcie_outbound_stalled_seconds_total{device="mlx5_0",netdev="ens1f0np0",op="rd",port="1"} 13
+rdma_pcie_outbound_stalled_seconds_total{device="mlx5_0",netdev="ens1f0np0",op="wr",port="1"} 14
+# HELP rdma_pcie_signal_integrity_total PCIe physical-layer signal integrity errors. Ethtool {rx,tx}_pci_signal_integrity.
+# TYPE rdma_pcie_signal_integrity_total counter
+rdma_pcie_signal_integrity_total{device="mlx5_0",direction="rx",netdev="ens1f0np0",port="1"} 16
+rdma_pcie_signal_integrity_total{device="mlx5_0",direction="tx",netdev="ens1f0np0",port="1"} 17
+# HELP rdma_phy_link_down_events_total Times the physical link operative state changed to down. Ethtool link_down_events_phy.
+# TYPE rdma_phy_link_down_events_total counter
+rdma_phy_link_down_events_total{device="mlx5_0",netdev="ens1f0np0",port="1"} 24
+# HELP rdma_phy_rx_bits_total Bits that could have been received on the physical port. Denominator for interval FEC/BER ratios. Ethtool rx_bits_phy.
+# TYPE rdma_phy_rx_bits_total counter
+rdma_phy_rx_bits_total{device="mlx5_0",netdev="ens1f0np0",port="1"} 20
+# HELP rdma_phy_rx_corrected_bits_total FEC-corrected bits on the physical port. Ethtool rx_corrected_bits_phy.
+# TYPE rdma_phy_rx_corrected_bits_total counter
+rdma_phy_rx_corrected_bits_total{device="mlx5_0",netdev="ens1f0np0",port="1"} 18
+# HELP rdma_phy_rx_crc_errors_total Packets dropped due to FCS errors on the physical port. Ethtool rx_crc_errors_phy.
+# TYPE rdma_phy_rx_crc_errors_total counter
+rdma_phy_rx_crc_errors_total{device="mlx5_0",netdev="ens1f0np0",port="1"} 23
+# HELP rdma_phy_rx_err_lane_total Physical raw errors per lane before FEC. Ethtool rx_err_lane_[l]_phy.
+# TYPE rdma_phy_rx_err_lane_total counter
+rdma_phy_rx_err_lane_total{device="mlx5_0",lane="0",netdev="ens1f0np0",port="1"} 21
+rdma_phy_rx_err_lane_total{device="mlx5_0",lane="1",netdev="ens1f0np0",port="1"} 22
+# HELP rdma_phy_rx_pcs_symbol_err_total Uncorrected or FEC-inactive symbol errors on the physical port. Ethtool rx_pcs_symbol_err_phy.
+# TYPE rdma_phy_rx_pcs_symbol_err_total counter
+rdma_phy_rx_pcs_symbol_err_total{device="mlx5_0",netdev="ens1f0np0",port="1"} 19
+`
+
+	if err := testutil.GatherAndCompare(reg, strings.NewReader(expected),
+		"rdma_netdev_prio_buf_discard_total",
+		"rdma_netdev_prio_cong_discard_total",
+		"rdma_netdev_prio_discards_total",
+		"rdma_netdev_prio_ecn_marked_total",
+		"rdma_netdev_dev_out_of_buffer_total",
+		"rdma_netdev_rx_out_of_buffer_total",
+		"rdma_netdev_rx_discards_phy_total",
+		"rdma_pcie_outbound_stalled_percent",
+		"rdma_pcie_outbound_stalled_seconds_total",
+		"rdma_pcie_outbound_buffer_overflow_total",
+		"rdma_pcie_signal_integrity_total",
+		"rdma_phy_rx_corrected_bits_total",
+		"rdma_phy_rx_pcs_symbol_err_total",
+		"rdma_phy_rx_bits_total",
+		"rdma_phy_rx_err_lane_total",
+		"rdma_phy_rx_crc_errors_total",
+		"rdma_phy_link_down_events_total",
+	); err != nil {
+		t.Fatalf("unexpected netdev hardware metrics output: %v", err)
+	}
+}
+
+func TestCollectorNetDevHWMetricsAreSparse(t *testing.T) {
+	t.Parallel()
+
+	provider, netDevProvider := ethernetPFWithStats(map[string]uint64{
+		"rx_prio3_buf_discard": 4,
+	})
+
+	c := New(provider, newDiscardLogger(),
+		WithNetDevStatsProvider(netDevProvider),
+		WithNetDevHWMetrics(true),
+	)
+	reg := prometheus.NewRegistry()
+	reg.MustRegister(c)
+
+	expected := `
+# HELP rdma_netdev_prio_buf_discard_total Packets discarded due to lack of per-host receive buffers. Ethtool rx_prio[p]_buf_discard.
+# TYPE rdma_netdev_prio_buf_discard_total counter
+rdma_netdev_prio_buf_discard_total{device="mlx5_0",netdev="ens1f0np0",port="1",priority="3"} 4
+`
+	if err := testutil.GatherAndCompare(reg, strings.NewReader(expected),
+		"rdma_netdev_prio_buf_discard_total",
+		"rdma_netdev_prio_cong_discard_total",
+		"rdma_netdev_prio_discards_total"); err != nil {
+		t.Fatalf("expected sparse priority emission: %v", err)
+	}
+}
+
+func TestCollectorNetDevHWMetricsDedupesSharedNetDev(t *testing.T) {
+	t.Parallel()
+
+	provider := &stubProvider{
+		devices: []rdma.Device{
+			{
+				Name: "mlx5_0",
+				Ports: []rdma.Port{
+					{
+						ID:         1,
+						Attributes: rdma.PortAttributes{LinkLayer: "Ethernet", NetDev: "ens1f0np0"},
+					},
+					{
+						ID:         2,
+						Attributes: rdma.PortAttributes{LinkLayer: "Ethernet", NetDev: "ens1f0np0"},
+					},
+				},
+			},
+		},
+	}
+	netDevProvider := newStubNetDevStatsProvider()
+	netDevProvider.stats["ens1f0np0"] = map[string]uint64{
+		"rx_prio0_pause":       1,
+		"rx_prio3_buf_discard": 4,
+	}
+
+	c := New(provider, newDiscardLogger(),
+		WithNetDevStatsProvider(netDevProvider),
+		WithNetDevHWMetrics(true),
+	)
+	reg := prometheus.NewRegistry()
+	reg.MustRegister(c)
+
+	expected := `
+# HELP rdma_netdev_prio_buf_discard_total Packets discarded due to lack of per-host receive buffers. Ethtool rx_prio[p]_buf_discard.
+# TYPE rdma_netdev_prio_buf_discard_total counter
+rdma_netdev_prio_buf_discard_total{device="mlx5_0",netdev="ens1f0np0",port="1",priority="3"} 4
+# HELP rdma_roce_pfc_pause_frames_total RoCEv2 PFC pause frames from ethtool stats. direction=rx: the peer XOFFed this NIC so this NIC cannot transmit on that priority. direction=tx: this NIC XOFFed the peer because it is not absorbing that priority.
+# TYPE rdma_roce_pfc_pause_frames_total counter
+rdma_roce_pfc_pause_frames_total{device="mlx5_0",direction="rx",netdev="ens1f0np0",port="1",priority="0"} 1
+rdma_roce_pfc_pause_frames_total{device="mlx5_0",direction="rx",netdev="ens1f0np0",port="2",priority="0"} 1
+`
+	if err := testutil.GatherAndCompare(reg, strings.NewReader(expected),
+		"rdma_roce_pfc_pause_frames_total",
+		"rdma_netdev_prio_buf_discard_total"); err != nil {
+		t.Fatalf("unexpected shared-netdev metrics: %v", err)
+	}
+
+	if got := netDevProvider.CallCount("ens1f0np0"); got != 1 {
+		t.Fatalf("expected netdev provider to be called once, got %d", got)
+	}
+}
+
+func TestCollectorSkipsNetDevHWMetricsForVirtualFunction(t *testing.T) {
+	t.Parallel()
+
+	provider := &stubProvider{
+		devices: []rdma.Device{
+			{
+				Name: "mlx5_12",
+				IsVF: true,
+				Ports: []rdma.Port{
+					{
+						ID:         1,
+						Attributes: rdma.PortAttributes{LinkLayer: "Ethernet", NetDev: "enp26s0v0"},
+					},
+				},
+			},
+		},
+	}
+	netDevProvider := newStubNetDevStatsProvider()
+	netDevProvider.stats["enp26s0v0"] = map[string]uint64{
+		"rx_prio3_buf_discard": 99,
+	}
+
+	c := New(provider, newDiscardLogger(),
+		WithNetDevStatsProvider(netDevProvider),
+		WithNetDevHWMetrics(true),
+	)
+	reg := prometheus.NewRegistry()
+	reg.MustRegister(c)
+
+	if err := testutil.GatherAndCompare(reg, strings.NewReader(""),
+		"rdma_netdev_prio_buf_discard_total"); err != nil {
+		t.Fatalf("expected VF netdev hardware metrics to be omitted: %v", err)
+	}
+	if got := netDevProvider.CallCount("enp26s0v0"); got != 0 {
+		t.Fatalf("expected VF netdev provider not to be called, got %d", got)
+	}
+}
+
+func TestCollectorOmitsPFCWhenDisabled(t *testing.T) {
+	t.Parallel()
+
+	provider, netDevProvider := ethernetPFWithStats(map[string]uint64{
+		"rx_prio0_pause":       1,
+		"rx_prio3_buf_discard": 4,
+	})
+
+	c := New(provider, newDiscardLogger(),
+		WithNetDevStatsProvider(netDevProvider),
+		WithRoCEPFCMetrics(false),
+		WithNetDevHWMetrics(true),
+	)
+	reg := prometheus.NewRegistry()
+	reg.MustRegister(c)
+
+	if err := testutil.GatherAndCompare(reg, strings.NewReader(""),
+		"rdma_roce_pfc_pause_frames_total"); err != nil {
+		t.Fatalf("expected PFC metrics to be omitted: %v", err)
+	}
+
+	expected := `
+# HELP rdma_netdev_prio_buf_discard_total Packets discarded due to lack of per-host receive buffers. Ethtool rx_prio[p]_buf_discard.
+# TYPE rdma_netdev_prio_buf_discard_total counter
+rdma_netdev_prio_buf_discard_total{device="mlx5_0",netdev="ens1f0np0",port="1",priority="3"} 4
+`
+	if err := testutil.GatherAndCompare(reg, strings.NewReader(expected),
+		"rdma_netdev_prio_buf_discard_total"); err != nil {
+		t.Fatalf("expected netdev hardware metrics with PFC disabled: %v", err)
+	}
+}
+
+func TestCollectorIncrementsNetDevHWErrorCounterOnly(t *testing.T) {
+	t.Parallel()
+
+	provider, netDevProvider := ethernetPFWithStats(nil)
+	netDevProvider.errs["ens1f0np0"] = errors.New("boom")
+
+	c := New(provider, newDiscardLogger(),
+		WithNetDevStatsProvider(netDevProvider),
+		WithRoCEPFCMetrics(false),
+		WithNetDevHWMetrics(true),
+	)
+	reg := prometheus.NewRegistry()
+	reg.MustRegister(c)
+
+	mfs, err := reg.Gather()
+	if err != nil {
+		t.Fatalf("unexpected gather error: %v", err)
+	}
+
+	if got := findMetricValue(t, mfs, "rdma_netdev_scrape_errors_total"); got != 1 {
+		t.Fatalf("expected netdev scrape error counter to be 1, got %v", got)
+	}
+	if got := findMetricValue(t, mfs, "rdma_roce_pfc_scrape_errors_total"); got != 0 {
+		t.Fatalf("expected PFC scrape error counter to stay 0, got %v", got)
+	}
+}
+
+func TestCollectorIncrementsBothNetDevErrorCountersWhenBothEnabled(t *testing.T) {
+	t.Parallel()
+
+	provider, netDevProvider := ethernetPFWithStats(nil)
+	netDevProvider.errs["ens1f0np0"] = errors.New("boom")
+
+	c := New(provider, newDiscardLogger(),
+		WithNetDevStatsProvider(netDevProvider),
+		WithNetDevHWMetrics(true),
+	)
+	reg := prometheus.NewRegistry()
+	reg.MustRegister(c)
+
+	mfs, err := reg.Gather()
+	if err != nil {
+		t.Fatalf("unexpected gather error: %v", err)
+	}
+
+	if got := findMetricValue(t, mfs, "rdma_roce_pfc_scrape_errors_total"); got != 1 {
+		t.Fatalf("expected PFC scrape error counter to be 1, got %v", got)
+	}
+	if got := findMetricValue(t, mfs, "rdma_netdev_scrape_errors_total"); got != 1 {
+		t.Fatalf("expected netdev scrape error counter to be 1, got %v", got)
+	}
+}
+
+func ethernetPFWithStats(stats map[string]uint64) (*stubProvider, *stubNetDevStatsProvider) {
+	provider := &stubProvider{
+		devices: []rdma.Device{
+			{
+				Name: "mlx5_0",
+				Ports: []rdma.Port{
+					{
+						ID: 1,
+						Attributes: rdma.PortAttributes{
+							LinkLayer: "Ethernet",
+							NetDev:    "ens1f0np0",
+						},
+					},
+				},
+			},
+		},
+	}
+	netDevProvider := newStubNetDevStatsProvider()
+	if stats != nil {
+		netDevProvider.stats["ens1f0np0"] = stats
+	}
+	return provider, netDevProvider
 }
 
 func findMetricValue(t *testing.T, families []*dto.MetricFamily, name string) float64 {

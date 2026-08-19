@@ -15,7 +15,7 @@
       }
     ]
   },
-  "description": "Grafana dashboard for rdma_exporter covering port health, throughput, congestion, and error diagnostics.",
+  "description": "Grafana dashboard for rdma_exporter covering port health, throughput, congestion, PFC occupancy, PCIe stall, PHY/FEC, and error diagnostics.",
   "editable": true,
   "fiscalYearStartMonth": 1,
   "graphTooltip": 1,
@@ -838,6 +838,176 @@
       ],
       "title": "Quality: TX Drop Ratio [%] / port",
       "type": "timeseries"
+    },
+    {
+      "datasource": "$ds",
+      "description": "Pause occupancy in seconds per second (duration counter is microseconds). direction=rx: the peer XOFFed this NIC. direction=tx: this NIC XOFFed the peer. Do not treat tx as switch congestion.",
+      "fieldConfig": {
+        "defaults": {
+          "color": {
+            "mode": "palette-classic"
+          },
+          "custom": {
+            "drawStyle": "line",
+            "lineInterpolation": "smooth",
+            "lineWidth": 2,
+            "showPoints": "never"
+          },
+          "mappings": [],
+          "unit": "s"
+        },
+        "overrides": []
+      },
+      "gridPos": {
+        "h": 9,
+        "w": 12,
+        "x": 0,
+        "y": 44
+      },
+      "id": 12,
+      "options": {
+        "legend": {
+          "calcs": [
+            "lastNotNull"
+          ],
+          "displayMode": "list",
+          "placement": "bottom",
+          "showLegend": true
+        },
+        "tooltip": {
+          "mode": "multi",
+          "sort": "none"
+        }
+      },
+      "pluginVersion": "10.4.0",
+      "targets": [
+        {
+          "datasource": "$ds",
+          "editorMode": "code",
+          "expr": "rate(rdma_roce_pfc_pause_duration_total{job=\"$job\", instance=~\"$instance\", device=~\"$device\", port=~\"$port\"}[$interval]) / 1e6",
+          "legendFormat": "{{instance}} {{device}}:{{port}} {{direction}} prio{{priority}}",
+          "range": true,
+          "refId": "A"
+        }
+      ],
+      "title": "Congestion: PFC occupancy [s/s] / port",
+      "type": "timeseries"
+    },
+    {
+      "datasource": "$ds",
+      "description": "Fraction of time outbound PCI stall exceeded 30%. Primary PCIe stall signal. Requires --enable-netdev-hw-metrics. The 1-second percent gauge is sampled context only; do not rate() it.",
+      "fieldConfig": {
+        "defaults": {
+          "color": {
+            "mode": "palette-classic"
+          },
+          "custom": {
+            "drawStyle": "line",
+            "lineInterpolation": "smooth",
+            "lineWidth": 2,
+            "showPoints": "never"
+          },
+          "mappings": [],
+          "unit": "percentunit"
+        },
+        "overrides": []
+      },
+      "gridPos": {
+        "h": 9,
+        "w": 12,
+        "x": 12,
+        "y": 44
+      },
+      "id": 13,
+      "options": {
+        "legend": {
+          "calcs": [
+            "lastNotNull"
+          ],
+          "displayMode": "list",
+          "placement": "bottom",
+          "showLegend": true
+        },
+        "tooltip": {
+          "mode": "multi",
+          "sort": "none"
+        }
+      },
+      "pluginVersion": "10.4.0",
+      "targets": [
+        {
+          "datasource": "$ds",
+          "editorMode": "code",
+          "expr": "rate(rdma_pcie_outbound_stalled_seconds_total{job=\"$job\", instance=~\"$instance\", device=~\"$device\", port=~\"$port\"}[$interval])",
+          "legendFormat": "{{instance}} {{device}}:{{port}} {{op}}",
+          "range": true,
+          "refId": "A"
+        }
+      ],
+      "title": "Host: PCIe stall [fraction] / port",
+      "type": "timeseries"
+    },
+    {
+      "datasource": "$ds",
+      "description": "Interval FEC/BER sample ratios, not instantaneous instruments. Requires --enable-netdev-hw-metrics. Use increase(error)/increase(bits) rather than lifetime totals.",
+      "fieldConfig": {
+        "defaults": {
+          "color": {
+            "mode": "palette-classic"
+          },
+          "custom": {
+            "drawStyle": "line",
+            "lineInterpolation": "smooth",
+            "lineWidth": 2,
+            "showPoints": "never"
+          },
+          "mappings": [],
+          "unit": "short"
+        },
+        "overrides": []
+      },
+      "gridPos": {
+        "h": 9,
+        "w": 24,
+        "x": 0,
+        "y": 53
+      },
+      "id": 14,
+      "options": {
+        "legend": {
+          "calcs": [
+            "lastNotNull"
+          ],
+          "displayMode": "list",
+          "placement": "bottom",
+          "showLegend": true
+        },
+        "tooltip": {
+          "mode": "multi",
+          "sort": "none"
+        }
+      },
+      "pluginVersion": "10.4.0",
+      "targets": [
+        {
+          "datasource": "$ds",
+          "editorMode": "code",
+          "expr": "increase(rdma_phy_rx_corrected_bits_total{job=\"$job\", instance=~\"$instance\", device=~\"$device\", port=~\"$port\"}[$interval]) / clamp_min(increase(rdma_phy_rx_bits_total{job=\"$job\", instance=~\"$instance\", device=~\"$device\", port=~\"$port\"}[$interval]), 1)",
+          "legendFormat": "{{instance}} {{device}}:{{port}} corrected",
+          "range": true,
+          "refId": "A"
+        },
+        {
+          "datasource": "$ds",
+          "editorMode": "code",
+          "expr": "increase(rdma_phy_rx_pcs_symbol_err_total{job=\"$job\", instance=~\"$instance\", device=~\"$device\", port=~\"$port\"}[$interval]) / clamp_min(increase(rdma_phy_rx_bits_total{job=\"$job\", instance=~\"$instance\", device=~\"$device\", port=~\"$port\"}[$interval]), 1)",
+          "legendFormat": "{{instance}} {{device}}:{{port}} pcs_err",
+          "range": true,
+          "refId": "B"
+        }
+      ],
+      "title": "Link: PHY FEC interval ratio / port",
+      "type": "timeseries"
     }
   ],
   "refresh": "30s",
@@ -1043,6 +1213,6 @@
   "timezone": "",
   "title": "RDMA / RoCE Port Telemetry (rdma_exporter)",
   "uid": "rdma-exporter",
-  "version": 1,
+  "version": 2,
   "weekStart": ""
 }
