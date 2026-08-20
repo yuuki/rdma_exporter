@@ -15,7 +15,7 @@
       }
     ]
   },
-  "description": "Grafana dashboard for rdma_exporter covering port health, throughput, congestion, PFC occupancy, PCIe stall, PHY/FEC, and error diagnostics.",
+  "description": "Grafana dashboard for rdma_exporter covering port health, throughput, congestion, PFC occupancy, IEEE 802.3x pause, pause storm, PCIe stall, PHY/FEC, QP optional traffic, and error diagnostics.",
   "editable": true,
   "fiscalYearStartMonth": 1,
   "graphTooltip": 1,
@@ -1008,6 +1008,346 @@
       ],
       "title": "Link: PHY FEC interval ratio / port",
       "type": "timeseries"
+    },
+    {
+      "datasource": "$ds",
+      "description": "IEEE 802.3x pause occupancy in seconds per second (duration counter is microseconds). Requires --enable-netdev-hw-metrics. Keys exist only in global pause mode, not PFC. direction=rx: this NIC received a pause request. direction=tx: this NIC transmitted a pause request. Observation only; do not treat as root cause.",
+      "fieldConfig": {
+        "defaults": {
+          "color": {
+            "mode": "palette-classic"
+          },
+          "custom": {
+            "drawStyle": "line",
+            "lineInterpolation": "smooth",
+            "lineWidth": 2,
+            "showPoints": "never"
+          },
+          "mappings": [],
+          "unit": "s"
+        },
+        "overrides": []
+      },
+      "gridPos": {
+        "h": 9,
+        "w": 12,
+        "x": 0,
+        "y": 62
+      },
+      "id": 15,
+      "options": {
+        "legend": {
+          "calcs": [
+            "lastNotNull"
+          ],
+          "displayMode": "list",
+          "placement": "bottom",
+          "showLegend": true
+        },
+        "tooltip": {
+          "mode": "multi",
+          "sort": "none"
+        }
+      },
+      "pluginVersion": "10.4.0",
+      "targets": [
+        {
+          "datasource": "$ds",
+          "editorMode": "code",
+          "expr": "rate(rdma_netdev_global_pause_duration_total{job=\"$job\", instance=~\"$instance\", device=~\"$device\", port=~\"$port\"}[$interval]) / 1e6",
+          "legendFormat": "{{instance}} {{device}}:{{port}} {{direction}}",
+          "range": true,
+          "refId": "A"
+        }
+      ],
+      "title": "Congestion: IEEE 802.3x pause occupancy [s/s] / port",
+      "type": "timeseries"
+    },
+    {
+      "datasource": "$ds",
+      "description": "Times the device sent pause frames for a long period. Requires --enable-netdev-hw-metrics. severity=warning: stalled past a watermark. severity=error: timed out and pause TX was disabled; drops may have occurred. Observation only.",
+      "fieldConfig": {
+        "defaults": {
+          "color": {
+            "mode": "palette-classic"
+          },
+          "custom": {
+            "drawStyle": "line",
+            "lineInterpolation": "smooth",
+            "lineWidth": 2,
+            "showPoints": "never"
+          },
+          "mappings": [],
+          "unit": "pps"
+        },
+        "overrides": []
+      },
+      "gridPos": {
+        "h": 9,
+        "w": 12,
+        "x": 12,
+        "y": 62
+      },
+      "id": 16,
+      "options": {
+        "legend": {
+          "calcs": [
+            "lastNotNull"
+          ],
+          "displayMode": "list",
+          "placement": "bottom",
+          "showLegend": true
+        },
+        "tooltip": {
+          "mode": "multi",
+          "sort": "none"
+        }
+      },
+      "pluginVersion": "10.4.0",
+      "targets": [
+        {
+          "datasource": "$ds",
+          "editorMode": "code",
+          "expr": "rate(rdma_netdev_pause_storm_events_total{job=\"$job\", instance=~\"$instance\", device=~\"$device\", port=~\"$port\"}[$interval])",
+          "legendFormat": "{{instance}} {{device}}:{{port}} {{severity}}",
+          "range": true,
+          "refId": "A"
+        }
+      ],
+      "title": "Congestion: pause storm [events/s] / port",
+      "type": "timeseries"
+    },
+    {
+      "datasource": "$ds",
+      "description": "IEEE 802.3x pause frames per second. Requires --enable-netdev-hw-metrics. Keys exist only in global pause mode, not PFC. direction=rx: pause frames received. direction=tx: pause frames transmitted. Observation only; do not treat as root cause.",
+      "fieldConfig": {
+        "defaults": {
+          "color": {
+            "mode": "palette-classic"
+          },
+          "custom": {
+            "drawStyle": "line",
+            "lineInterpolation": "smooth",
+            "lineWidth": 2,
+            "showPoints": "never"
+          },
+          "mappings": [],
+          "unit": "pps"
+        },
+        "overrides": []
+      },
+      "gridPos": {
+        "h": 9,
+        "w": 12,
+        "x": 0,
+        "y": 71
+      },
+      "id": 17,
+      "options": {
+        "legend": {
+          "calcs": [
+            "lastNotNull"
+          ],
+          "displayMode": "list",
+          "placement": "bottom",
+          "showLegend": true
+        },
+        "tooltip": {
+          "mode": "multi",
+          "sort": "none"
+        }
+      },
+      "pluginVersion": "10.4.0",
+      "targets": [
+        {
+          "datasource": "$ds",
+          "editorMode": "code",
+          "expr": "rate(rdma_netdev_global_pause_frames_total{job=\"$job\", instance=~\"$instance\", device=~\"$device\", port=~\"$port\"}[$interval])",
+          "legendFormat": "{{instance}} {{device}}:{{port}} {{direction}}",
+          "range": true,
+          "refId": "A"
+        }
+      ],
+      "title": "Congestion: IEEE 802.3x pause frames [frames/s] / port",
+      "type": "timeseries"
+    },
+    {
+      "datasource": "$ds",
+      "description": "IEEE 802.3x XOFF-to-XON transitions per second from ethtool rx_global_pause_transition. Requires --enable-netdev-hw-metrics. mlx5 exposes receive only. Keys exist only in global pause mode.",
+      "fieldConfig": {
+        "defaults": {
+          "color": {
+            "mode": "palette-classic"
+          },
+          "custom": {
+            "drawStyle": "line",
+            "lineInterpolation": "smooth",
+            "lineWidth": 2,
+            "showPoints": "never"
+          },
+          "mappings": [],
+          "unit": "pps"
+        },
+        "overrides": []
+      },
+      "gridPos": {
+        "h": 9,
+        "w": 12,
+        "x": 12,
+        "y": 71
+      },
+      "id": 18,
+      "options": {
+        "legend": {
+          "calcs": [
+            "lastNotNull"
+          ],
+          "displayMode": "list",
+          "placement": "bottom",
+          "showLegend": true
+        },
+        "tooltip": {
+          "mode": "multi",
+          "sort": "none"
+        }
+      },
+      "pluginVersion": "10.4.0",
+      "targets": [
+        {
+          "datasource": "$ds",
+          "editorMode": "code",
+          "expr": "rate(rdma_netdev_global_pause_transitions_total{job=\"$job\", instance=~\"$instance\", device=~\"$device\", port=~\"$port\"}[$interval])",
+          "legendFormat": "{{instance}} {{device}}:{{port}}",
+          "range": true,
+          "refId": "A"
+        }
+      ],
+      "title": "Congestion: IEEE 802.3x pause transitions [events/s] / port",
+      "type": "timeseries"
+    },
+    {
+      "datasource": "$ds",
+      "description": "Live auto-type bound user QP byte rate. Do not add to sysfs rdma_<name>_total. Requires --enable-rdma-qp-counters. Series appear only when QP optional-counters are on and the dump contains rdma_rx_bytes / rdma_tx_bytes. Some mlx5 QP counters are 32-bit; prefer short rate() windows.",
+      "fieldConfig": {
+        "defaults": {
+          "color": {
+            "mode": "palette-classic"
+          },
+          "custom": {
+            "drawStyle": "line",
+            "lineInterpolation": "smooth",
+            "lineWidth": 2,
+            "showPoints": "never"
+          },
+          "mappings": [],
+          "unit": "Bps"
+        },
+        "overrides": []
+      },
+      "gridPos": {
+        "h": 9,
+        "w": 12,
+        "x": 0,
+        "y": 80
+      },
+      "id": 19,
+      "options": {
+        "legend": {
+          "calcs": [
+            "lastNotNull"
+          ],
+          "displayMode": "list",
+          "placement": "bottom",
+          "showLegend": true
+        },
+        "tooltip": {
+          "mode": "multi",
+          "sort": "none"
+        }
+      },
+      "pluginVersion": "10.4.0",
+      "targets": [
+        {
+          "datasource": "$ds",
+          "editorMode": "code",
+          "expr": "rate(rdma_qp_rx_bytes_total{job=\"$job\", instance=~\"$instance\", device=~\"$device\", port=~\"$port\"}[$interval])",
+          "legendFormat": "{{instance}} {{device}}:{{port}} {{qp_type}} rx",
+          "range": true,
+          "refId": "A"
+        },
+        {
+          "datasource": "$ds",
+          "editorMode": "code",
+          "expr": "rate(rdma_qp_tx_bytes_total{job=\"$job\", instance=~\"$instance\", device=~\"$device\", port=~\"$port\"}[$interval])",
+          "legendFormat": "{{instance}} {{device}}:{{port}} {{qp_type}} tx",
+          "range": true,
+          "refId": "B"
+        }
+      ],
+      "title": "QP: optional traffic [B/s] / port",
+      "type": "timeseries"
+    },
+    {
+      "datasource": "$ds",
+      "description": "Live auto-type bound user QP packet rate. Do not add to sysfs rdma_<name>_total. Requires --enable-rdma-qp-counters. Series appear only when QP optional-counters are on and the dump contains rdma_rx_packets / rdma_tx_packets. Some mlx5 QP counters are 32-bit; prefer short rate() windows.",
+      "fieldConfig": {
+        "defaults": {
+          "color": {
+            "mode": "palette-classic"
+          },
+          "custom": {
+            "drawStyle": "line",
+            "lineInterpolation": "smooth",
+            "lineWidth": 2,
+            "showPoints": "never"
+          },
+          "mappings": [],
+          "unit": "pps"
+        },
+        "overrides": []
+      },
+      "gridPos": {
+        "h": 9,
+        "w": 12,
+        "x": 12,
+        "y": 80
+      },
+      "id": 20,
+      "options": {
+        "legend": {
+          "calcs": [
+            "lastNotNull"
+          ],
+          "displayMode": "list",
+          "placement": "bottom",
+          "showLegend": true
+        },
+        "tooltip": {
+          "mode": "multi",
+          "sort": "none"
+        }
+      },
+      "pluginVersion": "10.4.0",
+      "targets": [
+        {
+          "datasource": "$ds",
+          "editorMode": "code",
+          "expr": "rate(rdma_qp_rx_packets_total{job=\"$job\", instance=~\"$instance\", device=~\"$device\", port=~\"$port\"}[$interval])",
+          "legendFormat": "{{instance}} {{device}}:{{port}} {{qp_type}} rx",
+          "range": true,
+          "refId": "A"
+        },
+        {
+          "datasource": "$ds",
+          "editorMode": "code",
+          "expr": "rate(rdma_qp_tx_packets_total{job=\"$job\", instance=~\"$instance\", device=~\"$device\", port=~\"$port\"}[$interval])",
+          "legendFormat": "{{instance}} {{device}}:{{port}} {{qp_type}} tx",
+          "range": true,
+          "refId": "B"
+        }
+      ],
+      "title": "QP: optional traffic [pkt/s] / port",
+      "type": "timeseries"
     }
   ],
   "refresh": "30s",
@@ -1213,6 +1553,6 @@
   "timezone": "",
   "title": "RDMA / RoCE Port Telemetry (rdma_exporter)",
   "uid": "rdma-exporter",
-  "version": 2,
+  "version": 3,
   "weekStart": ""
 }

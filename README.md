@@ -225,7 +225,7 @@ Enabling these counters adds one series per present allowlisted ethtool key (not
 Default sysfs `hw_counters` already export Notification Point / Reaction Point counters (`rdma_np_cnp_sent_total`, `rdma_np_ecn_marked_roce_packets_total`, `rdma_rp_cnp_handled_total`, `rdma_rp_cnp_ignored_total`). mlx5 optional counters (`cc_rx_ce_pkts`, `cc_rx_cnp_pkts`, `cc_tx_cnp_pkts`) are **not** in sysfs even when enabled with `rdma statistic set`; scrape them with `--enable-rdma-optional-counters` as described in [Run](#run).
 
 ## Dashboards
-- Bundled JSON: [`dashboards/rdma_exporter_dashboard.json`](dashboards/rdma_exporter_dashboard.json) includes PFC occupancy, PCIe stall, and PHY/FEC panels. PCIe/PHY panels need `--enable-netdev-hw-metrics`. Global pause and pause storm are scraped with the same flag but are not on the bundled dashboard yet.
+- Bundled JSON: [`dashboards/rdma_exporter_dashboard.json`](dashboards/rdma_exporter_dashboard.json) includes PFC occupancy, IEEE 802.3x pause occupancy/frames/transitions, pause storm, PCIe stall, PHY/FEC, and QP optional traffic panels. PCIe/PHY/pause panels need `--enable-netdev-hw-metrics`. QP traffic panels need `--enable-rdma-qp-counters` and appear only when the dump contains those keys.
 - Grafana.com: [RDMA/RoCE NIC Telemetry](https://grafana.com/grafana/dashboards/24241-rdma-roce-nic-telemetry/) – community copy; updating that listing is a separate publish step.
 
 ## Testing
