@@ -646,6 +646,7 @@ func TestCollectorOmitsNetDevHWMetricsByDefault(t *testing.T) {
 		"rx_global_pause_transition":    5,
 		"tx_pause_storm_warning_events": 6,
 		"tx_pause_storm_error_events":   7,
+		"rx_vport_rdma_unicast_bytes":   8,
 	})
 
 	c := New(provider, newDiscardLogger(), WithNetDevStatsProvider(netDevProvider))
@@ -659,7 +660,9 @@ func TestCollectorOmitsNetDevHWMetricsByDefault(t *testing.T) {
 		"rdma_netdev_global_pause_frames_total",
 		"rdma_netdev_global_pause_duration_total",
 		"rdma_netdev_global_pause_transitions_total",
-		"rdma_netdev_pause_storm_events_total"); err != nil {
+		"rdma_netdev_pause_storm_events_total",
+		"rdma_netdev_vport_rdma_bytes_total",
+		"rdma_netdev_vport_rdma_packets_total"); err != nil {
 		t.Fatalf("expected no netdev hardware metrics without the opt-in: %v", err)
 	}
 }
@@ -832,6 +835,213 @@ rdma_netdev_pause_storm_events_total{device="mlx5_0",netdev="ens1f0np0",port="1"
 	}
 }
 
+func TestCollectorExportsVPortRDMATraffic(t *testing.T) {
+	t.Parallel()
+
+	provider, netDevProvider := ethernetPFWithStats(map[string]uint64{
+		"rx_vport_rdma_unicast_bytes":     1,
+		"tx_vport_rdma_unicast_bytes":     2,
+		"rx_vport_rdma_multicast_bytes":   0,
+		"tx_vport_rdma_multicast_bytes":   4,
+		"rx_vport_rdma_unicast_packets":   5,
+		"tx_vport_rdma_unicast_packets":   6,
+		"rx_vport_rdma_multicast_packets": 7,
+		"tx_vport_rdma_multicast_packets": 8,
+		"rx_vport_unicast_bytes":          99,
+		"tx_vport_unicast_packets":        98,
+		"rx_vport_broadcast_bytes":        97,
+		"vport_loopback_bytes":            96,
+		"rx_steer_missed_packets":         95,
+		"rx_packets":                      94,
+		"rx_prio0_pause":                  9,
+	})
+
+	c := New(provider, newDiscardLogger(),
+		WithNetDevStatsProvider(netDevProvider),
+		WithRoCEPFCMetrics(false),
+		WithNetDevHWMetrics(true),
+		WithNetDevPhysPortName(func(string) string { return "p0" }),
+	)
+	reg := prometheus.NewPedanticRegistry()
+	reg.MustRegister(c)
+
+	expected := `
+# HELP rdma_netdev_vport_rdma_bytes_total RDMA octets steered to or from this netdev's function vport. Ethtool {rx,tx}_vport_rdma_{unicast,multicast}_bytes. Not a physical-port *_phy total and not a sum of other function vports. Distinct from sysfs port_rcv_data and rdma_qp_{rx,tx}_bytes_total.
+# TYPE rdma_netdev_vport_rdma_bytes_total counter
+rdma_netdev_vport_rdma_bytes_total{device="mlx5_0",direction="rx",netdev="ens1f0np0",port="1",traffic="multicast"} 0
+rdma_netdev_vport_rdma_bytes_total{device="mlx5_0",direction="rx",netdev="ens1f0np0",port="1",traffic="unicast"} 1
+rdma_netdev_vport_rdma_bytes_total{device="mlx5_0",direction="tx",netdev="ens1f0np0",port="1",traffic="multicast"} 4
+rdma_netdev_vport_rdma_bytes_total{device="mlx5_0",direction="tx",netdev="ens1f0np0",port="1",traffic="unicast"} 2
+# HELP rdma_netdev_vport_rdma_packets_total RDMA packets steered to or from this netdev's function vport. Ethtool {rx,tx}_vport_rdma_{unicast,multicast}_packets. Not a physical-port *_phy total and not a sum of other function vports. Distinct from sysfs port packet counters and rdma_qp_{rx,tx}_packets_total.
+# TYPE rdma_netdev_vport_rdma_packets_total counter
+rdma_netdev_vport_rdma_packets_total{device="mlx5_0",direction="rx",netdev="ens1f0np0",port="1",traffic="multicast"} 7
+rdma_netdev_vport_rdma_packets_total{device="mlx5_0",direction="rx",netdev="ens1f0np0",port="1",traffic="unicast"} 5
+rdma_netdev_vport_rdma_packets_total{device="mlx5_0",direction="tx",netdev="ens1f0np0",port="1",traffic="multicast"} 8
+rdma_netdev_vport_rdma_packets_total{device="mlx5_0",direction="tx",netdev="ens1f0np0",port="1",traffic="unicast"} 6
+`
+	if err := testutil.GatherAndCompare(reg, strings.NewReader(expected),
+		"rdma_netdev_vport_rdma_bytes_total",
+		"rdma_netdev_vport_rdma_packets_total",
+		"rdma_roce_pfc_pause_frames_total",
+	); err != nil {
+		t.Fatalf("unexpected vport RDMA metrics: %v", err)
+	}
+}
+
+func TestCollectorOmitsAmbiguousNetDevVPortRDMA(t *testing.T) {
+	t.Parallel()
+
+	provider := &stubProvider{
+		devices: []rdma.Device{
+			{
+				Name:    "mlx5_0",
+				PCIAddr: "0000:1a:00.0",
+				Ports: []rdma.Port{
+					{
+						ID:         1,
+						Attributes: rdma.PortAttributes{LinkLayer: "Ethernet", NetDev: "ens1f0np0"},
+					},
+					{
+						ID:         2,
+						Attributes: rdma.PortAttributes{LinkLayer: "Ethernet", NetDev: "ens1f0np0"},
+					},
+				},
+			},
+		},
+	}
+	netDevProvider := newStubNetDevStatsProvider()
+	netDevProvider.stats["ens1f0np0"] = map[string]uint64{
+		"rx_prio0_pause":                1,
+		"rx_prio3_buf_discard":          4,
+		"rx_vport_rdma_unicast_bytes":   10,
+		"rx_vport_rdma_unicast_packets": 11,
+	}
+
+	c := New(provider, newDiscardLogger(),
+		WithNetDevStatsProvider(netDevProvider),
+		WithNetDevHWMetrics(true),
+	)
+	reg := prometheus.NewRegistry()
+	reg.MustRegister(c)
+
+	expected := `
+# HELP rdma_netdev_prio_buf_discard_total Packets discarded due to lack of per-host receive buffers. Ethtool rx_prio[p]_buf_discard.
+# TYPE rdma_netdev_prio_buf_discard_total counter
+rdma_netdev_prio_buf_discard_total{device="mlx5_0",netdev="ens1f0np0",port="1",priority="3"} 4
+# HELP rdma_roce_pfc_pause_frames_total RoCEv2 PFC pause frames from ethtool stats. direction=rx: the peer XOFFed this NIC so this NIC cannot transmit on that priority. direction=tx: this NIC XOFFed the peer because it is not absorbing that priority.
+# TYPE rdma_roce_pfc_pause_frames_total counter
+rdma_roce_pfc_pause_frames_total{device="mlx5_0",direction="rx",netdev="ens1f0np0",port="1",priority="0"} 1
+rdma_roce_pfc_pause_frames_total{device="mlx5_0",direction="rx",netdev="ens1f0np0",port="2",priority="0"} 1
+`
+	if err := testutil.GatherAndCompare(reg, strings.NewReader(expected),
+		"rdma_roce_pfc_pause_frames_total",
+		"rdma_netdev_prio_buf_discard_total",
+		"rdma_netdev_vport_rdma_bytes_total",
+		"rdma_netdev_vport_rdma_packets_total"); err != nil {
+		t.Fatalf("expected ambiguous netdev to omit only vport RDMA: %v", err)
+	}
+}
+
+func TestCollectorOmitsNonPCIFunctionVPortRDMA(t *testing.T) {
+	t.Parallel()
+
+	provider, netDevProvider := ethernetPFWithStats(map[string]uint64{
+		"rx_prio3_buf_discard":          4,
+		"rx_vport_rdma_unicast_bytes":   10,
+		"rx_vport_rdma_unicast_packets": 11,
+	})
+	provider.devices[0].PCIAddr = "mlx5_core.sf.1"
+
+	c := New(provider, newDiscardLogger(),
+		WithNetDevStatsProvider(netDevProvider),
+		WithRoCEPFCMetrics(false),
+		WithNetDevHWMetrics(true),
+	)
+	reg := prometheus.NewRegistry()
+	reg.MustRegister(c)
+
+	expected := `
+# HELP rdma_netdev_prio_buf_discard_total Packets discarded due to lack of per-host receive buffers. Ethtool rx_prio[p]_buf_discard.
+# TYPE rdma_netdev_prio_buf_discard_total counter
+rdma_netdev_prio_buf_discard_total{device="mlx5_0",netdev="ens1f0np0",port="1",priority="3"} 4
+`
+	if err := testutil.GatherAndCompare(reg, strings.NewReader(expected),
+		"rdma_netdev_prio_buf_discard_total",
+		"rdma_netdev_vport_rdma_bytes_total",
+		"rdma_netdev_vport_rdma_packets_total"); err != nil {
+		t.Fatalf("expected non-PCI function to omit only vport RDMA: %v", err)
+	}
+}
+
+func TestCollectorOmitsRepresentorVPortRDMA(t *testing.T) {
+	t.Parallel()
+
+	for _, physPortName := range []string{"pf0vf1", "pf0sf1", "c1pf0vf0", "c1pf0sf0", "pf0hpf"} {
+		t.Run(physPortName, func(t *testing.T) {
+			t.Parallel()
+
+			provider, netDevProvider := ethernetPFWithStats(map[string]uint64{
+				"rx_prio3_buf_discard":          4,
+				"rx_vport_rdma_unicast_bytes":   10,
+				"rx_vport_rdma_unicast_packets": 11,
+			})
+
+			c := New(provider, newDiscardLogger(),
+				WithNetDevStatsProvider(netDevProvider),
+				WithRoCEPFCMetrics(false),
+				WithNetDevHWMetrics(true),
+				WithNetDevPhysPortName(func(string) string { return physPortName }),
+			)
+			reg := prometheus.NewRegistry()
+			reg.MustRegister(c)
+
+			expected := `
+# HELP rdma_netdev_prio_buf_discard_total Packets discarded due to lack of per-host receive buffers. Ethtool rx_prio[p]_buf_discard.
+# TYPE rdma_netdev_prio_buf_discard_total counter
+rdma_netdev_prio_buf_discard_total{device="mlx5_0",netdev="ens1f0np0",port="1",priority="3"} 4
+`
+			if err := testutil.GatherAndCompare(reg, strings.NewReader(expected),
+				"rdma_netdev_prio_buf_discard_total",
+				"rdma_netdev_vport_rdma_bytes_total",
+				"rdma_netdev_vport_rdma_packets_total"); err != nil {
+				t.Fatalf("expected representor %q to omit only vport RDMA: %v", physPortName, err)
+			}
+		})
+	}
+}
+
+func TestCollectorVPortRDMAMetricsAreSparse(t *testing.T) {
+	t.Parallel()
+
+	provider, netDevProvider := ethernetPFWithStats(map[string]uint64{
+		"rx_vport_rdma_unicast_bytes":   1,
+		"tx_vport_rdma_unicast_packets": 6,
+	})
+
+	c := New(provider, newDiscardLogger(),
+		WithNetDevStatsProvider(netDevProvider),
+		WithRoCEPFCMetrics(false),
+		WithNetDevHWMetrics(true),
+		WithNetDevPhysPortName(func(string) string { return "p0" }),
+	)
+	reg := prometheus.NewRegistry()
+	reg.MustRegister(c)
+
+	expected := `
+# HELP rdma_netdev_vport_rdma_bytes_total RDMA octets steered to or from this netdev's function vport. Ethtool {rx,tx}_vport_rdma_{unicast,multicast}_bytes. Not a physical-port *_phy total and not a sum of other function vports. Distinct from sysfs port_rcv_data and rdma_qp_{rx,tx}_bytes_total.
+# TYPE rdma_netdev_vport_rdma_bytes_total counter
+rdma_netdev_vport_rdma_bytes_total{device="mlx5_0",direction="rx",netdev="ens1f0np0",port="1",traffic="unicast"} 1
+# HELP rdma_netdev_vport_rdma_packets_total RDMA packets steered to or from this netdev's function vport. Ethtool {rx,tx}_vport_rdma_{unicast,multicast}_packets. Not a physical-port *_phy total and not a sum of other function vports. Distinct from sysfs port packet counters and rdma_qp_{rx,tx}_packets_total.
+# TYPE rdma_netdev_vport_rdma_packets_total counter
+rdma_netdev_vport_rdma_packets_total{device="mlx5_0",direction="tx",netdev="ens1f0np0",port="1",traffic="unicast"} 6
+`
+	if err := testutil.GatherAndCompare(reg, strings.NewReader(expected),
+		"rdma_netdev_vport_rdma_bytes_total",
+		"rdma_netdev_vport_rdma_packets_total"); err != nil {
+		t.Fatalf("expected sparse vport RDMA emission: %v", err)
+	}
+}
+
 func TestCollectorNetDevHWMetricsAreSparse(t *testing.T) {
 	t.Parallel()
 
@@ -858,7 +1068,9 @@ rdma_netdev_prio_buf_discard_total{device="mlx5_0",netdev="ens1f0np0",port="1",p
 		"rdma_netdev_global_pause_frames_total",
 		"rdma_netdev_global_pause_duration_total",
 		"rdma_netdev_global_pause_transitions_total",
-		"rdma_netdev_pause_storm_events_total"); err != nil {
+		"rdma_netdev_pause_storm_events_total",
+		"rdma_netdev_vport_rdma_bytes_total",
+		"rdma_netdev_vport_rdma_packets_total"); err != nil {
 		t.Fatalf("expected sparse priority emission: %v", err)
 	}
 }
@@ -935,7 +1147,9 @@ func TestCollectorSkipsNetDevHWMetricsForVirtualFunction(t *testing.T) {
 	}
 	netDevProvider := newStubNetDevStatsProvider()
 	netDevProvider.stats["enp26s0v0"] = map[string]uint64{
-		"rx_prio3_buf_discard": 99,
+		"rx_prio3_buf_discard":          99,
+		"rx_vport_rdma_unicast_bytes":   88,
+		"rx_vport_rdma_unicast_packets": 87,
 	}
 
 	c := New(provider, newDiscardLogger(),
@@ -946,7 +1160,9 @@ func TestCollectorSkipsNetDevHWMetricsForVirtualFunction(t *testing.T) {
 	reg.MustRegister(c)
 
 	if err := testutil.GatherAndCompare(reg, strings.NewReader(""),
-		"rdma_netdev_prio_buf_discard_total"); err != nil {
+		"rdma_netdev_prio_buf_discard_total",
+		"rdma_netdev_vport_rdma_bytes_total",
+		"rdma_netdev_vport_rdma_packets_total"); err != nil {
 		t.Fatalf("expected VF netdev hardware metrics to be omitted: %v", err)
 	}
 	if got := netDevProvider.CallCount("enp26s0v0"); got != 0 {
@@ -1861,7 +2077,8 @@ func ethernetPFWithStats(stats map[string]uint64) (*stubProvider, *stubNetDevSta
 	provider := &stubProvider{
 		devices: []rdma.Device{
 			{
-				Name: "mlx5_0",
+				Name:    "mlx5_0",
+				PCIAddr: "0000:1a:00.0",
 				Ports: []rdma.Port{
 					{
 						ID: 1,
