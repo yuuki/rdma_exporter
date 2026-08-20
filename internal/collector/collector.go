@@ -92,6 +92,8 @@ type RdmaCollector struct {
 	netdevGlobalPauseDurationDesc    *prometheus.Desc
 	netdevGlobalPauseTransitionsDesc *prometheus.Desc
 	netdevPauseStormEventsDesc       *prometheus.Desc
+	netdevVPortRDMABytesDesc         *prometheus.Desc
+	netdevVPortRDMAPacketsDesc       *prometheus.Desc
 
 	optionalCounterEnabledDesc *prometheus.Desc
 	qpCounterModeDesc          *prometheus.Desc
@@ -110,6 +112,7 @@ type RdmaCollector struct {
 	qpCounterProvider       QPCounterProvider
 	collectRoCEPFC          bool
 	collectNetDevHW         bool
+	physPortName            func(string) string
 
 	collectMu sync.Mutex
 	ctxValue  atomic.Pointer[context.Context]
@@ -687,6 +690,18 @@ func New(provider Provider, logger *slog.Logger, opts ...Option) *RdmaCollector 
 			[]string{"device", "port", "netdev", "severity"},
 			nil,
 		),
+		netdevVPortRDMABytesDesc: prometheus.NewDesc(
+			"rdma_netdev_vport_rdma_bytes_total",
+			"RDMA octets steered to or from this netdev's function vport. Ethtool {rx,tx}_vport_rdma_{unicast,multicast}_bytes. Not a physical-port *_phy total and not a sum of other function vports. Distinct from sysfs port_rcv_data and rdma_qp_{rx,tx}_bytes_total.",
+			[]string{"device", "port", "netdev", "direction", "traffic"},
+			nil,
+		),
+		netdevVPortRDMAPacketsDesc: prometheus.NewDesc(
+			"rdma_netdev_vport_rdma_packets_total",
+			"RDMA packets steered to or from this netdev's function vport. Ethtool {rx,tx}_vport_rdma_{unicast,multicast}_packets. Not a physical-port *_phy total and not a sum of other function vports. Distinct from sysfs port packet counters and rdma_qp_{rx,tx}_packets_total.",
+			[]string{"device", "port", "netdev", "direction", "traffic"},
+			nil,
+		),
 		optionalCounterEnabledDesc: prometheus.NewDesc(
 			"rdma_optional_counter_enabled",
 			"Whether an optional RDMA hardware counter is enabled on the port. 1 means currently enabled; 0 means supported but disabled. The exporter never enables counters.",
@@ -781,10 +796,17 @@ func WithRoCEPFCMetrics(enabled bool) Option {
 	}
 }
 
-// WithNetDevHWMetrics enables ethtool hardware counters (buffer, PCIe, PHY/FEC, IEEE 802.3x global pause, pause storm).
+// WithNetDevHWMetrics enables ethtool hardware counters (buffer, PCIe, PHY/FEC, IEEE 802.3x global pause, pause storm, vport RDMA).
 func WithNetDevHWMetrics(enabled bool) Option {
 	return func(c *RdmaCollector) {
 		c.collectNetDevHW = enabled
+	}
+}
+
+// WithNetDevPhysPortName overrides how the collector reads sysfs phys_port_name for a netdev.
+func WithNetDevPhysPortName(fn func(string) string) Option {
+	return func(c *RdmaCollector) {
+		c.physPortName = fn
 	}
 }
 
@@ -843,6 +865,8 @@ func (c *RdmaCollector) Describe(ch chan<- *prometheus.Desc) {
 	ch <- c.netdevGlobalPauseDurationDesc
 	ch <- c.netdevGlobalPauseTransitionsDesc
 	ch <- c.netdevPauseStormEventsDesc
+	ch <- c.netdevVPortRDMABytesDesc
+	ch <- c.netdevVPortRDMAPacketsDesc
 	c.scrapeErrors.Describe(ch)
 	c.rocePFCScrapeErrors.Describe(ch)
 	c.netDevHWScrapeErrors.Describe(ch)
@@ -910,6 +934,7 @@ func (c *RdmaCollector) Collect(ch chan<- prometheus.Metric) {
 
 	netDevStatsCache := make(map[string]netDevStatsCacheEntry)
 	netDevHWEmitted := make(map[string]struct{})
+	netdevOwners := ethernetNetDevOwners(devices)
 	optionalReady := false
 	if c.optionalCounterProvider != nil {
 		if err := c.optionalCounterProvider.Prepare(ctx); err != nil {
@@ -976,7 +1001,7 @@ func (c *RdmaCollector) Collect(ch chan<- prometheus.Metric) {
 			}
 
 			attr := port.Attributes
-			c.collectNetDevMetrics(ctx, ch, device.Name, portID, attr, device.IsVF, netDevStatsCache, netDevHWEmitted)
+			c.collectNetDevMetrics(ctx, ch, device.Name, portID, attr, device.IsVF, device.PCIAddr, netdevOwners, netDevStatsCache, netDevHWEmitted)
 
 			ch <- prometheus.MustNewConstMetric(
 				c.portInfoDesc,
@@ -1239,6 +1264,8 @@ func (c *RdmaCollector) collectNetDevMetrics(
 	deviceName, portID string,
 	attr rdma.PortAttributes,
 	isVF bool,
+	pciAddr string,
+	netdevOwners map[string]int,
 	cache map[string]netDevStatsCacheEntry,
 	hwEmitted map[string]struct{},
 ) {
@@ -1248,9 +1275,9 @@ func (c *RdmaCollector) collectNetDevMetrics(
 	if !c.collectRoCEPFC && !c.collectNetDevHW {
 		return
 	}
-	// Physical-port ethtool counters are PF-only. VFs do not independently
-	// send/receive PFC or expose physical-port/device counters; skip to
-	// avoid meaningless stats and blocking ethtool ioctls on VF interfaces.
+	// Ethtool collection is skipped for IB devices flagged as PCI VFs.
+	// Remaining Ethernet ports are not guaranteed to be PFs (SF and guest VF
+	// without physfn still pass). vPort RDMA has extra omit gates.
 	if isVF {
 		c.logger.Debug("skipping netdev collection for VF device", "device", deviceName, "port", portID)
 		return
@@ -1277,7 +1304,16 @@ func (c *RdmaCollector) collectNetDevMetrics(
 			return
 		}
 		hwEmitted[attr.NetDev] = struct{}{}
-		c.emitNetDevHWMetrics(ch, deviceName, portID, attr.NetDev, stats)
+		skipVPort := !isPCIFunctionBDF(pciAddr) || netdevOwners[attr.NetDev] != 1 || isRepresentorPhysPortName(c.lookupPhysPortName(attr.NetDev))
+		if skipVPort {
+			c.logger.Debug("omitting vport RDMA metrics",
+				"device", deviceName,
+				"port", portID,
+				"netdev", attr.NetDev,
+				"pci_addr", pciAddr,
+			)
+		}
+		c.emitNetDevHWMetrics(ch, deviceName, portID, attr.NetDev, stats, skipVPort)
 	}
 }
 

@@ -65,7 +65,7 @@ func Parse(args []string) (Config, error) {
 	if err != nil {
 		return cfg, err
 	}
-	enableNetDevHWMetrics := fs.Bool("enable-netdev-hw-metrics", enableNetDevHWDefault, "Enable collection of netdev ethtool hardware counters (buffer, PCIe, PHY/FEC, IEEE 802.3x global pause, pause storm). Linux only, opt-in.")
+	enableNetDevHWMetrics := fs.Bool("enable-netdev-hw-metrics", enableNetDevHWDefault, "Enable collection of netdev ethtool hardware counters (buffer, PCIe, PHY/FEC, IEEE 802.3x global pause, pause storm, vport RDMA). Linux only, opt-in.")
 
 	enableOptionalDefault, err := boolEnvOrDefault("RDMA_EXPORTER_ENABLE_RDMA_OPTIONAL_COUNTERS", defaultEnableOptionalCounters)
 	if err != nil {

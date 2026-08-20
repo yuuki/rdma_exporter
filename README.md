@@ -22,7 +22,7 @@ For details on GitHub Actions status badges, see the [official documentation](ht
 - Supports an alternative sysfs root (`--sysfs-root`) for testing or chroot environments.
 - Honors a configurable scrape timeout (`--scrape-timeout`) to protect long-running sysfs reads.
 - Optionally enriches RoCEv2 visibility with PFC counters from netdev ethtool stats (Linux only, best effort).
-- Optionally exports mlx5 ethtool hardware counters for NIC buffer drops, PCIe stalls, PHY/FEC, IEEE 802.3x global pause, and pause storm (opt-in, `--enable-netdev-hw-metrics`).
+- Optionally exports mlx5 ethtool hardware counters for NIC buffer drops, PCIe stalls, PHY/FEC, IEEE 802.3x global pause, pause storm, and vport RDMA traffic (opt-in, `--enable-netdev-hw-metrics`).
 - Optionally exports mlx5 congestion-control counters (`cc_*`) that sysfs omits, via RDMA netlink (`--enable-rdma-optional-counters`). The exporter never enables counters.
 - Optionally exports live auto-type QP hardware counters (`rdma_qp_*`) via a separate RDMA netlink socket (`--enable-rdma-qp-counters`). The exporter never binds QPs or enables auto mode.
 
@@ -152,8 +152,8 @@ Every CLI flag has an equivalent environment variable. Environment values provid
 | `--log-level` | `RDMA_EXPORTER_LOG_LEVEL` | `info` | Log verbosity (`debug`, `info`, `warn`, `error`) |
 | `--sysfs-root` | `RDMA_EXPORTER_SYSFS_ROOT` | `/sys` | Root directory used to read RDMA sysfs data |
 | `--scrape-timeout` | `RDMA_EXPORTER_SCRAPE_TIMEOUT` | `5s` | Upper bound for metric gathering per scrape |
-| `--enable-roce-pfc-metrics` | `RDMA_EXPORTER_ENABLE_ROCE_PFC_METRICS` | `true` | Enable RoCEv2 PFC metric collection from netdev ethtool stats (Linux only). Does not enable buffer/PCIe/PHY, global pause, or pause-storm counters. |
-| `--enable-netdev-hw-metrics` | `RDMA_EXPORTER_ENABLE_NETDEV_HW_METRICS` | `false` | Enable ethtool hardware counters for NIC buffer drops, PCIe stalls, PHY/FEC, IEEE 802.3x global pause, and pause storm (Linux only, opt-in). |
+| `--enable-roce-pfc-metrics` | `RDMA_EXPORTER_ENABLE_ROCE_PFC_METRICS` | `true` | Enable RoCEv2 PFC metric collection from netdev ethtool stats (Linux only). Does not enable buffer/PCIe/PHY, global pause, pause-storm, or vport RDMA counters. |
+| `--enable-netdev-hw-metrics` | `RDMA_EXPORTER_ENABLE_NETDEV_HW_METRICS` | `false` | Enable ethtool hardware counters for NIC buffer drops, PCIe stalls, PHY/FEC, IEEE 802.3x global pause, pause storm, and vport RDMA traffic (Linux only, opt-in). |
 | `--enable-rdma-optional-counters` | `RDMA_EXPORTER_ENABLE_RDMA_OPTIONAL_COUNTERS` | `false` | Enable optional RDMA hardware counters (Linux only, NETLINK_RDMA). The exporter never turns counters on. |
 | `--enable-rdma-qp-counters` | `RDMA_EXPORTER_ENABLE_RDMA_QP_COUNTERS` | `false` | Enable live auto-type QP counters (Linux only, separate NETLINK_RDMA socket). The exporter never binds QPs or enables auto mode. |
 | `--exclude-devices` | `RDMA_EXPORTER_EXCLUDE_DEVICES` | `` | Comma-separated list of RDMA devices to exclude (e.g., `mlx5_0,mlx5_1`) |
@@ -181,7 +181,7 @@ See the [Run](#run) section for operator enablement (`rdma statistic set` / `rdm
 
 The Go and process collectors from `client_golang` are registered automatically.
 
-PFC and ethtool hardware metrics are collected only for Ethernet physical functions. Physical-port counters on a PF include VF traffic. Series are emitted only for counters the driver actually returns; missing priorities do not mean “zero pauses”.
+PFC and ethtool hardware metrics are collected for Ethernet ports that are not flagged as PCI VFs. That is not a positive PF guarantee. Physical-port counters on a PF include VF traffic. vPort RDMA is the scraped netdev's function vport, not those physical-port totals. Series are emitted only for counters the driver actually returns; missing priorities do not mean “zero pauses”.
 
 ### PFC direction
 
@@ -207,6 +207,7 @@ Enable with `--enable-netdev-hw-metrics`. These are mlx5 netdev/device statistic
 - PHY/FEC: `rdma_phy_rx_corrected_bits_total`, `rdma_phy_rx_pcs_symbol_err_total`, `rdma_phy_rx_bits_total`, `rdma_phy_rx_err_lane_total`, `rdma_phy_rx_crc_errors_total`, `rdma_phy_link_down_events_total`.
 - IEEE 802.3x global pause (not PFC; keys exist only when global pause mode is on): `rdma_netdev_global_pause_frames_total{device,port,netdev,direction}`, `rdma_netdev_global_pause_duration_total` (microseconds; occupancy is `rate()/1e6`), `rdma_netdev_global_pause_transitions_total` (mlx5 receive/`rx` only). Direction is observation only: `rx` means this NIC received a pause request (was asked to stop transmitting); `tx` means this NIC transmitted a pause request (asked the peer to stop). Do not treat as root cause.
 - Pause storm: `rdma_netdev_pause_storm_events_total{device,port,netdev,severity}`. `warning` is stalled past a watermark; `error` is timeout and pause TX disabled (drops may have occurred). Observation only; do not assert root cause.
+- vPort RDMA: `rdma_netdev_vport_rdma_bytes_total` and `rdma_netdev_vport_rdma_packets_total` labeled `{device,port,netdev,direction,traffic}` from `{rx,tx}_vport_rdma_{unicast,multicast}_{bytes,packets}`. These are octets/packets steered to or from this netdev's function vport, not `*_phy` and not a sum of other function vports. Do not add them to sysfs `port_rcv_data` (doublewords) or `rdma_qp_{rx,tx}_{bytes,packets}_total`. Ethernet vport, loopback, and steer-miss keys are not exported. Series are omitted when the RDMA device is not a PCI BDF, when more than one Ethernet `(device,port)` shares the netdev, or when `phys_port_name` is a VF/SF/host-PF representor (`pf0vf1`, `c1pf0vf0`, `pf0hpf`). A missing `phys_port_name` does not omit.
 
 Interval FEC/BER ratio (not a lifetime or instantaneous instrument):
 
