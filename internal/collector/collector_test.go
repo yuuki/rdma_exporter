@@ -266,6 +266,47 @@ rdma_symbol_error_total{device="mlx5_0",port="1"} 1
 	}
 }
 
+func TestCollectorExportsLifespanAsGauge(t *testing.T) {
+	t.Parallel()
+
+	provider := &stubProvider{
+		devices: []rdma.Device{
+			{
+				Name: "mlx5_0",
+				Ports: []rdma.Port{
+					{
+						ID: 1,
+						HwStats: map[string]uint64{
+							"lifespan":     10,
+							"symbol_error": 1,
+						},
+					},
+				},
+			},
+		},
+	}
+
+	c := New(provider, newDiscardLogger())
+	reg := prometheus.NewRegistry()
+	reg.MustRegister(c)
+
+	expected := `
+# HELP rdma_lifespan_milliseconds Maximum period in milliseconds between hardware counter updates. Two consecutive reads within this period might return the same values. This is a sysfs configuration knob (kernel default 10, writable range 0-10000); the exporter does not write it.
+# TYPE rdma_lifespan_milliseconds gauge
+rdma_lifespan_milliseconds{device="mlx5_0",port="1"} 10
+# HELP rdma_symbol_error_total Total number of minor link errors detected on one or more physical lanes.
+# TYPE rdma_symbol_error_total counter
+rdma_symbol_error_total{device="mlx5_0",port="1"} 1
+`
+	if err := testutil.GatherAndCompare(reg, strings.NewReader(expected),
+		"rdma_lifespan_milliseconds",
+		"rdma_lifespan_total",
+		"rdma_symbol_error_total",
+	); err != nil {
+		t.Fatalf("unexpected lifespan metrics: %v", err)
+	}
+}
+
 func TestCollectorIncrementsErrorCounter(t *testing.T) {
 	t.Parallel()
 

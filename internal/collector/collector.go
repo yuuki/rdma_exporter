@@ -54,6 +54,8 @@ type RdmaCollector struct {
 
 	portInfoDesc *prometheus.Desc
 
+	lifespanMillisecondsDesc *prometheus.Desc
+
 	portStatMetrics  map[string]metricEntry
 	portStatLookup   map[string]string
 	portHwMetrics    map[string]metricEntry
@@ -218,7 +220,7 @@ var (
 		},
 		"lifespan": {
 			DocName: "lifespan",
-			Help:    "The maximum period in ms which defines the aging of the counter reads. Two consecutive reads within this period might return the same values.",
+			Help:    "Maximum period in milliseconds between hardware counter updates. Two consecutive reads within this period might return the same values. This is a sysfs configuration knob (kernel default 10, writable range 0-10000); the exporter does not write it.",
 		},
 		"local_ack_timeout_err": {
 			DocName: "local_ack_timeout_err",
@@ -535,6 +537,12 @@ func New(provider Provider, logger *slog.Logger, opts ...Option) *RdmaCollector 
 			},
 			nil,
 		),
+		lifespanMillisecondsDesc: prometheus.NewDesc(
+			"rdma_lifespan_milliseconds",
+			metricDocHelp("lifespan", "Maximum period in milliseconds between hardware counter updates."),
+			[]string{"device", "port"},
+			nil,
+		),
 		rocePFCPauseFramesDesc: prometheus.NewDesc(
 			"rdma_roce_pfc_pause_frames_total",
 			"RoCEv2 PFC pause frames from ethtool stats. direction=rx: the peer XOFFed this NIC so this NIC cannot transmit on that priority. direction=tx: this NIC XOFFed the peer because it is not absorbing that priority.",
@@ -810,6 +818,7 @@ func (c *RdmaCollector) ResetContext() {
 // Describe implements prometheus.Collector.
 func (c *RdmaCollector) Describe(ch chan<- *prometheus.Desc) {
 	ch <- c.portInfoDesc
+	ch <- c.lifespanMillisecondsDesc
 	ch <- c.rocePFCPauseFramesDesc
 	ch <- c.rocePFCPauseDurationDesc
 	ch <- c.rocePFCPauseTransitionsDesc
@@ -941,6 +950,16 @@ func (c *RdmaCollector) Collect(ch chan<- prometheus.Metric) {
 				names := sortedKeys(port.HwStats)
 				for _, name := range names {
 					value := float64(port.HwStats[name])
+					if name == "lifespan" {
+						ch <- prometheus.MustNewConstMetric(
+							c.lifespanMillisecondsDesc,
+							prometheus.GaugeValue,
+							value,
+							device.Name,
+							portID,
+						)
+						continue
+					}
 					desc := c.hwMetricDesc(name)
 					ch <- prometheus.MustNewConstMetric(
 						desc,
