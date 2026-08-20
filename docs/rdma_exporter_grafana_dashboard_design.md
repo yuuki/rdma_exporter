@@ -56,6 +56,12 @@ Organize panels into three horizontal rows across a 24-column grid, following �
 - **Time series: ECN / CNP Activity** – visualize `rdma_np_cnp_sent_total`, `rdma_np_ecn_marked_roce_packets_total`, `rdma_rp_cnp_handled_total`, `rdma_rp_cnp_ignored_total`.
 - **Time series: Adaptive Retransmission / Timeout** – highlight reliability and congestion control behavior.
 - **Time series: PFC pause occupancy** – `rate(rdma_roce_pfc_pause_duration_total[$interval]) / 1e6`, split by `direction`. Panel description states the observation (rx = peer XOFFed this NIC; tx = this NIC XOFFed the peer), not a root cause.
+- **Time series: IEEE 802.3x pause occupancy** – `rate(rdma_netdev_global_pause_duration_total[$interval]) / 1e6`, split by `direction`. Distinct from PFC; keys exist only in global pause mode. Requires `--enable-netdev-hw-metrics`. Observation only.
+- **Time series: pause storm** – `rate(rdma_netdev_pause_storm_events_total[$interval])`, split by `severity`. warning = watermark; error = timeout and pause TX disabled. Requires `--enable-netdev-hw-metrics`.
+- **Time series: IEEE 802.3x pause frames** – `rate(rdma_netdev_global_pause_frames_total[$interval])`, split by `direction`. Requires `--enable-netdev-hw-metrics`. Observation only.
+- **Time series: IEEE 802.3x pause transitions** – `rate(rdma_netdev_global_pause_transitions_total[$interval])`. mlx5 receive only; no `direction` label. Requires `--enable-netdev-hw-metrics`.
+- **Time series: QP optional traffic bytes** – `rate(rdma_qp_rx_bytes_total[$interval])` and `rate(rdma_qp_tx_bytes_total[$interval])`, labeled `{device,port,qp_type}`. Requires `--enable-rdma-qp-counters`. Do not add to sysfs `rdma_<name>_total`.
+- **Time series: QP optional traffic packets** – `rate(rdma_qp_rx_packets_total[$interval])` and `rate(rdma_qp_tx_packets_total[$interval])`. Same dump constraints as bytes.
 - **Time series: PCIe stall seconds** – `rate(rdma_pcie_outbound_stalled_seconds_total[$interval])`. Requires `--enable-netdev-hw-metrics`. Do not `rate()` the 1-second percent gauge.
 - **Time series: PHY/FEC interval ratio** – `increase(rdma_phy_rx_corrected_bits_total[$interval]) / clamp_min(increase(rdma_phy_rx_bits_total[$interval]), 1)` and the PCS analogue. Requires `--enable-netdev-hw-metrics`.
 - **Stacked bars: Error Family Breakdown** – `rdma_port_rcv_errors_total`, `rdma_port_xmit_discards_total`, `rdma_port_rcv_remote_physical_errors_total`, `rdma_symbol_error_total`.
@@ -81,6 +87,12 @@ Organize panels into three horizontal rows across a 24-column grid, following �
 | ECN / CNP signals | `rate(rdma_np_cnp_sent_total{...}[$interval])`, `rate(rdma_np_ecn_marked_roce_packets_total{...}[$interval])`, etc. | Group into repeating panel if needed |
 | Adaptive retransmission | `rate(rdma_roce_adp_retrans_total{...}[$interval])`, `rate(rdma_roce_adp_retrans_to_total{...}[$interval])` | Watch for spikes |
 | PFC occupancy | `rate(rdma_roce_pfc_pause_duration_total{...}[$interval]) / 1e6` | Microseconds in the counter; divide by 1e6. Split by `direction`. |
+| IEEE 802.3x pause occupancy | `rate(rdma_netdev_global_pause_duration_total{...}[$interval]) / 1e6` | Distinct from PFC. Keys exist only in global pause mode. Split by `direction`. |
+| Pause storm | `rate(rdma_netdev_pause_storm_events_total{...}[$interval])` | Split by `severity`. Observation only. |
+| IEEE 802.3x pause frames | `rate(rdma_netdev_global_pause_frames_total{...}[$interval])` | Split by `direction`. Observation only. |
+| IEEE 802.3x pause transitions | `rate(rdma_netdev_global_pause_transitions_total{...}[$interval])` | mlx5 receive only; no `direction` label. |
+| QP optional traffic bytes | `rate(rdma_qp_rx_bytes_total{...}[$interval])`, `rate(rdma_qp_tx_bytes_total{...}[$interval])` | Live auto-type bound QPs. Do not add to sysfs port totals. |
+| QP optional traffic packets | `rate(rdma_qp_rx_packets_total{...}[$interval])`, `rate(rdma_qp_tx_packets_total{...}[$interval])` | Appear only when the dump contains those keys. |
 | PCIe stall | `rate(rdma_pcie_outbound_stalled_seconds_total{...}[$interval])` | Fraction of time stall exceeded 30%. Opt-in ethtool family. |
 | PHY FEC ratio | `increase(rdma_phy_rx_corrected_bits_total{...}[$interval]) / clamp_min(increase(rdma_phy_rx_bits_total{...}[$interval]), 1)` | Interval sample ratio, not instantaneous BER. |
 | Error breakdown | `rate(rdma_port_rcv_errors_total{...}[$interval])`, `rate(rdma_port_xmit_discards_total{...}[$interval])`, `rate(rdma_port_rcv_remote_physical_errors_total{...}[$interval])`, `rate(rdma_symbol_error_total{...}[$interval])`, `rate(rdma_port_rcv_switch_relay_errors_total{...}[$interval])`, `rate(rdma_port_rcv_constraint_errors_total{...}[$interval])`, `rate(rdma_port_xmit_constraint_errors_total{...}[$interval])` | Stack by metric; toggle visibility for high-cardinality fabrics |
