@@ -75,6 +75,8 @@ The dashboard ships with template variables to scope queries:
 | Errors: Port Counters [events/s] / instance     | `rdma_port_rcv_errors_total`, `rdma_port_xmit_discards_total`, `rdma_port_rcv_remote_physical_errors_total`, `rdma_symbol_error_total`, etc.   | Aggregates error counters to locate faulty cabling, optics, or firmware anomalies.                           |
 | Quality: TX Drop Ratio [%] / port               | `rdma_port_xmit_discards_total` vs. `rdma_port_xmit_packets_total`                                                                             | Visualizes drop ratio to catch oversubscription or buffer exhaustion before it hits SLAs.                    |
 
+Port-level optional traffic (`rdma_optional_{rx,tx}_{bytes,packets}_total`) is not on this bundled dashboard.
+
 ## Extending the Dashboard
 - Duplicate panels and swap in any other `rdma_*_total` counters exposed by the exporter (e.g., `rdma_duplicate_request_total`).
 - Adjust the `$interval` variable defaults if your Prometheus scrape interval is higher than 60 seconds.

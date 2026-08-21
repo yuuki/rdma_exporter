@@ -96,6 +96,7 @@ type RdmaCollector struct {
 	netdevVPortRDMAPacketsDesc       *prometheus.Desc
 
 	optionalCounterEnabledDesc *prometheus.Desc
+	optionalTrafficDescs       map[string]*prometheus.Desc
 	qpCounterModeDesc          *prometheus.Desc
 	qpAutoMaskDesc             *prometheus.Desc
 	qpScrapeStatusDesc         *prometheus.Desc
@@ -349,8 +350,9 @@ var (
 
 	metricHelpByDocName = buildMetricHelpByDocName()
 
-	// Values are emitted only for these optional counters. Other optional names
-	// still appear on rdma_optional_counter_enabled so operators can see them.
+	// Values are emitted only for these optional counters, plus the four
+	// mapped optionalTrafficSpecs names. Other optional names still appear
+	// on rdma_optional_counter_enabled so operators can see them.
 	optionalCounterValueNames = map[string]struct{}{
 		"cc_rx_ce_pkts":  {},
 		"cc_rx_cnp_pkts": {},
@@ -374,10 +376,36 @@ var (
 	}
 
 	qpCounterHelp = "Live auto-type bound user QP aggregate on this port. Port sysfs rdma_<name>_total already includes default + running sets + history; do not add these series to it. Not per-LQPN. A successful dump can still contain retained values if the hardware query failed."
+
+	optionalTrafficBytesHelp = "Link-wide mlx5 RDMA octets observed by the enabled optional flow counter (netlink name rdma_rx_bytes or rdma_tx_bytes). Not sysfs port_rcv_data (doublewords). Not rdma_qp_* (live auto-type QP dump). Not rdma_netdev_vport_rdma_*. Packet and byte counters in the same direction share one hardware flow counter: a newly enabled sibling can include history while the other stays on; the counter resets only after both names in that direction are disabled. Present only when the operator enabled the name and a value was read. Status discovery needs Linux 5.16+; mlx5 added these four names in Linux 6.15. The exporter never enables counters."
+
+	optionalTrafficPacketsHelp = "Link-wide mlx5 RDMA packets observed by the enabled optional flow counter (netlink name rdma_rx_packets or rdma_tx_packets). Not sysfs port packet counters. Not rdma_qp_* (live auto-type QP dump). Not rdma_netdev_vport_rdma_*. Packet and byte counters in the same direction share one hardware flow counter: a newly enabled sibling can include history while the other stays on; the counter resets only after both names in that direction are disabled. Present only when the operator enabled the name and a value was read. Status discovery needs Linux 5.16+; mlx5 added these four names in Linux 6.15. The exporter never enables counters."
+
+	optionalTrafficSpecs = []optionalTrafficSpec{
+		{Name: "rdma_rx_bytes", MetricName: "rdma_optional_rx_bytes_total", Help: optionalTrafficBytesHelp},
+		{Name: "rdma_tx_bytes", MetricName: "rdma_optional_tx_bytes_total", Help: optionalTrafficBytesHelp},
+		{Name: "rdma_rx_packets", MetricName: "rdma_optional_rx_packets_total", Help: optionalTrafficPacketsHelp},
+		{Name: "rdma_tx_packets", MetricName: "rdma_optional_tx_packets_total", Help: optionalTrafficPacketsHelp},
+	}
 )
+
+type optionalTrafficSpec struct {
+	Name       string
+	MetricName string
+	Help       string
+}
 
 func qpCounterMetricName(dumpName string) string {
 	return "rdma_qp_" + strings.TrimPrefix(dumpName, "rdma_") + "_total"
+}
+
+func optionalTrafficMetricName(netlinkName string) (string, bool) {
+	for _, spec := range optionalTrafficSpecs {
+		if spec.Name == netlinkName {
+			return spec.MetricName, true
+		}
+	}
+	return "", false
 }
 
 type rocePFCMetricKind int
@@ -708,6 +736,7 @@ func New(provider Provider, logger *slog.Logger, opts ...Option) *RdmaCollector 
 			[]string{"device", "port", "counter"},
 			nil,
 		),
+		optionalTrafficDescs: make(map[string]*prometheus.Desc, len(optionalTrafficSpecs)),
 		qpCounterModeDesc: prometheus.NewDesc(
 			"rdma_qp_counter_mode",
 			"QP statistic counter bind mode on the port. One series per mode; value 1 is the current mode.",
@@ -753,6 +782,15 @@ func New(provider Provider, logger *slog.Logger, opts ...Option) *RdmaCollector 
 		portHwStatLookup:       make(map[string]string),
 		portOptionalMetrics:    make(map[string]metricEntry),
 		portOptionalStatLookup: make(map[string]string),
+	}
+
+	for _, spec := range optionalTrafficSpecs {
+		c.optionalTrafficDescs[spec.Name] = prometheus.NewDesc(
+			spec.MetricName,
+			spec.Help,
+			[]string{"device", "port"},
+			nil,
+		)
 	}
 
 	for _, name := range qpCounterValueNames {
@@ -872,6 +910,9 @@ func (c *RdmaCollector) Describe(ch chan<- *prometheus.Desc) {
 	c.netDevHWScrapeErrors.Describe(ch)
 	if c.optionalCounterProvider != nil {
 		ch <- c.optionalCounterEnabledDesc
+		for _, spec := range optionalTrafficSpecs {
+			ch <- c.optionalTrafficDescs[spec.Name]
+		}
 		c.optionalCounterScrapeErrors.Describe(ch)
 	}
 	if c.qpCounterProvider != nil {
@@ -1094,10 +1135,20 @@ func (c *RdmaCollector) collectOptionalCounters(
 		if !counter.Enabled || !counter.HasValue {
 			continue
 		}
-		if _, ok := optionalCounterValueNames[counter.Name]; !ok {
+		if _, exists := hwStats[counter.Name]; exists {
 			continue
 		}
-		if _, exists := hwStats[counter.Name]; exists {
+		if desc, ok := c.optionalTrafficDescs[counter.Name]; ok {
+			ch <- prometheus.MustNewConstMetric(
+				desc,
+				prometheus.CounterValue,
+				float64(counter.Value),
+				deviceName,
+				portLabel,
+			)
+			continue
+		}
+		if _, ok := optionalCounterValueNames[counter.Name]; !ok {
 			continue
 		}
 		ch <- prometheus.MustNewConstMetric(
