@@ -1,7 +1,11 @@
 package config
 
 import (
+	"bytes"
+	"errors"
+	"flag"
 	"log/slog"
+	"strings"
 	"testing"
 	"time"
 )
@@ -26,20 +30,17 @@ func TestParseDefaults(t *testing.T) {
 	if cfg.ScrapeTimeout != defaultTimeout {
 		t.Fatalf("expected scrape timeout %v, got %v", defaultTimeout, cfg.ScrapeTimeout)
 	}
-	if !cfg.EnableRoCEPFCMetrics {
-		t.Fatalf("expected RoCE PFC metrics to be enabled by default")
+	if !cfg.CollectorEthtool {
+		t.Fatal("expected ethtool collector to be enabled by default")
 	}
-	if cfg.EnableNetDevHWMetrics {
-		t.Fatalf("expected netdev hardware metrics to be disabled by default")
+	if !cfg.CollectorOptionalCounters {
+		t.Fatal("expected optional-counters collector to be enabled by default")
 	}
-	if cfg.EnableOptionalCounters {
-		t.Fatalf("expected optional RDMA counters to be disabled by default")
-	}
-	if cfg.EnableQPCounters {
-		t.Fatalf("expected QP RDMA counters to be disabled by default")
+	if cfg.CollectorQPCounters {
+		t.Fatal("expected qp-counters collector to be disabled by default")
 	}
 	if cfg.ShowVersion {
-		t.Fatalf("expected show version to be false by default")
+		t.Fatal("expected show version to be false by default")
 	}
 }
 
@@ -73,155 +74,206 @@ func TestFlagsOverrideEnv(t *testing.T) {
 	}
 }
 
-func TestRoCEPFCMetricsToggleFromEnv(t *testing.T) {
-	t.Setenv("RDMA_EXPORTER_ENABLE_ROCE_PFC_METRICS", "false")
+func TestCollectorEthtoolToggleFromEnv(t *testing.T) {
+	t.Setenv("RDMA_EXPORTER_COLLECTOR_ETHTOOL", "false")
 
 	cfg, err := Parse(nil)
 	if err != nil {
 		t.Fatalf("Parse returned error: %v", err)
 	}
-	if cfg.EnableRoCEPFCMetrics {
-		t.Fatalf("expected RoCE PFC metrics to be disabled by env")
+	if cfg.CollectorEthtool {
+		t.Fatal("expected ethtool collector to be disabled by env")
 	}
 }
 
-func TestRoCEPFCMetricsToggleFromFlag(t *testing.T) {
-	t.Setenv("RDMA_EXPORTER_ENABLE_ROCE_PFC_METRICS", "false")
+func TestCollectorFlagsOverrideEnv(t *testing.T) {
+	t.Setenv("RDMA_EXPORTER_COLLECTOR_ETHTOOL", "false")
+	t.Setenv("RDMA_EXPORTER_COLLECTOR_OPTIONAL_COUNTERS", "false")
+	t.Setenv("RDMA_EXPORTER_COLLECTOR_QP_COUNTERS", "false")
 
-	cfg, err := Parse([]string{"--enable-roce-pfc-metrics=true"})
+	cfg, err := Parse([]string{
+		"--collector.ethtool",
+		"--collector.optional-counters=true",
+		"--collector.qp-counters",
+	})
 	if err != nil {
 		t.Fatalf("Parse returned error: %v", err)
 	}
-	if !cfg.EnableRoCEPFCMetrics {
-		t.Fatalf("expected RoCE PFC metrics to be enabled by flag")
+	if !cfg.CollectorEthtool {
+		t.Fatal("expected ethtool collector to be enabled by flag")
+	}
+	if !cfg.CollectorOptionalCounters {
+		t.Fatal("expected optional-counters collector to be enabled by flag")
+	}
+	if !cfg.CollectorQPCounters {
+		t.Fatal("expected qp-counters collector to be enabled by flag")
 	}
 }
 
-func TestRoCEPFCMetricsToggleRejectsInvalidEnv(t *testing.T) {
-	t.Setenv("RDMA_EXPORTER_ENABLE_ROCE_PFC_METRICS", "notabool")
+func TestNoCollectorFlags(t *testing.T) {
+	cfg, err := Parse([]string{
+		"--no-collector.ethtool",
+		"--no-collector.optional-counters",
+		"--no-collector.qp-counters",
+	})
+	if err != nil {
+		t.Fatalf("Parse returned error: %v", err)
+	}
+	if cfg.CollectorEthtool {
+		t.Fatal("expected ethtool collector disabled")
+	}
+	if cfg.CollectorOptionalCounters {
+		t.Fatal("expected optional-counters collector disabled")
+	}
+	if cfg.CollectorQPCounters {
+		t.Fatal("expected qp-counters collector disabled")
+	}
+}
+
+func TestCollectorLastExplicitFlagWins(t *testing.T) {
+	cfg, err := Parse([]string{
+		"--no-collector.ethtool",
+		"--collector.ethtool",
+		"--collector.qp-counters",
+		"--no-collector.qp-counters",
+	})
+	if err != nil {
+		t.Fatalf("Parse returned error: %v", err)
+	}
+	if !cfg.CollectorEthtool {
+		t.Fatal("expected last --collector.ethtool to win")
+	}
+	if cfg.CollectorQPCounters {
+		t.Fatal("expected last --no-collector.qp-counters to win")
+	}
+}
+
+func TestCollectorBoolFlagDoesNotConsumeNextArg(t *testing.T) {
+	cfg, err := Parse([]string{"--collector.qp-counters", "--listen-address", "127.0.0.1:1"})
+	if err != nil {
+		t.Fatalf("Parse returned error: %v", err)
+	}
+	if !cfg.CollectorQPCounters {
+		t.Fatal("expected qp-counters enabled")
+	}
+	if cfg.ListenAddress != "127.0.0.1:1" {
+		t.Fatalf("listen address = %q, want 127.0.0.1:1", cfg.ListenAddress)
+	}
+}
+
+func TestNoCollectorFlagRejectsValue(t *testing.T) {
+	if _, err := Parse([]string{"--no-collector.qp-counters=true"}); err == nil {
+		t.Fatal("expected error for valued --no-collector flag")
+	}
+}
+
+func TestCollectorToggleRejectsInvalidEnv(t *testing.T) {
+	t.Setenv("RDMA_EXPORTER_COLLECTOR_ETHTOOL", "notabool")
 
 	if _, err := Parse(nil); err == nil {
-		t.Fatalf("expected error for invalid RDMA_EXPORTER_ENABLE_ROCE_PFC_METRICS")
+		t.Fatal("expected error for invalid RDMA_EXPORTER_COLLECTOR_ETHTOOL")
 	}
 }
 
-func TestNetDevHWMetricsToggleFromEnv(t *testing.T) {
-	t.Setenv("RDMA_EXPORTER_ENABLE_NETDEV_HW_METRICS", "true")
-
-	cfg, err := Parse(nil)
-	if err != nil {
-		t.Fatalf("Parse returned error: %v", err)
-	}
-	if !cfg.EnableNetDevHWMetrics {
-		t.Fatalf("expected netdev hardware metrics to be enabled by env")
+func TestRemovedEnableFlagsError(t *testing.T) {
+	for _, name := range []string{
+		"enable-roce-pfc-metrics",
+		"enable-netdev-hw-metrics",
+		"enable-rdma-optional-counters",
+		"enable-rdma-qp-counters",
+	} {
+		_, err := Parse([]string{"--" + name})
+		if err == nil {
+			t.Fatalf("expected error for removed flag --%s", name)
+		}
+		if !strings.Contains(err.Error(), "has been removed") {
+			t.Fatalf("removed flag --%s: got %v", name, err)
+		}
 	}
 }
 
-func TestNetDevHWMetricsToggleFromFlag(t *testing.T) {
+func TestRemovedEnableEnvError(t *testing.T) {
 	t.Setenv("RDMA_EXPORTER_ENABLE_NETDEV_HW_METRICS", "false")
 
-	cfg, err := Parse([]string{"--enable-netdev-hw-metrics=true"})
-	if err != nil {
-		t.Fatalf("Parse returned error: %v", err)
-	}
-	if !cfg.EnableNetDevHWMetrics {
-		t.Fatalf("expected netdev hardware metrics to be enabled by flag")
+	if _, err := Parse(nil); err == nil {
+		t.Fatal("expected error for leftover ENABLE_* env")
+	} else if !strings.Contains(err.Error(), "RDMA_EXPORTER_ENABLE_NETDEV_HW_METRICS") {
+		t.Fatalf("got %v", err)
 	}
 }
 
-func TestNetDevHWMetricsToggleRejectsInvalidEnv(t *testing.T) {
-	t.Setenv("RDMA_EXPORTER_ENABLE_NETDEV_HW_METRICS", "notabool")
+func TestRemovedEnableEnvEmptyStillFatal(t *testing.T) {
+	t.Setenv("RDMA_EXPORTER_ENABLE_RDMA_QP_COUNTERS", "")
 
 	if _, err := Parse(nil); err == nil {
-		t.Fatalf("expected error for invalid RDMA_EXPORTER_ENABLE_NETDEV_HW_METRICS")
+		t.Fatal("expected error for empty leftover ENABLE_* env")
 	}
 }
 
-func TestOptionalCountersDisabledByDefault(t *testing.T) {
-	t.Parallel()
+func TestVersionSkipsRemovedEnv(t *testing.T) {
+	t.Setenv("RDMA_EXPORTER_ENABLE_ROCE_PFC_METRICS", "true")
 
-	cfg, err := Parse(nil)
+	cfg, err := Parse([]string{"--version"})
 	if err != nil {
 		t.Fatalf("Parse returned error: %v", err)
 	}
-	if cfg.EnableOptionalCounters {
-		t.Fatal("expected optional RDMA counters to be disabled by default")
+	if !cfg.ShowVersion {
+		t.Fatal("expected show version")
 	}
 }
 
-func TestOptionalCountersToggleFromEnv(t *testing.T) {
-	t.Setenv("RDMA_EXPORTER_ENABLE_RDMA_OPTIONAL_COUNTERS", "true")
+func TestHelpSkipsRemovedEnv(t *testing.T) {
+	t.Setenv("RDMA_EXPORTER_ENABLE_ROCE_PFC_METRICS", "true")
 
-	cfg, err := Parse(nil)
-	if err != nil {
-		t.Fatalf("Parse returned error: %v", err)
-	}
-	if !cfg.EnableOptionalCounters {
-		t.Fatal("expected optional RDMA counters to be enabled by env")
+	_, err := Parse([]string{"-h"})
+	if !errors.Is(err, flag.ErrHelp) {
+		t.Fatalf("expected flag.ErrHelp, got %v", err)
 	}
 }
 
-func TestOptionalCountersToggleFromFlag(t *testing.T) {
-	t.Setenv("RDMA_EXPORTER_ENABLE_RDMA_OPTIONAL_COUNTERS", "false")
-
-	cfg, err := Parse([]string{"--enable-rdma-optional-counters=true"})
-	if err != nil {
-		t.Fatalf("Parse returned error: %v", err)
-	}
-	if !cfg.EnableOptionalCounters {
-		t.Fatal("expected optional RDMA counters to be enabled by flag")
-	}
-}
-
-func TestOptionalCountersToggleRejectsInvalidEnv(t *testing.T) {
-	t.Setenv("RDMA_EXPORTER_ENABLE_RDMA_OPTIONAL_COUNTERS", "notabool")
+func TestRemovedEnableRoCEPFCMetricsMatchingDefault(t *testing.T) {
+	t.Setenv("RDMA_EXPORTER_ENABLE_ROCE_PFC_METRICS", "true")
 
 	if _, err := Parse(nil); err == nil {
-		t.Fatal("expected error for invalid RDMA_EXPORTER_ENABLE_RDMA_OPTIONAL_COUNTERS")
+		t.Fatal("expected leftover ENABLE_ROCE_PFC_METRICS=true to be fatal")
 	}
 }
 
-func TestQPCountersDisabledByDefault(t *testing.T) {
-	t.Parallel()
+func TestRemovedFlagWritesRenameMessage(t *testing.T) {
+	var buf bytes.Buffer
+	orig := parseOutput
+	parseOutput = &buf
+	t.Cleanup(func() { parseOutput = orig })
 
-	cfg, err := Parse(nil)
-	if err != nil {
-		t.Fatalf("Parse returned error: %v", err)
+	_, err := Parse([]string{"--enable-rdma-qp-counters"})
+	if err == nil {
+		t.Fatal("expected error")
 	}
-	if cfg.EnableQPCounters {
-		t.Fatal("expected QP RDMA counters to be disabled by default")
-	}
-}
-
-func TestQPCountersToggleFromEnv(t *testing.T) {
-	t.Setenv("RDMA_EXPORTER_ENABLE_RDMA_QP_COUNTERS", "true")
-
-	cfg, err := Parse(nil)
-	if err != nil {
-		t.Fatalf("Parse returned error: %v", err)
-	}
-	if !cfg.EnableQPCounters {
-		t.Fatal("expected QP RDMA counters to be enabled by env")
+	out := buf.String()
+	if !strings.Contains(out, "has been removed") || !strings.Contains(out, "--collector.qp-counters") {
+		t.Fatalf("stderr missing rename message: %q", out)
 	}
 }
 
-func TestQPCountersToggleFromFlag(t *testing.T) {
-	t.Setenv("RDMA_EXPORTER_ENABLE_RDMA_QP_COUNTERS", "false")
+func TestHelpFromParseOmitsRemovedAndNoCollectorFlags(t *testing.T) {
+	var buf bytes.Buffer
+	orig := parseOutput
+	parseOutput = &buf
+	t.Cleanup(func() { parseOutput = orig })
 
-	cfg, err := Parse([]string{"--enable-rdma-qp-counters=true"})
-	if err != nil {
-		t.Fatalf("Parse returned error: %v", err)
+	_, err := Parse([]string{"-h"})
+	if !errors.Is(err, flag.ErrHelp) {
+		t.Fatalf("expected flag.ErrHelp, got %v", err)
 	}
-	if !cfg.EnableQPCounters {
-		t.Fatal("expected QP RDMA counters to be enabled by flag")
+	out := buf.String()
+	if !strings.Contains(out, "-collector.ethtool") {
+		t.Fatalf("help missing -collector.ethtool:\n%s", out)
 	}
-}
-
-func TestQPCountersToggleRejectsInvalidEnv(t *testing.T) {
-	t.Setenv("RDMA_EXPORTER_ENABLE_RDMA_QP_COUNTERS", "notabool")
-
-	if _, err := Parse(nil); err == nil {
-		t.Fatal("expected error for invalid RDMA_EXPORTER_ENABLE_RDMA_QP_COUNTERS")
+	if strings.Contains(out, "\n  -no-collector.") {
+		t.Fatalf("help listed --no-collector.* as its own flag:\n%s", out)
+	}
+	if strings.Contains(out, "enable-roce-pfc-metrics") {
+		t.Fatalf("help listed removed flag:\n%s", out)
 	}
 }
 

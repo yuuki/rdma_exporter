@@ -4,6 +4,7 @@ import (
 	"errors"
 	"flag"
 	"fmt"
+	"io"
 	"os"
 	"strconv"
 	"strings"
@@ -13,40 +14,72 @@ import (
 )
 
 const (
-	defaultListenAddress          = ":9879"
-	defaultMetricsPath            = "/metrics"
-	defaultHealthPath             = "/healthz"
-	defaultLogLevel               = "info"
-	defaultSysfsRoot              = "/sys"
-	defaultTimeout                = 5 * time.Second
-	defaultEnableRoCEPFC          = true
-	defaultEnableNetDevHW         = false
-	defaultEnableOptionalCounters = false
-	defaultEnableQPCounters       = false
+	defaultListenAddress             = ":9879"
+	defaultMetricsPath               = "/metrics"
+	defaultHealthPath                = "/healthz"
+	defaultLogLevel                  = "info"
+	defaultSysfsRoot                 = "/sys"
+	defaultTimeout                   = 5 * time.Second
+	defaultCollectorEthtool          = true
+	defaultCollectorOptionalCounters = true
+	defaultCollectorQPCounters       = false
+	collectorEthtoolName             = "ethtool"
+	collectorOptionalCountersName    = "optional-counters"
+	collectorQPCountersName          = "qp-counters"
 )
+
+var removedFlagReplacements = map[string]string{
+	"enable-roce-pfc-metrics":       "use --collector.ethtool (default true) or --no-collector.ethtool",
+	"enable-netdev-hw-metrics":      "use --collector.ethtool (default true) or --no-collector.ethtool",
+	"enable-rdma-optional-counters": "use --collector.optional-counters (default true) or --no-collector.optional-counters",
+	"enable-rdma-qp-counters":       "use --collector.qp-counters (default false)",
+}
+
+var removedEnvReplacements = map[string]string{
+	"RDMA_EXPORTER_ENABLE_ROCE_PFC_METRICS":       "use RDMA_EXPORTER_COLLECTOR_ETHTOOL or --collector.ethtool / --no-collector.ethtool",
+	"RDMA_EXPORTER_ENABLE_NETDEV_HW_METRICS":      "use RDMA_EXPORTER_COLLECTOR_ETHTOOL or --collector.ethtool / --no-collector.ethtool",
+	"RDMA_EXPORTER_ENABLE_RDMA_OPTIONAL_COUNTERS": "use RDMA_EXPORTER_COLLECTOR_OPTIONAL_COUNTERS or --collector.optional-counters / --no-collector.optional-counters",
+	"RDMA_EXPORTER_ENABLE_RDMA_QP_COUNTERS":       "use RDMA_EXPORTER_COLLECTOR_QP_COUNTERS or --collector.qp-counters",
+}
+
+var parseOutput io.Writer = os.Stderr
+
+func logParseError(err error) error {
+	if err != nil {
+		fmt.Fprintln(parseOutput, err)
+	}
+	return err
+}
 
 // Config captures runtime configuration options.
 type Config struct {
-	ListenAddress          string
-	MetricsPath            string
-	HealthPath             string
-	LogLevel               slog.Level
-	SysfsRoot              string
-	ScrapeTimeout          time.Duration
-	EnableRoCEPFCMetrics   bool
-	EnableNetDevHWMetrics  bool
-	EnableOptionalCounters bool
-	EnableQPCounters       bool
-	ExcludeDevices         []string
-	ShowVersion            bool
+	ListenAddress             string
+	MetricsPath               string
+	HealthPath                string
+	LogLevel                  slog.Level
+	SysfsRoot                 string
+	ScrapeTimeout             time.Duration
+	CollectorEthtool          bool
+	CollectorOptionalCounters bool
+	CollectorQPCounters       bool
+	ExcludeDevices            []string
+	ShowVersion               bool
 }
 
 // Parse constructs a Config from command-line flags and environment variables.
 func Parse(args []string) (Config, error) {
 	var cfg Config
 
+	if err := rejectRemovedAndValuedNoCollector(args); err != nil {
+		return cfg, logParseError(err)
+	}
+
 	fs := flag.NewFlagSet("rdma_exporter", flag.ContinueOnError)
-	fs.SetOutput(os.Stderr)
+	fs.SetOutput(parseOutput)
+	fs.Usage = func() {
+		fmt.Fprintf(fs.Output(), "Usage of %s:\n", fs.Name())
+		printFlagDefaults(fs)
+	}
 
 	listen := fs.String("listen-address", envOrDefault("RDMA_EXPORTER_LISTEN_ADDRESS", defaultListenAddress), "Address to listen on for HTTP requests.")
 	metricsPath := fs.String("metrics-path", envOrDefault("RDMA_EXPORTER_METRICS_PATH", defaultMetricsPath), "HTTP path under which metrics are served.")
@@ -55,35 +88,32 @@ func Parse(args []string) (Config, error) {
 	sysfsRoot := fs.String("sysfs-root", envOrDefault("RDMA_EXPORTER_SYSFS_ROOT", defaultSysfsRoot), "Root of the sysfs tree to read RDMA data from.")
 	excludeDevices := fs.String("exclude-devices", envOrDefault("RDMA_EXPORTER_EXCLUDE_DEVICES", ""), "Comma-separated list of RDMA devices to exclude from monitoring (e.g., mlx5_0,mlx5_1).")
 
-	enableRoCEPFCDefault, err := boolEnvOrDefault("RDMA_EXPORTER_ENABLE_ROCE_PFC_METRICS", defaultEnableRoCEPFC)
+	collectorEthtool, err := boolEnvOrDefault("RDMA_EXPORTER_COLLECTOR_ETHTOOL", defaultCollectorEthtool)
 	if err != nil {
-		return cfg, err
+		return cfg, logParseError(err)
 	}
-	enableRoCEPFCMetrics := fs.Bool("enable-roce-pfc-metrics", enableRoCEPFCDefault, "Enable collection of RoCEv2 PFC metrics from netdev ethtool stats.")
+	registerCollectorFlag(fs, collectorEthtoolName, &collectorEthtool,
+		"Enable ethtool collector (RoCEv2 PFC and netdev hardware families). Disable with --no-collector.ethtool.")
 
-	enableNetDevHWDefault, err := boolEnvOrDefault("RDMA_EXPORTER_ENABLE_NETDEV_HW_METRICS", defaultEnableNetDevHW)
+	collectorOptional, err := boolEnvOrDefault("RDMA_EXPORTER_COLLECTOR_OPTIONAL_COUNTERS", defaultCollectorOptionalCounters)
 	if err != nil {
-		return cfg, err
+		return cfg, logParseError(err)
 	}
-	enableNetDevHWMetrics := fs.Bool("enable-netdev-hw-metrics", enableNetDevHWDefault, "Enable collection of netdev ethtool hardware counters (buffer, PCIe, PHY/FEC, IEEE 802.3x global pause, pause storm, vport RDMA). Linux only, opt-in.")
+	registerCollectorFlag(fs, collectorOptionalCountersName, &collectorOptional,
+		"Enable optional RDMA hardware counters (mlx5 cc_* and rdma_{rx,tx}_{bytes,packets}) via NETLINK_RDMA. The exporter never enables counters; use rdma statistic set. Disable with --no-collector.optional-counters.")
 
-	enableOptionalDefault, err := boolEnvOrDefault("RDMA_EXPORTER_ENABLE_RDMA_OPTIONAL_COUNTERS", defaultEnableOptionalCounters)
+	collectorQP, err := boolEnvOrDefault("RDMA_EXPORTER_COLLECTOR_QP_COUNTERS", defaultCollectorQPCounters)
 	if err != nil {
-		return cfg, err
+		return cfg, logParseError(err)
 	}
-	enableOptionalCounters := fs.Bool("enable-rdma-optional-counters", enableOptionalDefault, "Enable optional RDMA hardware counters (mlx5 cc_* and rdma_{rx,tx}_{bytes,packets}) via NETLINK_RDMA. The exporter never enables counters; use rdma statistic set.")
-
-	enableQPDefault, err := boolEnvOrDefault("RDMA_EXPORTER_ENABLE_RDMA_QP_COUNTERS", defaultEnableQPCounters)
-	if err != nil {
-		return cfg, err
-	}
-	enableQPCounters := fs.Bool("enable-rdma-qp-counters", enableQPDefault, "Enable live auto-type QP counters via NETLINK_RDMA GET/DUMP. The exporter never binds QPs or enables auto mode; use rdma statistic qp set.")
+	registerCollectorFlag(fs, collectorQPCountersName, &collectorQP,
+		"Enable live auto-type QP counters via NETLINK_RDMA GET/DUMP. Off by default because the dump can exhaust the scrape timeout on dense hosts. The exporter never binds QPs or enables auto mode; use rdma statistic qp set.")
 
 	timeoutDefault := defaultTimeout
 	if envTimeout := os.Getenv("RDMA_EXPORTER_SCRAPE_TIMEOUT"); envTimeout != "" {
 		parsed, err := time.ParseDuration(envTimeout)
 		if err != nil {
-			return cfg, fmt.Errorf("invalid RDMA_EXPORTER_SCRAPE_TIMEOUT: %w", err)
+			return cfg, logParseError(fmt.Errorf("invalid RDMA_EXPORTER_SCRAPE_TIMEOUT: %w", err))
 		}
 		timeoutDefault = parsed
 	}
@@ -99,24 +129,39 @@ func Parse(args []string) (Config, error) {
 
 	level, err := parseLogLevel(*logLevel)
 	if err != nil {
-		return cfg, err
+		return cfg, logParseError(err)
 	}
 
 	cfg = Config{
-		ListenAddress:          *listen,
-		MetricsPath:            *metricsPath,
-		HealthPath:             *healthPath,
-		LogLevel:               level,
-		SysfsRoot:              *sysfsRoot,
-		ScrapeTimeout:          *scrapeTimeout,
-		EnableRoCEPFCMetrics:   *enableRoCEPFCMetrics,
-		EnableNetDevHWMetrics:  *enableNetDevHWMetrics,
-		EnableOptionalCounters: *enableOptionalCounters,
-		EnableQPCounters:       *enableQPCounters,
-		ExcludeDevices:         parseDeviceList(*excludeDevices),
-		ShowVersion:            *showVersion,
+		ListenAddress:             *listen,
+		MetricsPath:               *metricsPath,
+		HealthPath:                *healthPath,
+		LogLevel:                  level,
+		SysfsRoot:                 *sysfsRoot,
+		ScrapeTimeout:             *scrapeTimeout,
+		CollectorEthtool:          collectorEthtool,
+		CollectorOptionalCounters: collectorOptional,
+		CollectorQPCounters:       collectorQP,
+		ExcludeDevices:            parseDeviceList(*excludeDevices),
+		ShowVersion:               *showVersion,
+	}
+
+	if cfg.ShowVersion {
+		return cfg, nil
+	}
+	if err := rejectRemovedEnv(); err != nil {
+		return Config{}, logParseError(err)
 	}
 	return cfg, nil
+}
+
+func rejectRemovedEnv() error {
+	for key, replacement := range removedEnvReplacements {
+		if _, ok := os.LookupEnv(key); ok {
+			return fmt.Errorf("environment variable %s has been removed; %s", key, replacement)
+		}
+	}
+	return nil
 }
 
 func envOrDefault(key, fallback string) string {

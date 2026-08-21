@@ -677,7 +677,7 @@
     },
     {
       "datasource": "$ds",
-      "description": "mlx5 optional CC counters from RDMA netlink, not sysfs hw_counters. Distinct from always-on NP/RP (rdma_np_*, rdma_rp_*). Requires --enable-rdma-optional-counters. Counters must already be enabled; rdma statistic set replaces the whole list. The exporter never issues STAT_SET.",
+      "description": "mlx5 optional CC counters from RDMA netlink, not sysfs hw_counters. Distinct from always-on NP/RP (rdma_np_*, rdma_rp_*). Enabled by default (--collector.optional-counters). Counters must already be enabled; rdma statistic set replaces the whole list. The exporter never issues STAT_SET.",
       "fieldConfig": {
         "defaults": {
           "color": {
@@ -747,7 +747,7 @@
     },
     {
       "datasource": "$ds",
-      "description": "1 means the named optional counter is enabled; 0 means supported but disabled. Filtered to names matching ^cc_.*. Requires --enable-rdma-optional-counters. The exporter never enables counters.",
+      "description": "1 means the named optional counter is enabled; 0 means supported but disabled. Filtered to names matching ^cc_.*. Enabled by default (--collector.optional-counters). The exporter never enables counters.",
       "fieldConfig": {
         "defaults": {
           "color": {
@@ -1019,7 +1019,7 @@
     },
     {
       "datasource": "$ds",
-      "description": "Fraction of time outbound PCI stall exceeded 30%. Primary PCIe stall signal. Requires --enable-netdev-hw-metrics. The 1-second percent gauge is sampled context only; do not rate() it.",
+      "description": "Fraction of time outbound PCI stall exceeded 30%. Primary PCIe stall signal. Enabled by default (--collector.ethtool). The 1-second percent gauge is sampled context only; do not rate() it.",
       "fieldConfig": {
         "defaults": {
           "color": {
@@ -1073,7 +1073,7 @@
     },
     {
       "datasource": "$ds",
-      "description": "Interval FEC/BER sample ratios, not instantaneous instruments. Requires --enable-netdev-hw-metrics. Use increase(error)/increase(bits) rather than lifetime totals.",
+      "description": "Interval FEC/BER sample ratios, not instantaneous instruments. Enabled by default (--collector.ethtool). Use increase(error)/increase(bits) rather than lifetime totals.",
       "fieldConfig": {
         "defaults": {
           "color": {
@@ -1135,7 +1135,7 @@
     },
     {
       "datasource": "$ds",
-      "description": "IEEE 802.3x pause occupancy in seconds per second (duration counter is microseconds). Requires --enable-netdev-hw-metrics. Keys exist only in global pause mode, not PFC. direction=rx: this NIC received a pause request. direction=tx: this NIC transmitted a pause request. Observation only; do not treat as root cause.",
+      "description": "IEEE 802.3x pause occupancy in seconds per second (duration counter is microseconds). Enabled by default (--collector.ethtool). Keys exist only in global pause mode, not PFC. direction=rx: this NIC received a pause request. direction=tx: this NIC transmitted a pause request. Observation only; do not treat as root cause.",
       "fieldConfig": {
         "defaults": {
           "color": {
@@ -1189,7 +1189,7 @@
     },
     {
       "datasource": "$ds",
-      "description": "Times the device sent pause frames for a long period. Requires --enable-netdev-hw-metrics. severity=warning: stalled past a watermark. severity=error: timed out and pause TX was disabled; drops may have occurred. Observation only.",
+      "description": "Times the device sent pause frames for a long period. Enabled by default (--collector.ethtool). severity=warning: stalled past a watermark. severity=error: timed out and pause TX was disabled; drops may have occurred. Observation only.",
       "fieldConfig": {
         "defaults": {
           "color": {
@@ -1243,7 +1243,7 @@
     },
     {
       "datasource": "$ds",
-      "description": "IEEE 802.3x pause frames per second. Requires --enable-netdev-hw-metrics. Keys exist only in global pause mode, not PFC. direction=rx: pause frames received. direction=tx: pause frames transmitted. Observation only; do not treat as root cause.",
+      "description": "IEEE 802.3x pause frames per second. Enabled by default (--collector.ethtool). Keys exist only in global pause mode, not PFC. direction=rx: pause frames received. direction=tx: pause frames transmitted. Observation only; do not treat as root cause.",
       "fieldConfig": {
         "defaults": {
           "color": {
@@ -1297,7 +1297,7 @@
     },
     {
       "datasource": "$ds",
-      "description": "IEEE 802.3x XOFF-to-XON transitions per second from ethtool rx_global_pause_transition. Requires --enable-netdev-hw-metrics. mlx5 exposes receive only. Keys exist only in global pause mode.",
+      "description": "IEEE 802.3x XOFF-to-XON transitions per second from ethtool rx_global_pause_transition. Enabled by default (--collector.ethtool). mlx5 exposes receive only. Keys exist only in global pause mode.",
       "fieldConfig": {
         "defaults": {
           "color": {
@@ -1351,7 +1351,7 @@
     },
     {
       "datasource": "$ds",
-      "description": "Live auto-type bound user QP byte rate. Do not add to sysfs rdma_<name>_total. Requires --enable-rdma-qp-counters. Series appear only when QP optional-counters are on and the dump contains rdma_rx_bytes / rdma_tx_bytes. Some mlx5 QP counters are 32-bit; prefer short rate() windows.",
+      "description": "Live auto-type bound user QP byte rate. Do not add to sysfs rdma_<name>_total. Requires --collector.qp-counters. Series appear only when QP optional-counters are on and the dump contains rdma_rx_bytes / rdma_tx_bytes. Some mlx5 QP counters are 32-bit; prefer short rate() windows.",
       "fieldConfig": {
         "defaults": {
           "color": {
@@ -1413,7 +1413,7 @@
     },
     {
       "datasource": "$ds",
-      "description": "Live auto-type bound user QP packet rate. Do not add to sysfs rdma_<name>_total. Requires --enable-rdma-qp-counters. Series appear only when QP optional-counters are on and the dump contains rdma_rx_packets / rdma_tx_packets. Some mlx5 QP counters are 32-bit; prefer short rate() windows.",
+      "description": "Live auto-type bound user QP packet rate. Do not add to sysfs rdma_<name>_total. Requires --collector.qp-counters. Series appear only when QP optional-counters are on and the dump contains rdma_rx_packets / rdma_tx_packets. Some mlx5 QP counters are 32-bit; prefer short rate() windows.",
       "fieldConfig": {
         "defaults": {
           "color": {
@@ -1475,7 +1475,7 @@
     },
     {
       "datasource": "$ds",
-      "description": "Link-wide mlx5 optional flow-counter octets (netlink rdma_{rx,tx}_bytes). Not sysfs port_rcv_data (doublewords; do not multiply by 4). Not rdma_qp_*. Not rdma_netdev_vport_rdma_*. Same-direction packet and byte names share one flow counter. Requires --enable-rdma-optional-counters only; does not need --enable-rdma-qp-counters or QP optional-counters on. Linux 6.15+ for these names.",
+      "description": "Link-wide mlx5 optional flow-counter octets (netlink rdma_{rx,tx}_bytes). Not sysfs port_rcv_data (doublewords; do not multiply by 4). Not rdma_qp_*. Not rdma_netdev_vport_rdma_*. Same-direction packet and byte names share one flow counter. Enabled by default (--collector.optional-counters); does not need --collector.qp-counters or QP optional-counters on. Linux 6.15+ for these names.",
       "fieldConfig": {
         "defaults": {
           "color": {
@@ -1537,7 +1537,7 @@
     },
     {
       "datasource": "$ds",
-      "description": "Link-wide mlx5 optional flow-counter packets (netlink rdma_{rx,tx}_packets). Not sysfs port packet counters. Not rdma_qp_*. Not rdma_netdev_vport_rdma_*. Same-direction packet and byte names share one flow counter. Requires --enable-rdma-optional-counters only; does not need --enable-rdma-qp-counters or QP optional-counters on. Linux 6.15+ for these names.",
+      "description": "Link-wide mlx5 optional flow-counter packets (netlink rdma_{rx,tx}_packets). Not sysfs port packet counters. Not rdma_qp_*. Not rdma_netdev_vport_rdma_*. Same-direction packet and byte names share one flow counter. Enabled by default (--collector.optional-counters); does not need --collector.qp-counters or QP optional-counters on. Linux 6.15+ for these names.",
       "fieldConfig": {
         "defaults": {
           "color": {

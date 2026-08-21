@@ -24,7 +24,7 @@ import (
 )
 
 var (
-	version = "0.6.0"
+	version = "0.7.0"
 	commit  = "unknown"
 )
 
@@ -50,10 +50,9 @@ func main() {
 		"health_path", cfg.HealthPath,
 		"scrape_timeout", cfg.ScrapeTimeout.String(),
 		"sysfs_root", cfg.SysfsRoot,
-		"enable_roce_pfc_metrics", cfg.EnableRoCEPFCMetrics,
-		"enable_netdev_hw_metrics", cfg.EnableNetDevHWMetrics,
-		"enable_rdma_optional_counters", cfg.EnableOptionalCounters,
-		"enable_rdma_qp_counters", cfg.EnableQPCounters,
+		"collector_ethtool", cfg.CollectorEthtool,
+		"collector_optional_counters", cfg.CollectorOptionalCounters,
+		"collector_qp_counters", cfg.CollectorQPCounters,
 	)
 
 	provider := rdma.NewSysfsProvider()
@@ -67,24 +66,20 @@ func main() {
 
 	collectorOpts := make([]collector.Option, 0, 5)
 	var ethtoolProvider *netdev.EthtoolStatsProvider
-	if cfg.EnableRoCEPFCMetrics || cfg.EnableNetDevHWMetrics {
+	if cfg.CollectorEthtool {
+		collectorOpts = append(collectorOpts, collector.WithEthtoolCollector())
 		ethtoolStatsProvider, err := netdev.NewEthtoolStatsProvider()
 		if err != nil {
-			logger.Warn("failed to initialize netdev ethtool stats provider; netdev metrics are disabled", "err", err)
+			logger.Warn("failed to initialize netdev ethtool stats provider; ethtool metrics are disabled", "err", err)
 		} else {
 			ethtoolProvider = ethtoolStatsProvider
 			collectorOpts = append(collectorOpts, collector.WithNetDevStatsProvider(ethtoolStatsProvider))
-			if !cfg.EnableRoCEPFCMetrics {
-				collectorOpts = append(collectorOpts, collector.WithRoCEPFCMetrics(false))
-			}
-			if cfg.EnableNetDevHWMetrics {
-				collectorOpts = append(collectorOpts, collector.WithNetDevHWMetrics(true))
-			}
 		}
 	}
 
 	var optionalProvider *rdmanl.Provider
-	if cfg.EnableOptionalCounters {
+	if cfg.CollectorOptionalCounters {
+		collectorOpts = append(collectorOpts, collector.WithOptionalCollector())
 		optionalCounters, err := rdmanl.New()
 		if err != nil {
 			logger.Warn("failed to initialize optional RDMA counter provider; optional counters are disabled", "err", err)
@@ -95,7 +90,8 @@ func main() {
 	}
 
 	var qpProvider *rdmanl.Provider
-	if cfg.EnableQPCounters {
+	if cfg.CollectorQPCounters {
+		collectorOpts = append(collectorOpts, collector.WithQPCollector())
 		qpCounters, err := rdmanl.New()
 		if err != nil {
 			logger.Warn("failed to initialize QP counter provider; QP counters are disabled", "err", err)
