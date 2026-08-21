@@ -16,7 +16,7 @@ High-performance computing clusters and low-latency trading platforms increasing
 - **Metrics**:
   - Port-level and hardware counters (`rdma_<counter>_total`) aligned with NVIDIA documentation (e.g. `rdma_port_xmit_data_total`, `rdma_symbol_error_total`, `rdma_duplicate_request_total`).
   - Sysfs `hw_counters/lifespan` as `rdma_lifespan_milliseconds` (Gauge, milliseconds). It is a configuration knob, not a cumulative counter.
-  - Port metadata (`rdma_port_info`) with value `1` and descriptive labels, including `netdev` from sysfs `gid_attrs/ndevs`.
+  - Port metadata (`rdma_port_info`) with value `1` and descriptive labels, including `netdev` from the first non-empty sysfs `gid_attrs/ndevs` entry (empty if none). Sysfs, optional, and QP counters stay `{device,port}`; join with `* on(instance, device, port) group_left(netdev) rdma_port_info`. Adding `netdev` changes the `rdma_port_info` series identity.
   - RoCEv2 PFC and ethtool hardware counters (`rdma_roce_pfc_*`, `rdma_netdev_*`, `rdma_pcie_*`, `rdma_phy_*`, including IEEE 802.3x global pause, pause storm, and vport RDMA) behind `--collector.ethtool` (default on).
   - Optional hardware counters from RDMA netlink (`rdma_optional_counter_enabled`, `rdma_cc_*_total`, `rdma_optional_{rx,tx}_{bytes,packets}_total`) behind `--collector.optional-counters` (default on). The exporter never enables counters.
   - Live auto-type QP counters (`rdma_qp_*`) behind `--collector.qp-counters` (default off). The exporter never binds QPs or enables auto mode. These are not a partition of sysfs port totals.

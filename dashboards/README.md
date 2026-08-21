@@ -8,7 +8,7 @@ This README describes the bundled Grafana dashboard `rdma_exporter_dashboard.jso
 - Prometheus scraping the exporter at an interval that matches your operational needs (the dashboard defaults to 1m/5m/15m range selectors).
 
 ## Data Pipeline
-1. `rdma_exporter` traverses the RDMA sysfs hierarchy and exposes counters such as `rdma_port_rcv_data_total` and `rdma_port_xmit_wait_total`, along with the `rdma_port_info` gauge that carries metadata (device, port, link state, speed, width, etc.).
+1. `rdma_exporter` traverses the RDMA sysfs hierarchy and exposes counters such as `rdma_port_rcv_data_total` and `rdma_port_xmit_wait_total`, along with the `rdma_port_info` gauge that carries metadata (device, port, netdev, link state, speed, width, etc.).
 2. Prometheus scrapes the exporter and stores the metrics with labels `job`, `instance`, `device`, and `port`.
 3. Grafana queries Prometheus using the expressions embedded in the dashboard panels and renders time-series, single-stat, and table visualizations for operators.
 
