@@ -1425,7 +1425,7 @@ func TestCollectorOmitsUndocumentedOptionalTotals(t *testing.T) {
 	}
 	opt := newStubOptionalCounterProvider()
 	opt.counters["mlx5_0/1"] = []rdmanl.OptionalCounter{
-		{Name: "rdma_rx_packets", Enabled: true, Value: 99, HasValue: true},
+		{Name: "rdma_foo", Enabled: true, Value: 99, HasValue: true},
 		{Name: "cc_rx_ce_pkts", Enabled: true, Value: 11, HasValue: true},
 	}
 
@@ -1440,14 +1440,405 @@ rdma_cc_rx_ce_pkts_total{device="mlx5_0",port="1"} 11
 # HELP rdma_optional_counter_enabled Whether an optional RDMA hardware counter is enabled on the port. 1 means currently enabled; 0 means supported but disabled. The exporter never enables counters.
 # TYPE rdma_optional_counter_enabled gauge
 rdma_optional_counter_enabled{counter="cc_rx_ce_pkts",device="mlx5_0",port="1"} 1
-rdma_optional_counter_enabled{counter="rdma_rx_packets",device="mlx5_0",port="1"} 1
+rdma_optional_counter_enabled{counter="rdma_foo",device="mlx5_0",port="1"} 1
 `
 	if err := testutil.GatherAndCompare(reg, strings.NewReader(expected),
 		"rdma_optional_counter_enabled",
 		"rdma_cc_rx_ce_pkts_total",
-		"rdma_rdma_rx_packets_total",
+		"rdma_foo_total",
+		"rdma_rdma_foo_total",
+		"rdma_optional_rdma_foo_total",
+		"rdma_optional_foo_total",
 	); err != nil {
 		t.Fatalf("unexpected optional counter metrics: %v", err)
+	}
+}
+
+func TestOptionalTrafficMetricName(t *testing.T) {
+	t.Parallel()
+
+	want := map[string]string{
+		"rdma_rx_bytes":   "rdma_optional_rx_bytes_total",
+		"rdma_tx_bytes":   "rdma_optional_tx_bytes_total",
+		"rdma_rx_packets": "rdma_optional_rx_packets_total",
+		"rdma_tx_packets": "rdma_optional_tx_packets_total",
+	}
+	if len(optionalTrafficSpecs) != len(want) {
+		t.Fatalf("optionalTrafficSpecs has %d entries, want %d", len(optionalTrafficSpecs), len(want))
+	}
+	for netlinkName, metricName := range want {
+		got, ok := optionalTrafficMetricName(netlinkName)
+		if !ok {
+			t.Fatalf("optionalTrafficMetricName(%q) missing", netlinkName)
+		}
+		if got != metricName {
+			t.Fatalf("optionalTrafficMetricName(%q)=%q, want %q", netlinkName, got, metricName)
+		}
+		if strings.Contains(got, "rdma_optional_rdma_") {
+			t.Fatalf("optionalTrafficMetricName(%q) kept a doubled rdma_ prefix: %q", netlinkName, got)
+		}
+	}
+	if _, ok := optionalTrafficMetricName("rdma_foo"); ok {
+		t.Fatal("optionalTrafficMetricName(rdma_foo) should be unmapped")
+	}
+	if _, ok := optionalTrafficMetricName("cc_rx_ce_pkts"); ok {
+		t.Fatal("optionalTrafficMetricName(cc_rx_ce_pkts) should stay on the cc_* path")
+	}
+
+	sysfsName := buildMetricName("rx_bytes", map[string]metricEntry{})
+	if sysfsName != "rdma_rx_bytes_total" {
+		t.Fatalf("sysfs buildMetricName(rx_bytes)=%q, want rdma_rx_bytes_total", sysfsName)
+	}
+	if qpCounterMetricName("rdma_rx_bytes") != "rdma_qp_rx_bytes_total" {
+		t.Fatalf("qpCounterMetricName(rdma_rx_bytes)=%q, want rdma_qp_rx_bytes_total", qpCounterMetricName("rdma_rx_bytes"))
+	}
+
+	for _, help := range []string{optionalTrafficBytesHelp, optionalTrafficPacketsHelp} {
+		lower := strings.ToLower(help)
+		if strings.Contains(lower, "ethtool") {
+			t.Fatalf("optional traffic HELP must not mention ethtool: %q", help)
+		}
+		if strings.Contains(lower, "all qp") {
+			t.Fatalf("optional traffic HELP must not say all QPs: %q", help)
+		}
+		for _, phrase := range []string{"flow counter", "Linux 6.15", "never enables"} {
+			if !strings.Contains(help, phrase) {
+				t.Fatalf("optional traffic HELP missing %q: %q", phrase, help)
+			}
+		}
+	}
+}
+
+func TestCollectorExportsOptionalTrafficTotals(t *testing.T) {
+	t.Parallel()
+
+	provider := &stubProvider{
+		devices: []rdma.Device{
+			{
+				Name:  "mlx5_0",
+				Ports: []rdma.Port{{ID: 1}},
+			},
+		},
+	}
+	opt := newStubOptionalCounterProvider()
+	opt.counters["mlx5_0/1"] = []rdmanl.OptionalCounter{
+		{Name: "rdma_rx_bytes", Enabled: true, Value: 11, HasValue: true},
+		{Name: "rdma_tx_bytes", Enabled: true, Value: 22, HasValue: true},
+		{Name: "rdma_rx_packets", Enabled: true, Value: 33, HasValue: true},
+		{Name: "rdma_tx_packets", Enabled: true, Value: 44, HasValue: true},
+		{Name: "cc_rx_ce_pkts", Enabled: true, Value: 55, HasValue: true},
+	}
+
+	c := New(provider, newDiscardLogger(), WithOptionalCounterProvider(opt))
+	reg := prometheus.NewRegistry()
+	reg.MustRegister(c)
+
+	expected := `
+# HELP rdma_cc_rx_ce_pkts_total The number of received RoCEv2 packets marked Congestion Experienced (ECN CE). Optional mlx5 counter read via RDMA netlink; not present in sysfs hw_counters.
+# TYPE rdma_cc_rx_ce_pkts_total counter
+rdma_cc_rx_ce_pkts_total{device="mlx5_0",port="1"} 55
+# HELP rdma_optional_counter_enabled Whether an optional RDMA hardware counter is enabled on the port. 1 means currently enabled; 0 means supported but disabled. The exporter never enables counters.
+# TYPE rdma_optional_counter_enabled gauge
+rdma_optional_counter_enabled{counter="cc_rx_ce_pkts",device="mlx5_0",port="1"} 1
+rdma_optional_counter_enabled{counter="rdma_rx_bytes",device="mlx5_0",port="1"} 1
+rdma_optional_counter_enabled{counter="rdma_rx_packets",device="mlx5_0",port="1"} 1
+rdma_optional_counter_enabled{counter="rdma_tx_bytes",device="mlx5_0",port="1"} 1
+rdma_optional_counter_enabled{counter="rdma_tx_packets",device="mlx5_0",port="1"} 1
+# HELP rdma_optional_rx_bytes_total ` + optionalTrafficBytesHelp + `
+# TYPE rdma_optional_rx_bytes_total counter
+rdma_optional_rx_bytes_total{device="mlx5_0",port="1"} 11
+# HELP rdma_optional_rx_packets_total ` + optionalTrafficPacketsHelp + `
+# TYPE rdma_optional_rx_packets_total counter
+rdma_optional_rx_packets_total{device="mlx5_0",port="1"} 33
+# HELP rdma_optional_tx_bytes_total ` + optionalTrafficBytesHelp + `
+# TYPE rdma_optional_tx_bytes_total counter
+rdma_optional_tx_bytes_total{device="mlx5_0",port="1"} 22
+# HELP rdma_optional_tx_packets_total ` + optionalTrafficPacketsHelp + `
+# TYPE rdma_optional_tx_packets_total counter
+rdma_optional_tx_packets_total{device="mlx5_0",port="1"} 44
+`
+	if err := testutil.GatherAndCompare(reg, strings.NewReader(expected),
+		"rdma_optional_counter_enabled",
+		"rdma_cc_rx_ce_pkts_total",
+		"rdma_optional_rx_bytes_total",
+		"rdma_optional_tx_bytes_total",
+		"rdma_optional_rx_packets_total",
+		"rdma_optional_tx_packets_total",
+		"rdma_rx_bytes_total",
+		"rdma_rdma_rx_bytes_total",
+		"rdma_optional_rdma_rx_bytes_total",
+	); err != nil {
+		t.Fatalf("unexpected optional traffic metrics: %v", err)
+	}
+}
+
+func TestCollectorDescribesOptionalTrafficDescs(t *testing.T) {
+	t.Parallel()
+
+	provider := &stubProvider{
+		devices: []rdma.Device{
+			{
+				Name:  "mlx5_0",
+				Ports: []rdma.Port{{ID: 1}},
+			},
+		},
+	}
+	opt := newStubOptionalCounterProvider()
+	opt.counters["mlx5_0/1"] = []rdmanl.OptionalCounter{
+		{Name: "rdma_rx_bytes", Enabled: true, Value: 1, HasValue: true},
+		{Name: "rdma_tx_bytes", Enabled: true, Value: 2, HasValue: true},
+		{Name: "rdma_rx_packets", Enabled: true, Value: 3, HasValue: true},
+		{Name: "rdma_tx_packets", Enabled: true, Value: 4, HasValue: true},
+	}
+
+	c := New(provider, newDiscardLogger(), WithOptionalCounterProvider(opt))
+	reg := prometheus.NewPedanticRegistry()
+	reg.MustRegister(c)
+
+	expected := `
+# HELP rdma_optional_rx_bytes_total ` + optionalTrafficBytesHelp + `
+# TYPE rdma_optional_rx_bytes_total counter
+rdma_optional_rx_bytes_total{device="mlx5_0",port="1"} 1
+# HELP rdma_optional_rx_packets_total ` + optionalTrafficPacketsHelp + `
+# TYPE rdma_optional_rx_packets_total counter
+rdma_optional_rx_packets_total{device="mlx5_0",port="1"} 3
+# HELP rdma_optional_tx_bytes_total ` + optionalTrafficBytesHelp + `
+# TYPE rdma_optional_tx_bytes_total counter
+rdma_optional_tx_bytes_total{device="mlx5_0",port="1"} 2
+# HELP rdma_optional_tx_packets_total ` + optionalTrafficPacketsHelp + `
+# TYPE rdma_optional_tx_packets_total counter
+rdma_optional_tx_packets_total{device="mlx5_0",port="1"} 4
+`
+	if err := testutil.GatherAndCompare(reg, strings.NewReader(expected),
+		"rdma_optional_rx_bytes_total",
+		"rdma_optional_tx_bytes_total",
+		"rdma_optional_rx_packets_total",
+		"rdma_optional_tx_packets_total",
+	); err != nil {
+		t.Fatalf("pedantic optional traffic describe/collect: %v", err)
+	}
+}
+
+func TestCollectorOptionalTrafficDisabledAndMissingValue(t *testing.T) {
+	t.Parallel()
+
+	cases := []struct {
+		name      string
+		counter   rdmanl.OptionalCounter
+		wantError bool
+	}{
+		{name: "rx_bytes_disabled", counter: rdmanl.OptionalCounter{Name: "rdma_rx_bytes", Enabled: false, Value: 11, HasValue: true}},
+		{name: "tx_bytes_disabled", counter: rdmanl.OptionalCounter{Name: "rdma_tx_bytes", Enabled: false, Value: 22, HasValue: true}},
+		{name: "rx_packets_disabled", counter: rdmanl.OptionalCounter{Name: "rdma_rx_packets", Enabled: false, Value: 33, HasValue: true}},
+		{name: "tx_packets_disabled", counter: rdmanl.OptionalCounter{Name: "rdma_tx_packets", Enabled: false, Value: 44, HasValue: true}},
+		{name: "rx_bytes_no_value", counter: rdmanl.OptionalCounter{Name: "rdma_rx_bytes", Enabled: true, HasValue: false}, wantError: true},
+		{name: "tx_bytes_no_value", counter: rdmanl.OptionalCounter{Name: "rdma_tx_bytes", Enabled: true, HasValue: false}, wantError: true},
+		{name: "rx_packets_no_value", counter: rdmanl.OptionalCounter{Name: "rdma_rx_packets", Enabled: true, HasValue: false}, wantError: true},
+		{name: "tx_packets_no_value", counter: rdmanl.OptionalCounter{Name: "rdma_tx_packets", Enabled: true, HasValue: false}, wantError: true},
+	}
+
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+
+			provider := &stubProvider{
+				devices: []rdma.Device{
+					{
+						Name:  "mlx5_0",
+						Ports: []rdma.Port{{ID: 1}},
+					},
+				},
+			}
+			opt := newStubOptionalCounterProvider()
+			opt.counters["mlx5_0/1"] = []rdmanl.OptionalCounter{tc.counter}
+
+			c := New(provider, newDiscardLogger(), WithOptionalCounterProvider(opt))
+			reg := prometheus.NewRegistry()
+			reg.MustRegister(c)
+
+			metricName, ok := optionalTrafficMetricName(tc.counter.Name)
+			if !ok {
+				t.Fatalf("missing metric mapping for %q", tc.counter.Name)
+			}
+			mfs, err := reg.Gather()
+			if err != nil {
+				t.Fatalf("unexpected gather error: %v", err)
+			}
+			for _, mf := range mfs {
+				name := mf.GetName()
+				if name == metricName || strings.Contains(name, "rdma_rdma_") || strings.Contains(name, "rdma_optional_rdma_") {
+					t.Fatalf("unexpected %s when %s", name, tc.name)
+				}
+			}
+			gotError := findMetricValue(t, mfs, "rdma_optional_counter_scrape_errors_total")
+			wantError := 0.0
+			if tc.wantError {
+				wantError = 1
+			}
+			if gotError != wantError {
+				t.Fatalf("scrape errors = %v, want %v", gotError, wantError)
+			}
+			enabled := 0.0
+			if tc.counter.Enabled {
+				enabled = 1
+			}
+			if got := findLabeledGauge(t, mfs, "rdma_optional_counter_enabled", "counter", tc.counter.Name); got != enabled {
+				t.Fatalf("enabled gauge = %v, want %v", got, enabled)
+			}
+		})
+	}
+}
+
+func TestCollectorOptionalTrafficWithSysfsRxBytes(t *testing.T) {
+	t.Parallel()
+
+	provider := &stubProvider{
+		devices: []rdma.Device{
+			{
+				Name: "mlx5_0",
+				Ports: []rdma.Port{
+					{
+						ID: 1,
+						HwStats: map[string]uint64{
+							"rx_bytes": 5,
+						},
+					},
+				},
+			},
+		},
+	}
+	opt := newStubOptionalCounterProvider()
+	opt.counters["mlx5_0/1"] = []rdmanl.OptionalCounter{
+		{Name: "rdma_rx_bytes", Enabled: true, Value: 99, HasValue: true},
+	}
+
+	c := New(provider, newDiscardLogger(), WithOptionalCounterProvider(opt))
+	reg := prometheus.NewRegistry()
+	reg.MustRegister(c)
+
+	expected := `
+# HELP rdma_optional_counter_enabled Whether an optional RDMA hardware counter is enabled on the port. 1 means currently enabled; 0 means supported but disabled. The exporter never enables counters.
+# TYPE rdma_optional_counter_enabled gauge
+rdma_optional_counter_enabled{counter="rdma_rx_bytes",device="mlx5_0",port="1"} 1
+# HELP rdma_optional_rx_bytes_total ` + optionalTrafficBytesHelp + `
+# TYPE rdma_optional_rx_bytes_total counter
+rdma_optional_rx_bytes_total{device="mlx5_0",port="1"} 99
+# HELP rdma_rx_bytes_total RDMA port hardware counter sourced from sysfs hw_counters.
+# TYPE rdma_rx_bytes_total counter
+rdma_rx_bytes_total{device="mlx5_0",port="1"} 5
+`
+	if err := testutil.GatherAndCompare(reg, strings.NewReader(expected),
+		"rdma_rx_bytes_total",
+		"rdma_optional_rx_bytes_total",
+		"rdma_optional_counter_enabled",
+	); err != nil {
+		t.Fatalf("unexpected sysfs rx_bytes collision metrics: %v", err)
+	}
+}
+
+func TestCollectorSkipsOptionalTrafficWhenSysfsHasRawName(t *testing.T) {
+	t.Parallel()
+
+	cases := []struct {
+		netlinkName    string
+		sysfsMetric    string
+		optionalMetric string
+	}{
+		{"rdma_rx_bytes", "rdma_rdma_rx_bytes_total", "rdma_optional_rx_bytes_total"},
+		{"rdma_tx_bytes", "rdma_rdma_tx_bytes_total", "rdma_optional_tx_bytes_total"},
+		{"rdma_rx_packets", "rdma_rdma_rx_packets_total", "rdma_optional_rx_packets_total"},
+		{"rdma_tx_packets", "rdma_rdma_tx_packets_total", "rdma_optional_tx_packets_total"},
+	}
+
+	for _, tc := range cases {
+		t.Run(tc.netlinkName, func(t *testing.T) {
+			t.Parallel()
+
+			provider := &stubProvider{
+				devices: []rdma.Device{
+					{
+						Name: "mlx5_0",
+						Ports: []rdma.Port{
+							{
+								ID: 1,
+								HwStats: map[string]uint64{
+									tc.netlinkName: 5,
+								},
+							},
+						},
+					},
+				},
+			}
+			opt := newStubOptionalCounterProvider()
+			opt.counters["mlx5_0/1"] = []rdmanl.OptionalCounter{
+				{Name: tc.netlinkName, Enabled: true, Value: 99, HasValue: true},
+			}
+
+			c := New(provider, newDiscardLogger(), WithOptionalCounterProvider(opt))
+			reg := prometheus.NewRegistry()
+			reg.MustRegister(c)
+
+			expected := `
+# HELP rdma_optional_counter_enabled Whether an optional RDMA hardware counter is enabled on the port. 1 means currently enabled; 0 means supported but disabled. The exporter never enables counters.
+# TYPE rdma_optional_counter_enabled gauge
+rdma_optional_counter_enabled{counter="` + tc.netlinkName + `",device="mlx5_0",port="1"} 1
+# HELP ` + tc.sysfsMetric + ` RDMA port hardware counter sourced from sysfs hw_counters.
+# TYPE ` + tc.sysfsMetric + ` counter
+` + tc.sysfsMetric + `{device="mlx5_0",port="1"} 5
+`
+			if err := testutil.GatherAndCompare(reg, strings.NewReader(expected),
+				tc.sysfsMetric,
+				tc.optionalMetric,
+				"rdma_optional_counter_enabled",
+			); err != nil {
+				t.Fatalf("unexpected raw-name skip metrics: %v", err)
+			}
+		})
+	}
+}
+
+func TestCollectorOptionalAndQPTrafficAreDistinct(t *testing.T) {
+	t.Parallel()
+
+	provider := &stubProvider{
+		devices: []rdma.Device{
+			{
+				Name:  "mlx5_0",
+				Ports: []rdma.Port{{ID: 1}},
+			},
+		},
+	}
+	opt := newStubOptionalCounterProvider()
+	opt.counters["mlx5_0/1"] = []rdmanl.OptionalCounter{
+		{Name: "rdma_rx_bytes", Enabled: true, Value: 10, HasValue: true},
+	}
+	qp := newStubQPProvider()
+	qp.modes["mlx5_0/1"] = rdmanl.QPMode{Mode: "auto", MaskType: true}
+	qp.sets["mlx5_0/1"] = []rdmanl.QPSet{
+		{
+			Mode:   "auto",
+			QPType: "RC",
+			Stats:  map[string]uint64{"rdma_rx_bytes": 3},
+		},
+	}
+
+	c := New(provider, newDiscardLogger(), WithOptionalCounterProvider(opt), WithQPCounterProvider(qp))
+	reg := prometheus.NewRegistry()
+	reg.MustRegister(c)
+
+	expected := `
+# HELP rdma_optional_rx_bytes_total ` + optionalTrafficBytesHelp + `
+# TYPE rdma_optional_rx_bytes_total counter
+rdma_optional_rx_bytes_total{device="mlx5_0",port="1"} 10
+# HELP rdma_qp_rx_bytes_total ` + qpCounterHelp + `
+# TYPE rdma_qp_rx_bytes_total counter
+rdma_qp_rx_bytes_total{device="mlx5_0",port="1",qp_type="RC"} 3
+`
+	if err := testutil.GatherAndCompare(reg, strings.NewReader(expected),
+		"rdma_optional_rx_bytes_total",
+		"rdma_qp_rx_bytes_total",
+	); err != nil {
+		t.Fatalf("unexpected optional+QP traffic metrics: %v", err)
 	}
 }
 
@@ -1570,6 +1961,9 @@ func TestCollectorOmitsOptionalMetricsWithoutProvider(t *testing.T) {
 	}
 	for _, mf := range mfs {
 		if mf.GetName() == "rdma_optional_counter_scrape_errors_total" || mf.GetName() == "rdma_optional_counter_enabled" {
+			t.Fatalf("unexpected metric %s without optional provider", mf.GetName())
+		}
+		if strings.HasPrefix(mf.GetName(), "rdma_optional_") {
 			t.Fatalf("unexpected metric %s without optional provider", mf.GetName())
 		}
 		if strings.HasPrefix(mf.GetName(), "rdma_qp_") {
@@ -2108,6 +2502,25 @@ func findMetricValue(t *testing.T, families []*dto.MetricFamily, name string) fl
 			return 0
 		}
 		return mf.Metric[0].GetCounter().GetValue()
+	}
+	t.Fatalf("metric %s not found", name)
+	return 0
+}
+
+func findLabeledGauge(t *testing.T, families []*dto.MetricFamily, name, label, value string) float64 {
+	t.Helper()
+	for _, mf := range families {
+		if mf.GetName() != name {
+			continue
+		}
+		for _, metric := range mf.Metric {
+			for _, pair := range metric.GetLabel() {
+				if pair.GetName() == label && pair.GetValue() == value {
+					return metric.GetGauge().GetValue()
+				}
+			}
+		}
+		t.Fatalf("metric %s with %s=%q not found", name, label, value)
 	}
 	t.Fatalf("metric %s not found", name)
 	return 0

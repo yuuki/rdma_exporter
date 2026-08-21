@@ -23,7 +23,7 @@ For details on GitHub Actions status badges, see the [official documentation](ht
 - Honors a configurable scrape timeout (`--scrape-timeout`) to protect long-running sysfs reads.
 - Optionally enriches RoCEv2 visibility with PFC counters from netdev ethtool stats (Linux only, best effort).
 - Optionally exports mlx5 ethtool hardware counters for NIC buffer drops, PCIe stalls, PHY/FEC, IEEE 802.3x global pause, pause storm, and vport RDMA traffic (opt-in, `--enable-netdev-hw-metrics`).
-- Optionally exports mlx5 congestion-control counters (`cc_*`) that sysfs omits, via RDMA netlink (`--enable-rdma-optional-counters`). The exporter never enables counters.
+- Optionally exports mlx5 congestion-control counters (`cc_*`) and link-wide optional traffic (`rdma_optional_{rx,tx}_{bytes,packets}_total`) that sysfs omits, via RDMA netlink (`--enable-rdma-optional-counters`). The exporter never enables counters.
 - Optionally exports live auto-type QP hardware counters (`rdma_qp_*`) via a separate RDMA netlink socket (`--enable-rdma-qp-counters`). The exporter never binds QPs or enables auto mode.
 
 ## Requirements
@@ -68,7 +68,7 @@ rdma statistic mode link mlx5_0/1
 ./rdma_exporter --enable-rdma-optional-counters
 ```
 
-To re-apply after boot or hotplug, use a root oneshot (not the `rdma_exporter` user). This example **owns** the complete optional-counter set as the three `cc_*` names; include any other optional counters you must keep in the same `set` line. Skip ports that do not advertise `cc_*`, and do not hide `set` failures:
+To re-apply after boot or hotplug, use a root oneshot (not the `rdma_exporter` user). This example **owns** the complete optional-counter set as the three `cc_*` names; include any other optional counters you must keep in the same `set` line (for port traffic totals, add `rdma_rx_bytes,rdma_tx_bytes,rdma_rx_packets,rdma_tx_packets`). Skip ports that do not advertise `cc_*`, and do not hide `set` failures:
 
 ```bash
 #!/bin/sh
@@ -119,23 +119,23 @@ sudo systemctl enable rdma-optional-counters.service
 
 Live QP statistic sets are a different path. The kernel's sysfs `hw_counters` already include the default pool plus every running allocated set plus history. A QP dump is only the sets currently bound; **do not add** `rdma_qp_*_total` to `rdma_<name>_total`. Auto mode applies to **new user QPs that go RST→INIT after enablement**; existing QPs and kernel QPs stay on the default pool. Enable auto type **before** the workload creates QPs (`CAP_NET_ADMIN`). `STAT_GET` / dump is unprivileged. The exporter never issues `STAT_SET`, bind, unbind, or `qp set auto`.
 
-`auto pid` and manual per-QP sets are visible on mode/mask gauges only; their values are not exported. Optional traffic counters (`rdma_rx_bytes`, `rdma_tx_bytes`, `rdma_rx_packets`, `rdma_tx_packets`) are exported from the same auto-type dump as `rdma_qp_rx_bytes_total` (and the tx/packets analogues). They appear only when the dump contains those keys. The exporter never enables them.
-
-Port-level `--enable-rdma-optional-counters` still emits `_total` only for `cc_*`. `rdma_optional_counter_enabled` continues to cover every optional name, including traffic counters that are on at the port but not yet on the QP set.
+`auto pid` and manual per-QP sets are visible on mode/mask gauges only; their values are not exported. Optional traffic dump keys (`rdma_rx_bytes`, `rdma_tx_bytes`, `rdma_rx_packets`, `rdma_tx_packets`) are exported from the same auto-type dump as `rdma_qp_rx_bytes_total` (and the tx/packets analogues). They appear only when the dump contains those keys. The exporter never enables them.
 
 ```bash
 sudo rdma statistic qp set link mlx5_0/1 auto type on
 ./rdma_exporter --enable-rdma-qp-counters
 ```
 
-Optional traffic uses the same exporter flag. The dump keys appear only after the operator enables the names in the port optional-set (`set` replaces the whole list) and turns QP `optional-counters on` (mlx5, Linux 6.15+), **before** user QPs go INIT:
+QP dump keys appear as `rdma_qp_*` only after the operator enables the names in the port optional-set (`set` replaces the whole list) and turns QP `optional-counters on` (mlx5, Linux 6.15+), **before** user QPs go INIT. That needs `--enable-rdma-qp-counters`. It is not a gate for port-level `rdma_optional_*`.
 
 ```bash
 sudo rdma statistic set link mlx5_0/1 optional-counters cc_rx_ce_pkts,cc_rx_cnp_pkts,cc_tx_cnp_pkts,rdma_rx_bytes,rdma_tx_bytes,rdma_rx_packets,rdma_tx_packets
 sudo rdma statistic qp set link mlx5_0/1 auto type on optional-counters on
 ```
 
-Re-apply after boot, driver reload, or VF hotplug with the same systemd oneshot + udev `SYSTEMD_WANTS` pattern as optional counters (`After=rdma-hw.target`; do not use udev `RUN+=`). Enablement is not persistent. Start the oneshot before RDMA applications.
+Port-level `--enable-rdma-optional-counters` emits `_total` for `cc_*` and, when the matching netlink names are enabled and a value was read, `rdma_optional_{rx,tx}_{bytes,packets}_total` from `rdma_{rx,tx}_{bytes,packets}`. These are link-wide mlx5 optional flow counters (Linux 6.15+), not sysfs `port_rcv_data`, not `rdma_qp_*`, and not `rdma_netdev_vport_rdma_*`. Packet and byte counters in the same direction share one hardware flow counter: a newly enabled sibling can include history while the other stays on, and the counter resets only after both names in that direction are disabled. `rdma_optional_counter_enabled` continues to cover every optional name. Port-level `rdma_optional_*` needs only the port optional-set and `--enable-rdma-optional-counters`; it does not need `--enable-rdma-qp-counters` or QP `optional-counters on`.
+
+The port optional-set and QP `auto` / `optional-counters on` are not persistent. Re-apply both after boot, driver reload, or VF hotplug with the same systemd oneshot + udev `SYSTEMD_WANTS` pattern (`After=rdma-hw.target`; do not use udev `RUN+=`). Start the oneshot before RDMA applications.
 
 Some mlx5 QP counters are 32-bit and can wrap. Prefer short `rate()` windows (on the order of the scrape interval) rather than long-range `increase()`.
 
@@ -154,7 +154,7 @@ Every CLI flag has an equivalent environment variable. Environment values provid
 | `--scrape-timeout` | `RDMA_EXPORTER_SCRAPE_TIMEOUT` | `5s` | Upper bound for metric gathering per scrape |
 | `--enable-roce-pfc-metrics` | `RDMA_EXPORTER_ENABLE_ROCE_PFC_METRICS` | `true` | Enable RoCEv2 PFC metric collection from netdev ethtool stats (Linux only). Does not enable buffer/PCIe/PHY, global pause, pause-storm, or vport RDMA counters. |
 | `--enable-netdev-hw-metrics` | `RDMA_EXPORTER_ENABLE_NETDEV_HW_METRICS` | `false` | Enable ethtool hardware counters for NIC buffer drops, PCIe stalls, PHY/FEC, IEEE 802.3x global pause, pause storm, and vport RDMA traffic (Linux only, opt-in). |
-| `--enable-rdma-optional-counters` | `RDMA_EXPORTER_ENABLE_RDMA_OPTIONAL_COUNTERS` | `false` | Enable optional RDMA hardware counters (Linux only, NETLINK_RDMA). The exporter never turns counters on. |
+| `--enable-rdma-optional-counters` | `RDMA_EXPORTER_ENABLE_RDMA_OPTIONAL_COUNTERS` | `false` | Enable optional RDMA hardware counters (mlx5 `cc_*` and `rdma_{rx,tx}_{bytes,packets}`) via NETLINK_RDMA. The exporter never turns counters on. |
 | `--enable-rdma-qp-counters` | `RDMA_EXPORTER_ENABLE_RDMA_QP_COUNTERS` | `false` | Enable live auto-type QP counters (Linux only, separate NETLINK_RDMA socket). The exporter never binds QPs or enables auto mode. |
 | `--exclude-devices` | `RDMA_EXPORTER_EXCLUDE_DEVICES` | `` | Comma-separated list of RDMA devices to exclude (e.g., `mlx5_0,mlx5_1`) |
 
@@ -171,9 +171,17 @@ Every CLI flag has an equivalent environment variable. Environment values provid
 - `rdma_netdev_scrape_errors_total{}` – Counter incremented when netdev hardware ethtool collection fails.
 - `rdma_optional_counter_enabled{device,port,counter}` – Gauge (`1`/`0`) for each optional hardware counter advertised by `rdma statistic mode`. Opt-in (`--enable-rdma-optional-counters`, Linux 5.16+).
 - `rdma_optional_counter_scrape_errors_total{}` – Counter incremented when optional-counter netlink collection fails, including an enabled counter whose value was missing in the same scrape.
-- `rdma_cc_rx_ce_pkts_total`, `rdma_cc_rx_cnp_pkts_total`, `rdma_cc_tx_cnp_pkts_total` – Optional mlx5 congestion-control counters from RDMA netlink. These never appear in sysfs `hw_counters` (`IB_STAT_FLAG_OPTIONAL`). They are distinct from the always-on NP/RP counters (`rdma_np_*`, `rdma_rp_*`). Values are emitted only for these three names, and only while the counter is enabled and a value was read. Other optional names (for example `rdma_rx_packets`) appear on `rdma_optional_counter_enabled`. Live auto-type QP dumps may also export them as `rdma_qp_rx_packets_total` when `--enable-rdma-qp-counters` is on and the dump contains the key.
+- `rdma_cc_rx_ce_pkts_total`, `rdma_cc_rx_cnp_pkts_total`, `rdma_cc_tx_cnp_pkts_total` – Optional mlx5 congestion-control counters from RDMA netlink. These never appear in sysfs `hw_counters` (`IB_STAT_FLAG_OPTIONAL`). They are distinct from the always-on NP/RP counters (`rdma_np_*`, `rdma_rp_*`). Values are emitted only while the counter is enabled and a value was read.
+- `rdma_optional_rx_bytes_total`, `rdma_optional_tx_bytes_total`, `rdma_optional_rx_packets_total`, `rdma_optional_tx_packets_total` – Link-wide mlx5 RDMA octets/packets from the enabled optional flow counter (netlink `rdma_{rx,tx}_{bytes,packets}`). Not sysfs `port_rcv_data` (doublewords). Not `rdma_qp_*`. Not `rdma_netdev_vport_rdma_*`. Same-direction packet and byte names share one flow counter (history can predate a newly enabled sibling; reset only after both are disabled). Status discovery needs Linux 5.16+; mlx5 added these names in Linux 6.15. Other unmapped optional names still appear only on `rdma_optional_counter_enabled`.
+
+```
+# TYPE rdma_optional_rx_bytes_total counter
+rdma_optional_rx_bytes_total{device="mlx5_0",port="1"} 123456
+# TYPE rdma_optional_rx_packets_total counter
+rdma_optional_rx_packets_total{device="mlx5_0",port="1"} 789
+```
 - `rdma_qp_counter_mode{device,port,mode}` / `rdma_qp_auto_mask{device,port,criteria}` – Port-level QP bind mode and auto mask (`none|auto|manual`, `type|pid`). Opt-in (`--enable-rdma-qp-counters`). Empty dumps still emit these when mode is auto and no user QP has gone INIT yet.
-- `rdma_qp_scrape_status{device,port,result}` – `ok`, `overflow`, or `error` for the last QP dump on that port. Overflow drops totals for that port only; other ports and `cc_*` continue.
+- `rdma_qp_scrape_status{device,port,result}` – `ok`, `overflow`, or `error` for the last QP dump on that port. Overflow drops totals for that port only; other ports, `cc_*`, and `rdma_optional_*` continue.
 - `rdma_qp_scrape_errors_total{}` – Counter incremented on QP netlink failures, including dump overflow.
 - `rdma_qp_<name>_total{device,port,qp_type}` – Live auto-type bound user QP aggregate (`duplicate_request`, `implied_nak_seq_err`, `local_ack_timeout_err`, `packet_seq_err`, `rnr_nak_retry_err`, `out_of_buffer`, `rx_write_requests`, `rx_read_requests`, `rx_atomic_requests`, plus optional `rx_bytes` / `tx_bytes` / `rx_packets` / `tx_packets` from dump keys `rdma_*`). Not per-LQPN. Do not add these to the same-named sysfs `rdma_<name>_total` series. Optional traffic series are omitted unless the dump contains those keys; dump key `rdma_rx_bytes` becomes `rdma_qp_rx_bytes_total`, not `rdma_qp_rdma_rx_bytes_total`.
 
@@ -223,10 +231,10 @@ Enabling these counters adds one series per present allowlisted ethtool key (not
 
 ### RoCEv2 congestion control
 
-Default sysfs `hw_counters` already export Notification Point / Reaction Point counters (`rdma_np_cnp_sent_total`, `rdma_np_ecn_marked_roce_packets_total`, `rdma_rp_cnp_handled_total`, `rdma_rp_cnp_ignored_total`). mlx5 optional counters (`cc_rx_ce_pkts`, `cc_rx_cnp_pkts`, `cc_tx_cnp_pkts`) are **not** in sysfs even when enabled with `rdma statistic set`; scrape them with `--enable-rdma-optional-counters` as described in [Run](#run).
+Default sysfs `hw_counters` already export Notification Point / Reaction Point counters (`rdma_np_cnp_sent_total`, `rdma_np_ecn_marked_roce_packets_total`, `rdma_rp_cnp_handled_total`, `rdma_rp_cnp_ignored_total`). mlx5 optional counters (`cc_rx_ce_pkts`, `cc_rx_cnp_pkts`, `cc_tx_cnp_pkts`, and `rdma_{rx,tx}_{bytes,packets}`) are **not** in sysfs even when enabled with `rdma statistic set`; scrape them with `--enable-rdma-optional-counters` as described in [Run](#run). Do not add `rdma_optional_*` to `rdma_qp_*` or to sysfs `port_rcv_data`.
 
 ## Dashboards
-- Bundled JSON: [`dashboards/rdma_exporter_dashboard.json`](dashboards/rdma_exporter_dashboard.json) includes PFC occupancy, IEEE 802.3x pause occupancy/frames/transitions, pause storm, PCIe stall, PHY/FEC, and QP optional traffic panels. PCIe/PHY/pause panels need `--enable-netdev-hw-metrics`. QP traffic panels need `--enable-rdma-qp-counters` and appear only when the dump contains those keys.
+- Bundled JSON: [`dashboards/rdma_exporter_dashboard.json`](dashboards/rdma_exporter_dashboard.json) includes PFC occupancy, IEEE 802.3x pause occupancy/frames/transitions, pause storm, PCIe stall, PHY/FEC, and QP optional traffic panels. PCIe/PHY/pause panels need `--enable-netdev-hw-metrics`. QP traffic panels need `--enable-rdma-qp-counters` and appear only when the dump contains those keys. Port-level `rdma_optional_{rx,tx}_{bytes,packets}_total` is not on the bundled dashboard.
 - Grafana.com: [RDMA/RoCE NIC Telemetry](https://grafana.com/grafana/dashboards/24241-rdma-roce-nic-telemetry/) – community copy; updating that listing is a separate publish step.
 
 ## Testing

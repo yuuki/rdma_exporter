@@ -71,7 +71,7 @@ func Parse(args []string) (Config, error) {
 	if err != nil {
 		return cfg, err
 	}
-	enableOptionalCounters := fs.Bool("enable-rdma-optional-counters", enableOptionalDefault, "Enable optional RDMA hardware counters (e.g. mlx5 cc_*) via NETLINK_RDMA. The exporter never enables counters; use rdma statistic set.")
+	enableOptionalCounters := fs.Bool("enable-rdma-optional-counters", enableOptionalDefault, "Enable optional RDMA hardware counters (mlx5 cc_* and rdma_{rx,tx}_{bytes,packets}) via NETLINK_RDMA. The exporter never enables counters; use rdma statistic set.")
 
 	enableQPDefault, err := boolEnvOrDefault("RDMA_EXPORTER_ENABLE_RDMA_QP_COUNTERS", defaultEnableQPCounters)
 	if err != nil {
