@@ -1,4 +1,47 @@
 {
+  "__elements": {},
+  "__inputs": [
+    {
+      "description": "",
+      "label": "prometheus",
+      "name": "DS_PROMETHEUS",
+      "pluginId": "prometheus",
+      "pluginName": "Prometheus",
+      "type": "datasource"
+    }
+  ],
+  "__requires": [
+    {
+      "id": "grafana",
+      "name": "Grafana",
+      "type": "grafana",
+      "version": "10.4.0"
+    },
+    {
+      "id": "prometheus",
+      "name": "Prometheus",
+      "type": "datasource",
+      "version": "1.0.0"
+    },
+    {
+      "id": "stat",
+      "name": "Stat",
+      "type": "panel",
+      "version": "1.0.0"
+    },
+    {
+      "id": "table",
+      "name": "Table",
+      "type": "panel",
+      "version": "1.0.0"
+    },
+    {
+      "id": "timeseries",
+      "name": "Time series",
+      "type": "panel",
+      "version": "1.0.0"
+    }
+  ],
   "annotations": {
     "list": [
       {
@@ -18,6 +61,7 @@
   "description": "Grafana dashboard for rdma_exporter covering port health, throughput, congestion, PFC occupancy, IEEE 802.3x pause, pause storm, optional CC (cc_*), port-level optional traffic, PCIe stall, PHY/FEC, QP optional traffic, and error diagnostics.",
   "editable": true,
   "fiscalYearStartMonth": 1,
+  "gnetId": 24241,
   "graphTooltip": 1,
   "id": null,
   "iteration": 1718222400000,
@@ -34,7 +78,10 @@
   ],
   "panels": [
     {
-      "datasource": "$ds",
+      "datasource": {
+        "type": "prometheus",
+        "uid": "${DS_PROMETHEUS}"
+      },
       "fieldConfig": {
         "defaults": {
           "color": {
@@ -83,7 +130,10 @@
       "pluginVersion": "10.4.0",
       "targets": [
         {
-          "datasource": "$ds",
+          "datasource": {
+            "type": "prometheus",
+            "uid": "${DS_PROMETHEUS}"
+          },
           "editorMode": "code",
           "expr": "count(count by (job, instance, device, port) (rdma_port_info{job=\"$job\", instance=~\"$instance\", device=~\"$device\", port=~\"$port\", state!=\"ACTIVE\"}))",
           "legendFormat": "Non-ACTIVE ports",
@@ -94,7 +144,10 @@
       "type": "stat"
     },
     {
-      "datasource": "$ds",
+      "datasource": {
+        "type": "prometheus",
+        "uid": "${DS_PROMETHEUS}"
+      },
       "fieldConfig": {
         "defaults": {
           "custom": {
@@ -123,7 +176,10 @@
       "pluginVersion": "10.4.0",
       "targets": [
         {
-          "datasource": "$ds",
+          "datasource": {
+            "type": "prometheus",
+            "uid": "${DS_PROMETHEUS}"
+          },
           "editorMode": "code",
           "expr": "rdma_port_info{job=\"$job\", instance=~\"$instance\", device=~\"$device\", port=~\"$port\"}",
           "format": "table",
@@ -155,7 +211,10 @@
       "type": "table"
     },
     {
-      "datasource": "$ds",
+      "datasource": {
+        "type": "prometheus",
+        "uid": "${DS_PROMETHEUS}"
+      },
       "fieldConfig": {
         "defaults": {
           "color": {
@@ -203,7 +262,10 @@
       "pluginVersion": "10.4.0",
       "targets": [
         {
-          "datasource": "$ds",
+          "datasource": {
+            "type": "prometheus",
+            "uid": "${DS_PROMETHEUS}"
+          },
           "editorMode": "code",
           "expr": "sum(rate(rdma_link_downed_total{job=\"$job\", instance=~\"$instance\", device=~\"$device\", port=~\"$port\"}[$interval])) + sum(rate(rdma_link_error_recovery_total{job=\"$job\", instance=~\"$instance\", device=~\"$device\", port=~\"$port\"}[$interval]))",
           "legendFormat": "Link events/s",
@@ -214,7 +276,10 @@
       "type": "stat"
     },
     {
-      "datasource": "$ds",
+      "datasource": {
+        "type": "prometheus",
+        "uid": "${DS_PROMETHEUS}"
+      },
       "fieldConfig": {
         "defaults": {
           "color": {
@@ -268,7 +333,10 @@
       "pluginVersion": "10.4.0",
       "targets": [
         {
-          "datasource": "$ds",
+          "datasource": {
+            "type": "prometheus",
+            "uid": "${DS_PROMETHEUS}"
+          },
           "editorMode": "code",
           "expr": "topk($topn, 4 * rate(rdma_port_rcv_data_total{job=\"$job\", instance=~\"$instance\", device=~\"$device\", port=~\"$port\"}[$interval]))",
           "legendFormat": "{{instance}} {{device}}:{{port}}",
@@ -280,7 +348,10 @@
       "type": "timeseries"
     },
     {
-      "datasource": "$ds",
+      "datasource": {
+        "type": "prometheus",
+        "uid": "${DS_PROMETHEUS}"
+      },
       "fieldConfig": {
         "defaults": {
           "color": {
@@ -334,7 +405,10 @@
       "pluginVersion": "10.4.0",
       "targets": [
         {
-          "datasource": "$ds",
+          "datasource": {
+            "type": "prometheus",
+            "uid": "${DS_PROMETHEUS}"
+          },
           "editorMode": "code",
           "expr": "topk($topn, 4 * rate(rdma_port_xmit_data_total{job=\"$job\", instance=~\"$instance\", device=~\"$device\", port=~\"$port\"}[$interval]))",
           "legendFormat": "{{instance}} {{device}}:{{port}}",
@@ -346,7 +420,10 @@
       "type": "timeseries"
     },
     {
-      "datasource": "$ds",
+      "datasource": {
+        "type": "prometheus",
+        "uid": "${DS_PROMETHEUS}"
+      },
       "fieldConfig": {
         "defaults": {
           "color": {
@@ -449,7 +526,10 @@
       "pluginVersion": "10.4.0",
       "targets": [
         {
-          "datasource": "$ds",
+          "datasource": {
+            "type": "prometheus",
+            "uid": "${DS_PROMETHEUS}"
+          },
           "editorMode": "code",
           "expr": "rate(rdma_port_rcv_packets_total{job=\"$job\", instance=~\"$instance\", device=~\"$device\", port=~\"$port\"}[$interval])",
           "legendFormat": "{{instance}} {{device}}:{{port}} rx",
@@ -457,7 +537,10 @@
           "refId": "A"
         },
         {
-          "datasource": "$ds",
+          "datasource": {
+            "type": "prometheus",
+            "uid": "${DS_PROMETHEUS}"
+          },
           "editorMode": "code",
           "expr": "rate(rdma_port_xmit_packets_total{job=\"$job\", instance=~\"$instance\", device=~\"$device\", port=~\"$port\"}[$interval])",
           "legendFormat": "{{instance}} {{device}}:{{port}} tx",
@@ -465,7 +548,10 @@
           "refId": "B"
         },
         {
-          "datasource": "$ds",
+          "datasource": {
+            "type": "prometheus",
+            "uid": "${DS_PROMETHEUS}"
+          },
           "editorMode": "code",
           "expr": "rate(rdma_port_multicast_rcv_packets_total{job=\"$job\", instance=~\"$instance\", device=~\"$device\", port=~\"$port\"}[$interval])",
           "legendFormat": "{{instance}} {{device}}:{{port}} mcast",
@@ -473,7 +559,10 @@
           "refId": "C"
         },
         {
-          "datasource": "$ds",
+          "datasource": {
+            "type": "prometheus",
+            "uid": "${DS_PROMETHEUS}"
+          },
           "editorMode": "code",
           "expr": "rate(rdma_port_unicast_rcv_packets_total{job=\"$job\", instance=~\"$instance\", device=~\"$device\", port=~\"$port\"}[$interval])",
           "legendFormat": "{{instance}} {{device}}:{{port}} ucast",
@@ -485,7 +574,10 @@
       "type": "timeseries"
     },
     {
-      "datasource": "$ds",
+      "datasource": {
+        "type": "prometheus",
+        "uid": "${DS_PROMETHEUS}"
+      },
       "fieldConfig": {
         "defaults": {
           "color": {
@@ -526,7 +618,10 @@
       "pluginVersion": "10.4.0",
       "targets": [
         {
-          "datasource": "$ds",
+          "datasource": {
+            "type": "prometheus",
+            "uid": "${DS_PROMETHEUS}"
+          },
           "editorMode": "code",
           "expr": "rate(rdma_port_xmit_wait_total{job=\"$job\", instance=~\"$instance\", device=~\"$device\", port=~\"$port\"}[$interval])",
           "legendFormat": "{{instance}} {{device}}:{{port}}",
@@ -538,7 +633,10 @@
       "type": "timeseries"
     },
     {
-      "datasource": "$ds",
+      "datasource": {
+        "type": "prometheus",
+        "uid": "${DS_PROMETHEUS}"
+      },
       "fieldConfig": {
         "defaults": {
           "color": {
@@ -579,7 +677,10 @@
       "pluginVersion": "10.4.0",
       "targets": [
         {
-          "datasource": "$ds",
+          "datasource": {
+            "type": "prometheus",
+            "uid": "${DS_PROMETHEUS}"
+          },
           "editorMode": "code",
           "expr": "rate(rdma_np_cnp_sent_total{job=\"$job\", instance=~\"$instance\", device=~\"$device\", port=~\"$port\"}[$interval])",
           "legendFormat": "{{instance}} {{device}}:{{port}} np_cnp_sent",
@@ -587,7 +688,10 @@
           "refId": "A"
         },
         {
-          "datasource": "$ds",
+          "datasource": {
+            "type": "prometheus",
+            "uid": "${DS_PROMETHEUS}"
+          },
           "editorMode": "code",
           "expr": "rate(rdma_np_ecn_marked_roce_packets_total{job=\"$job\", instance=~\"$instance\", device=~\"$device\", port=~\"$port\"}[$interval])",
           "legendFormat": "{{instance}} {{device}}:{{port}} np_ecn_marked",
@@ -595,7 +699,10 @@
           "refId": "B"
         },
         {
-          "datasource": "$ds",
+          "datasource": {
+            "type": "prometheus",
+            "uid": "${DS_PROMETHEUS}"
+          },
           "editorMode": "code",
           "expr": "rate(rdma_rp_cnp_handled_total{job=\"$job\", instance=~\"$instance\", device=~\"$device\", port=~\"$port\"}[$interval])",
           "legendFormat": "{{instance}} {{device}}:{{port}} rp_cnp_handled",
@@ -603,7 +710,10 @@
           "refId": "C"
         },
         {
-          "datasource": "$ds",
+          "datasource": {
+            "type": "prometheus",
+            "uid": "${DS_PROMETHEUS}"
+          },
           "editorMode": "code",
           "expr": "rate(rdma_rp_cnp_ignored_total{job=\"$job\", instance=~\"$instance\", device=~\"$device\", port=~\"$port\"}[$interval])",
           "legendFormat": "{{instance}} {{device}}:{{port}} rp_cnp_ignored",
@@ -615,7 +725,10 @@
       "type": "timeseries"
     },
     {
-      "datasource": "$ds",
+      "datasource": {
+        "type": "prometheus",
+        "uid": "${DS_PROMETHEUS}"
+      },
       "fieldConfig": {
         "defaults": {
           "color": {
@@ -656,7 +769,10 @@
       "pluginVersion": "10.4.0",
       "targets": [
         {
-          "datasource": "$ds",
+          "datasource": {
+            "type": "prometheus",
+            "uid": "${DS_PROMETHEUS}"
+          },
           "editorMode": "code",
           "expr": "rate(rdma_roce_adp_retrans_total{job=\"$job\", instance=~\"$instance\", device=~\"$device\", port=~\"$port\"}[$interval])",
           "legendFormat": "{{instance}} {{device}}:{{port}} adp_retrans",
@@ -664,7 +780,10 @@
           "refId": "A"
         },
         {
-          "datasource": "$ds",
+          "datasource": {
+            "type": "prometheus",
+            "uid": "${DS_PROMETHEUS}"
+          },
           "editorMode": "code",
           "expr": "rate(rdma_roce_adp_retrans_to_total{job=\"$job\", instance=~\"$instance\", device=~\"$device\", port=~\"$port\"}[$interval])",
           "legendFormat": "{{instance}} {{device}}:{{port}} adp_retrans_to",
@@ -676,7 +795,10 @@
       "type": "timeseries"
     },
     {
-      "datasource": "$ds",
+      "datasource": {
+        "type": "prometheus",
+        "uid": "${DS_PROMETHEUS}"
+      },
       "description": "mlx5 optional CC counters from RDMA netlink, not sysfs hw_counters. Distinct from always-on NP/RP (rdma_np_*, rdma_rp_*). Requires --enable-rdma-optional-counters. Counters must already be enabled; rdma statistic set replaces the whole list. The exporter never issues STAT_SET.",
       "fieldConfig": {
         "defaults": {
@@ -718,7 +840,10 @@
       "pluginVersion": "10.4.0",
       "targets": [
         {
-          "datasource": "$ds",
+          "datasource": {
+            "type": "prometheus",
+            "uid": "${DS_PROMETHEUS}"
+          },
           "editorMode": "code",
           "expr": "rate(rdma_cc_rx_ce_pkts_total{job=\"$job\", instance=~\"$instance\", device=~\"$device\", port=~\"$port\"}[$interval])",
           "legendFormat": "{{instance}} {{device}}:{{port}} cc_rx_ce",
@@ -726,7 +851,10 @@
           "refId": "A"
         },
         {
-          "datasource": "$ds",
+          "datasource": {
+            "type": "prometheus",
+            "uid": "${DS_PROMETHEUS}"
+          },
           "editorMode": "code",
           "expr": "rate(rdma_cc_rx_cnp_pkts_total{job=\"$job\", instance=~\"$instance\", device=~\"$device\", port=~\"$port\"}[$interval])",
           "legendFormat": "{{instance}} {{device}}:{{port}} cc_rx_cnp",
@@ -734,7 +862,10 @@
           "refId": "B"
         },
         {
-          "datasource": "$ds",
+          "datasource": {
+            "type": "prometheus",
+            "uid": "${DS_PROMETHEUS}"
+          },
           "editorMode": "code",
           "expr": "rate(rdma_cc_tx_cnp_pkts_total{job=\"$job\", instance=~\"$instance\", device=~\"$device\", port=~\"$port\"}[$interval])",
           "legendFormat": "{{instance}} {{device}}:{{port}} cc_tx_cnp",
@@ -746,7 +877,10 @@
       "type": "timeseries"
     },
     {
-      "datasource": "$ds",
+      "datasource": {
+        "type": "prometheus",
+        "uid": "${DS_PROMETHEUS}"
+      },
       "description": "1 means the named optional counter is enabled; 0 means supported but disabled. Filtered to names matching ^cc_.*. Requires --enable-rdma-optional-counters. The exporter never enables counters.",
       "fieldConfig": {
         "defaults": {
@@ -788,7 +922,10 @@
       "pluginVersion": "10.4.0",
       "targets": [
         {
-          "datasource": "$ds",
+          "datasource": {
+            "type": "prometheus",
+            "uid": "${DS_PROMETHEUS}"
+          },
           "editorMode": "code",
           "expr": "rdma_optional_counter_enabled{job=\"$job\", instance=~\"$instance\", device=~\"$device\", port=~\"$port\", counter=~\"^cc_.*\"}",
           "legendFormat": "{{instance}} {{device}}:{{port}} {{counter}}",
@@ -800,7 +937,10 @@
       "type": "timeseries"
     },
     {
-      "datasource": "$ds",
+      "datasource": {
+        "type": "prometheus",
+        "uid": "${DS_PROMETHEUS}"
+      },
       "fieldConfig": {
         "defaults": {
           "color": {
@@ -844,7 +984,10 @@
       "pluginVersion": "10.4.0",
       "targets": [
         {
-          "datasource": "$ds",
+          "datasource": {
+            "type": "prometheus",
+            "uid": "${DS_PROMETHEUS}"
+          },
           "editorMode": "code",
           "expr": "rate(rdma_port_rcv_errors_total{job=\"$job\", instance=~\"$instance\", device=~\"$device\", port=~\"$port\"}[$interval])",
           "legendFormat": "{{instance}} {{device}}:{{port}} rcv_errors",
@@ -852,7 +995,10 @@
           "refId": "A"
         },
         {
-          "datasource": "$ds",
+          "datasource": {
+            "type": "prometheus",
+            "uid": "${DS_PROMETHEUS}"
+          },
           "editorMode": "code",
           "expr": "rate(rdma_port_xmit_discards_total{job=\"$job\", instance=~\"$instance\", device=~\"$device\", port=~\"$port\"}[$interval])",
           "legendFormat": "{{instance}} {{device}}:{{port}} xmit_discards",
@@ -860,7 +1006,10 @@
           "refId": "B"
         },
         {
-          "datasource": "$ds",
+          "datasource": {
+            "type": "prometheus",
+            "uid": "${DS_PROMETHEUS}"
+          },
           "editorMode": "code",
           "expr": "rate(rdma_port_rcv_remote_physical_errors_total{job=\"$job\", instance=~\"$instance\", device=~\"$device\", port=~\"$port\"}[$interval])",
           "legendFormat": "{{instance}} {{device}}:{{port}} rcv_remote_physical",
@@ -868,7 +1017,10 @@
           "refId": "C"
         },
         {
-          "datasource": "$ds",
+          "datasource": {
+            "type": "prometheus",
+            "uid": "${DS_PROMETHEUS}"
+          },
           "editorMode": "code",
           "expr": "rate(rdma_symbol_error_total{job=\"$job\", instance=~\"$instance\", device=~\"$device\", port=~\"$port\"}[$interval])",
           "legendFormat": "{{instance}} {{device}}:{{port}} symbol_error",
@@ -876,7 +1028,10 @@
           "refId": "D"
         },
         {
-          "datasource": "$ds",
+          "datasource": {
+            "type": "prometheus",
+            "uid": "${DS_PROMETHEUS}"
+          },
           "editorMode": "code",
           "expr": "rate(rdma_port_rcv_switch_relay_errors_total{job=\"$job\", instance=~\"$instance\", device=~\"$device\", port=~\"$port\"}[$interval])",
           "legendFormat": "{{instance}} {{device}}:{{port}} switch_relay_errors",
@@ -884,7 +1039,10 @@
           "refId": "E"
         },
         {
-          "datasource": "$ds",
+          "datasource": {
+            "type": "prometheus",
+            "uid": "${DS_PROMETHEUS}"
+          },
           "editorMode": "code",
           "expr": "rate(rdma_port_rcv_constraint_errors_total{job=\"$job\", instance=~\"$instance\", device=~\"$device\", port=~\"$port\"}[$interval])",
           "legendFormat": "{{instance}} {{device}}:{{port}} rcv_constraint_errors",
@@ -892,7 +1050,10 @@
           "refId": "F"
         },
         {
-          "datasource": "$ds",
+          "datasource": {
+            "type": "prometheus",
+            "uid": "${DS_PROMETHEUS}"
+          },
           "editorMode": "code",
           "expr": "rate(rdma_port_xmit_constraint_errors_total{job=\"$job\", instance=~\"$instance\", device=~\"$device\", port=~\"$port\"}[$interval])",
           "legendFormat": "{{instance}} {{device}}:{{port}} xmit_constraint_errors",
@@ -904,7 +1065,10 @@
       "type": "timeseries"
     },
     {
-      "datasource": "$ds",
+      "datasource": {
+        "type": "prometheus",
+        "uid": "${DS_PROMETHEUS}"
+      },
       "fieldConfig": {
         "defaults": {
           "color": {
@@ -952,7 +1116,10 @@
       "pluginVersion": "10.4.0",
       "targets": [
         {
-          "datasource": "$ds",
+          "datasource": {
+            "type": "prometheus",
+            "uid": "${DS_PROMETHEUS}"
+          },
           "editorMode": "code",
           "expr": "100 * rate(rdma_port_xmit_discards_total{job=\"$job\", instance=~\"$instance\", device=~\"$device\", port=~\"$port\"}[$interval]) / clamp_min(rate(rdma_port_xmit_packets_total{job=\"$job\", instance=~\"$instance\", device=~\"$device\", port=~\"$port\"}[$interval]), 1e-6)",
           "legendFormat": "{{instance}} {{device}}:{{port}} tx_drop_ratio",
@@ -964,7 +1131,10 @@
       "type": "timeseries"
     },
     {
-      "datasource": "$ds",
+      "datasource": {
+        "type": "prometheus",
+        "uid": "${DS_PROMETHEUS}"
+      },
       "description": "Pause occupancy in seconds per second (duration counter is microseconds). direction=rx: the peer XOFFed this NIC. direction=tx: this NIC XOFFed the peer. Do not treat tx as switch congestion.",
       "fieldConfig": {
         "defaults": {
@@ -1006,7 +1176,10 @@
       "pluginVersion": "10.4.0",
       "targets": [
         {
-          "datasource": "$ds",
+          "datasource": {
+            "type": "prometheus",
+            "uid": "${DS_PROMETHEUS}"
+          },
           "editorMode": "code",
           "expr": "rate(rdma_roce_pfc_pause_duration_total{job=\"$job\", instance=~\"$instance\", device=~\"$device\", port=~\"$port\"}[$interval]) / 1e6",
           "legendFormat": "{{instance}} {{device}}:{{port}} {{direction}} prio{{priority}}",
@@ -1018,7 +1191,10 @@
       "type": "timeseries"
     },
     {
-      "datasource": "$ds",
+      "datasource": {
+        "type": "prometheus",
+        "uid": "${DS_PROMETHEUS}"
+      },
       "description": "Fraction of time outbound PCI stall exceeded 30%. Primary PCIe stall signal. Requires --enable-netdev-hw-metrics. The 1-second percent gauge is sampled context only; do not rate() it.",
       "fieldConfig": {
         "defaults": {
@@ -1060,7 +1236,10 @@
       "pluginVersion": "10.4.0",
       "targets": [
         {
-          "datasource": "$ds",
+          "datasource": {
+            "type": "prometheus",
+            "uid": "${DS_PROMETHEUS}"
+          },
           "editorMode": "code",
           "expr": "rate(rdma_pcie_outbound_stalled_seconds_total{job=\"$job\", instance=~\"$instance\", device=~\"$device\", port=~\"$port\"}[$interval])",
           "legendFormat": "{{instance}} {{device}}:{{port}} {{op}}",
@@ -1072,7 +1251,10 @@
       "type": "timeseries"
     },
     {
-      "datasource": "$ds",
+      "datasource": {
+        "type": "prometheus",
+        "uid": "${DS_PROMETHEUS}"
+      },
       "description": "Interval FEC/BER sample ratios, not instantaneous instruments. Requires --enable-netdev-hw-metrics. Use increase(error)/increase(bits) rather than lifetime totals.",
       "fieldConfig": {
         "defaults": {
@@ -1114,7 +1296,10 @@
       "pluginVersion": "10.4.0",
       "targets": [
         {
-          "datasource": "$ds",
+          "datasource": {
+            "type": "prometheus",
+            "uid": "${DS_PROMETHEUS}"
+          },
           "editorMode": "code",
           "expr": "increase(rdma_phy_rx_corrected_bits_total{job=\"$job\", instance=~\"$instance\", device=~\"$device\", port=~\"$port\"}[$interval]) / clamp_min(increase(rdma_phy_rx_bits_total{job=\"$job\", instance=~\"$instance\", device=~\"$device\", port=~\"$port\"}[$interval]), 1)",
           "legendFormat": "{{instance}} {{device}}:{{port}} corrected",
@@ -1122,7 +1307,10 @@
           "refId": "A"
         },
         {
-          "datasource": "$ds",
+          "datasource": {
+            "type": "prometheus",
+            "uid": "${DS_PROMETHEUS}"
+          },
           "editorMode": "code",
           "expr": "increase(rdma_phy_rx_pcs_symbol_err_total{job=\"$job\", instance=~\"$instance\", device=~\"$device\", port=~\"$port\"}[$interval]) / clamp_min(increase(rdma_phy_rx_bits_total{job=\"$job\", instance=~\"$instance\", device=~\"$device\", port=~\"$port\"}[$interval]), 1)",
           "legendFormat": "{{instance}} {{device}}:{{port}} pcs_err",
@@ -1134,7 +1322,10 @@
       "type": "timeseries"
     },
     {
-      "datasource": "$ds",
+      "datasource": {
+        "type": "prometheus",
+        "uid": "${DS_PROMETHEUS}"
+      },
       "description": "IEEE 802.3x pause occupancy in seconds per second (duration counter is microseconds). Requires --enable-netdev-hw-metrics. Keys exist only in global pause mode, not PFC. direction=rx: this NIC received a pause request. direction=tx: this NIC transmitted a pause request. Observation only; do not treat as root cause.",
       "fieldConfig": {
         "defaults": {
@@ -1176,7 +1367,10 @@
       "pluginVersion": "10.4.0",
       "targets": [
         {
-          "datasource": "$ds",
+          "datasource": {
+            "type": "prometheus",
+            "uid": "${DS_PROMETHEUS}"
+          },
           "editorMode": "code",
           "expr": "rate(rdma_netdev_global_pause_duration_total{job=\"$job\", instance=~\"$instance\", device=~\"$device\", port=~\"$port\"}[$interval]) / 1e6",
           "legendFormat": "{{instance}} {{device}}:{{port}} {{direction}}",
@@ -1188,7 +1382,10 @@
       "type": "timeseries"
     },
     {
-      "datasource": "$ds",
+      "datasource": {
+        "type": "prometheus",
+        "uid": "${DS_PROMETHEUS}"
+      },
       "description": "Times the device sent pause frames for a long period. Requires --enable-netdev-hw-metrics. severity=warning: stalled past a watermark. severity=error: timed out and pause TX was disabled; drops may have occurred. Observation only.",
       "fieldConfig": {
         "defaults": {
@@ -1230,7 +1427,10 @@
       "pluginVersion": "10.4.0",
       "targets": [
         {
-          "datasource": "$ds",
+          "datasource": {
+            "type": "prometheus",
+            "uid": "${DS_PROMETHEUS}"
+          },
           "editorMode": "code",
           "expr": "rate(rdma_netdev_pause_storm_events_total{job=\"$job\", instance=~\"$instance\", device=~\"$device\", port=~\"$port\"}[$interval])",
           "legendFormat": "{{instance}} {{device}}:{{port}} {{severity}}",
@@ -1242,7 +1442,10 @@
       "type": "timeseries"
     },
     {
-      "datasource": "$ds",
+      "datasource": {
+        "type": "prometheus",
+        "uid": "${DS_PROMETHEUS}"
+      },
       "description": "IEEE 802.3x pause frames per second. Requires --enable-netdev-hw-metrics. Keys exist only in global pause mode, not PFC. direction=rx: pause frames received. direction=tx: pause frames transmitted. Observation only; do not treat as root cause.",
       "fieldConfig": {
         "defaults": {
@@ -1284,7 +1487,10 @@
       "pluginVersion": "10.4.0",
       "targets": [
         {
-          "datasource": "$ds",
+          "datasource": {
+            "type": "prometheus",
+            "uid": "${DS_PROMETHEUS}"
+          },
           "editorMode": "code",
           "expr": "rate(rdma_netdev_global_pause_frames_total{job=\"$job\", instance=~\"$instance\", device=~\"$device\", port=~\"$port\"}[$interval])",
           "legendFormat": "{{instance}} {{device}}:{{port}} {{direction}}",
@@ -1296,7 +1502,10 @@
       "type": "timeseries"
     },
     {
-      "datasource": "$ds",
+      "datasource": {
+        "type": "prometheus",
+        "uid": "${DS_PROMETHEUS}"
+      },
       "description": "IEEE 802.3x XOFF-to-XON transitions per second from ethtool rx_global_pause_transition. Requires --enable-netdev-hw-metrics. mlx5 exposes receive only. Keys exist only in global pause mode.",
       "fieldConfig": {
         "defaults": {
@@ -1338,7 +1547,10 @@
       "pluginVersion": "10.4.0",
       "targets": [
         {
-          "datasource": "$ds",
+          "datasource": {
+            "type": "prometheus",
+            "uid": "${DS_PROMETHEUS}"
+          },
           "editorMode": "code",
           "expr": "rate(rdma_netdev_global_pause_transitions_total{job=\"$job\", instance=~\"$instance\", device=~\"$device\", port=~\"$port\"}[$interval])",
           "legendFormat": "{{instance}} {{device}}:{{port}}",
@@ -1350,7 +1562,10 @@
       "type": "timeseries"
     },
     {
-      "datasource": "$ds",
+      "datasource": {
+        "type": "prometheus",
+        "uid": "${DS_PROMETHEUS}"
+      },
       "description": "Live auto-type bound user QP byte rate. Do not add to sysfs rdma_<name>_total. Requires --enable-rdma-qp-counters. Series appear only when QP optional-counters are on and the dump contains rdma_rx_bytes / rdma_tx_bytes. Some mlx5 QP counters are 32-bit; prefer short rate() windows.",
       "fieldConfig": {
         "defaults": {
@@ -1392,7 +1607,10 @@
       "pluginVersion": "10.4.0",
       "targets": [
         {
-          "datasource": "$ds",
+          "datasource": {
+            "type": "prometheus",
+            "uid": "${DS_PROMETHEUS}"
+          },
           "editorMode": "code",
           "expr": "rate(rdma_qp_rx_bytes_total{job=\"$job\", instance=~\"$instance\", device=~\"$device\", port=~\"$port\"}[$interval])",
           "legendFormat": "{{instance}} {{device}}:{{port}} {{qp_type}} rx",
@@ -1400,7 +1618,10 @@
           "refId": "A"
         },
         {
-          "datasource": "$ds",
+          "datasource": {
+            "type": "prometheus",
+            "uid": "${DS_PROMETHEUS}"
+          },
           "editorMode": "code",
           "expr": "rate(rdma_qp_tx_bytes_total{job=\"$job\", instance=~\"$instance\", device=~\"$device\", port=~\"$port\"}[$interval])",
           "legendFormat": "{{instance}} {{device}}:{{port}} {{qp_type}} tx",
@@ -1412,7 +1633,10 @@
       "type": "timeseries"
     },
     {
-      "datasource": "$ds",
+      "datasource": {
+        "type": "prometheus",
+        "uid": "${DS_PROMETHEUS}"
+      },
       "description": "Live auto-type bound user QP packet rate. Do not add to sysfs rdma_<name>_total. Requires --enable-rdma-qp-counters. Series appear only when QP optional-counters are on and the dump contains rdma_rx_packets / rdma_tx_packets. Some mlx5 QP counters are 32-bit; prefer short rate() windows.",
       "fieldConfig": {
         "defaults": {
@@ -1454,7 +1678,10 @@
       "pluginVersion": "10.4.0",
       "targets": [
         {
-          "datasource": "$ds",
+          "datasource": {
+            "type": "prometheus",
+            "uid": "${DS_PROMETHEUS}"
+          },
           "editorMode": "code",
           "expr": "rate(rdma_qp_rx_packets_total{job=\"$job\", instance=~\"$instance\", device=~\"$device\", port=~\"$port\"}[$interval])",
           "legendFormat": "{{instance}} {{device}}:{{port}} {{qp_type}} rx",
@@ -1462,7 +1689,10 @@
           "refId": "A"
         },
         {
-          "datasource": "$ds",
+          "datasource": {
+            "type": "prometheus",
+            "uid": "${DS_PROMETHEUS}"
+          },
           "editorMode": "code",
           "expr": "rate(rdma_qp_tx_packets_total{job=\"$job\", instance=~\"$instance\", device=~\"$device\", port=~\"$port\"}[$interval])",
           "legendFormat": "{{instance}} {{device}}:{{port}} {{qp_type}} tx",
@@ -1474,7 +1704,10 @@
       "type": "timeseries"
     },
     {
-      "datasource": "$ds",
+      "datasource": {
+        "type": "prometheus",
+        "uid": "${DS_PROMETHEUS}"
+      },
       "description": "Link-wide mlx5 optional flow-counter octets (netlink rdma_{rx,tx}_bytes). Not sysfs port_rcv_data (doublewords; do not multiply by 4). Not rdma_qp_*. Not rdma_netdev_vport_rdma_*. Same-direction packet and byte names share one flow counter. Requires --enable-rdma-optional-counters only; does not need --enable-rdma-qp-counters or QP optional-counters on. Linux 6.15+ for these names.",
       "fieldConfig": {
         "defaults": {
@@ -1516,7 +1749,10 @@
       "pluginVersion": "10.4.0",
       "targets": [
         {
-          "datasource": "$ds",
+          "datasource": {
+            "type": "prometheus",
+            "uid": "${DS_PROMETHEUS}"
+          },
           "editorMode": "code",
           "expr": "rate(rdma_optional_rx_bytes_total{job=\"$job\", instance=~\"$instance\", device=~\"$device\", port=~\"$port\"}[$interval])",
           "legendFormat": "{{instance}} {{device}}:{{port}} rx",
@@ -1524,7 +1760,10 @@
           "refId": "A"
         },
         {
-          "datasource": "$ds",
+          "datasource": {
+            "type": "prometheus",
+            "uid": "${DS_PROMETHEUS}"
+          },
           "editorMode": "code",
           "expr": "rate(rdma_optional_tx_bytes_total{job=\"$job\", instance=~\"$instance\", device=~\"$device\", port=~\"$port\"}[$interval])",
           "legendFormat": "{{instance}} {{device}}:{{port}} tx",
@@ -1536,7 +1775,10 @@
       "type": "timeseries"
     },
     {
-      "datasource": "$ds",
+      "datasource": {
+        "type": "prometheus",
+        "uid": "${DS_PROMETHEUS}"
+      },
       "description": "Link-wide mlx5 optional flow-counter packets (netlink rdma_{rx,tx}_packets). Not sysfs port packet counters. Not rdma_qp_*. Not rdma_netdev_vport_rdma_*. Same-direction packet and byte names share one flow counter. Requires --enable-rdma-optional-counters only; does not need --enable-rdma-qp-counters or QP optional-counters on. Linux 6.15+ for these names.",
       "fieldConfig": {
         "defaults": {
@@ -1578,7 +1820,10 @@
       "pluginVersion": "10.4.0",
       "targets": [
         {
-          "datasource": "$ds",
+          "datasource": {
+            "type": "prometheus",
+            "uid": "${DS_PROMETHEUS}"
+          },
           "editorMode": "code",
           "expr": "rate(rdma_optional_rx_packets_total{job=\"$job\", instance=~\"$instance\", device=~\"$device\", port=~\"$port\"}[$interval])",
           "legendFormat": "{{instance}} {{device}}:{{port}} rx",
@@ -1586,7 +1831,10 @@
           "refId": "A"
         },
         {
-          "datasource": "$ds",
+          "datasource": {
+            "type": "prometheus",
+            "uid": "${DS_PROMETHEUS}"
+          },
           "editorMode": "code",
           "expr": "rate(rdma_optional_tx_packets_total{job=\"$job\", instance=~\"$instance\", device=~\"$device\", port=~\"$port\"}[$interval])",
           "legendFormat": "{{instance}} {{device}}:{{port}} tx",
@@ -1631,7 +1879,10 @@
       {
         "allValue": null,
         "current": {},
-        "datasource": "$ds",
+        "datasource": {
+          "type": "prometheus",
+          "uid": "${DS_PROMETHEUS}"
+        },
         "definition": "label_values(rdma_port_info, job)",
         "hide": 0,
         "includeAll": false,
@@ -1652,7 +1903,10 @@
       {
         "allValue": ".*",
         "current": {},
-        "datasource": "$ds",
+        "datasource": {
+          "type": "prometheus",
+          "uid": "${DS_PROMETHEUS}"
+        },
         "definition": "label_values(rdma_port_info{job=\"$job\"}, instance)",
         "hide": 0,
         "includeAll": true,
@@ -1673,7 +1927,10 @@
       {
         "allValue": ".*",
         "current": {},
-        "datasource": "$ds",
+        "datasource": {
+          "type": "prometheus",
+          "uid": "${DS_PROMETHEUS}"
+        },
         "definition": "label_values(rdma_port_info{job=\"$job\", instance=~\"$instance\"}, device)",
         "hide": 0,
         "includeAll": true,
@@ -1694,7 +1951,10 @@
       {
         "allValue": ".*",
         "current": {},
-        "datasource": "$ds",
+        "datasource": {
+          "type": "prometheus",
+          "uid": "${DS_PROMETHEUS}"
+        },
         "definition": "label_values(rdma_port_info{job=\"$job\", instance=~\"$instance\", device=~\"$device\"}, port)",
         "hide": 0,
         "includeAll": true,
@@ -1799,7 +2059,7 @@
     ]
   },
   "timezone": "",
-  "title": "RDMA / RoCE Port Telemetry (rdma_exporter)",
+  "title": "RDMA / RoCE NIC Telemetry",
   "uid": "rdma-exporter",
   "version": 4,
   "weekStart": ""

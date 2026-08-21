@@ -3,7 +3,7 @@
 This README describes the bundled Grafana dashboard `rdma_exporter_dashboard.json`, which visualizes telemetry emitted by the `rdma_exporter` Prometheus exporter. The dashboard focuses on InfiniBand and RoCE ports, highlighting availability, throughput, congestion, and error signals from `/sys/class/infiniband`, opt-in ethtool hardware counters, and live auto-type QP dumps.
 
 ## Prerequisites
-- Grafana 9.0 or later with a Prometheus data source.
+- Grafana 10.4 or later with a Prometheus data source.
 - `rdma_exporter` running on each RDMA-capable node with HTTP access to its `/metrics` endpoint.
 - Prometheus scraping the exporter at an interval that matches your operational needs (the dashboard defaults to 1m/5m/15m range selectors).
 
@@ -61,7 +61,8 @@ The dashboard ships with template variables to scope queries:
 | Packets: Selected Port [pkt/s] / device         | `rdma_port_rcv_packets_total`, `rdma_port_xmit_packets_total`, `rdma_port_multicast_rcv_packets_total`, `rdma_port_unicast_rcv_packets_total` | Breaks down packet rates per direction and traffic class for the focused port.                                |
 | Congestion: xmit_wait [ticks/s] / device        | `rdma_port_xmit_wait_total`                                                                                                                    | Surfaces fabric congestion that forces RNICs to delay packet transmission.                                   |
 | Congestion: ECN & CNP Signals [events/s] / port | `rdma_np_cnp_sent_total`, `rdma_np_ecn_marked_roce_packets_total`, `rdma_rp_cnp_handled_total`, `rdma_rp_cnp_ignored_total`                     | Correlates ECN marks and congestion-notification packets to measure RoCEv2 congestion control behaviour.      |
-| Congestion: Optional CC (`cc_*`)                | `rdma_cc_rx_ce_pkts_total`, `rdma_cc_rx_cnp_pkts_total`, `rdma_cc_tx_cnp_pkts_total`, `rdma_optional_counter_enabled`                         | mlx5 optional CC counters from RDMA netlink (not sysfs). Requires `--enable-rdma-optional-counters` and `rdma statistic set`. |
+| Congestion: Optional CC [events/s] / port       | `rdma_cc_rx_ce_pkts_total`, `rdma_cc_rx_cnp_pkts_total`, `rdma_cc_tx_cnp_pkts_total` via `rate()`                                              | mlx5 optional CC from RDMA netlink, not sysfs, and not `rdma_np_*` / `rdma_rp_*`. Requires `--enable-rdma-optional-counters`. `rdma statistic set` replaces the whole list. |
+| Congestion: Optional CC enabled / port          | `rdma_optional_counter_enabled` filtered to `^cc_.*`                                                                                          | 1 = enabled, 0 = supported but disabled. The exporter never enables counters. |
 | Congestion: Adaptive Retransmission [events/s]  | `rdma_roce_adp_retrans_total`, `rdma_roce_adp_retrans_to_total`                                                                               | Quantifies retransmissions triggered by adaptive timeouts (RoCEv2 congestion recovery).                       |
 | Congestion: PFC occupancy [s/s] / port          | `rdma_roce_pfc_pause_duration_total` via `rate()/1e6`                                                                                         | Pause occupancy by direction. rx means the peer XOFFed this NIC; tx means this NIC XOFFed the peer.            |
 | Congestion: IEEE 802.3x pause occupancy [s/s]   | `rdma_netdev_global_pause_duration_total` via `rate()/1e6`                                                                                    | Observation only. Distinct from PFC; keys exist only in global pause mode. Requires `--enable-netdev-hw-metrics`. |
@@ -70,12 +71,21 @@ The dashboard ships with template variables to scope queries:
 | Congestion: IEEE 802.3x pause transitions       | `rdma_netdev_global_pause_transitions_total` via `rate()`                                                                                     | mlx5 receive only; no `direction` label. Requires `--enable-netdev-hw-metrics`.                                |
 | QP: optional traffic [B/s] / port               | `rdma_qp_rx_bytes_total`, `rdma_qp_tx_bytes_total` via `rate()`                                                                                | Live auto-type bound user QPs. Do not add to sysfs `rdma_<name>_total`. Requires `--enable-rdma-qp-counters`.  |
 | QP: optional traffic [pkt/s] / port             | `rdma_qp_rx_packets_total`, `rdma_qp_tx_packets_total` via `rate()`                                                                            | Same dump as bytes. Series appear only when optional-counters are on and the dump contains those keys.         |
+| Optional: port traffic [B/s] / port             | `rdma_optional_rx_bytes_total`, `rdma_optional_tx_bytes_total` via `rate()`                                                                    | Link-wide mlx5 optional flow-counter octets. Do not add to sysfs `port_rcv_data`, `rdma_qp_*`, or vPort. Requires `--enable-rdma-optional-counters` only. |
+| Optional: port traffic [pkt/s] / port           | `rdma_optional_rx_packets_total`, `rdma_optional_tx_packets_total` via `rate()`                                                                | Same flow counter as the byte names in that direction. Linux 6.15+ for these names. |
 | Host: PCIe stall [fraction] / port              | `rdma_pcie_outbound_stalled_seconds_total` via `rate()`                                                                                       | Fraction of time outbound PCI stall exceeded 30%. Requires `--enable-netdev-hw-metrics`.                       |
 | Link: PHY FEC interval ratio / port             | `rdma_phy_rx_corrected_bits_total`, `rdma_phy_rx_pcs_symbol_err_total`, `rdma_phy_rx_bits_total`                                              | Interval corrected/uncorrected bit ratios. Requires `--enable-netdev-hw-metrics`.                              |
 | Errors: Port Counters [events/s] / instance     | `rdma_port_rcv_errors_total`, `rdma_port_xmit_discards_total`, `rdma_port_rcv_remote_physical_errors_total`, `rdma_symbol_error_total`, etc.   | Aggregates error counters to locate faulty cabling, optics, or firmware anomalies.                           |
 | Quality: TX Drop Ratio [%] / port               | `rdma_port_xmit_discards_total` vs. `rdma_port_xmit_packets_total`                                                                             | Visualizes drop ratio to catch oversubscription or buffer exhaustion before it hits SLAs.                    |
 
-Port-level optional traffic (`rdma_optional_{rx,tx}_{bytes,packets}_total`) is not on this bundled dashboard.
+## Grafana.com listing 24241
+The community copy [RDMA/RoCE NIC Telemetry](https://grafana.com/grafana/dashboards/24241-rdma-roce-nic-telemetry/) must be uploaded in Grafana's "Export for sharing externally" form. Generate that file from the bundled JSON:
+
+```bash
+make grafana-com-export
+```
+
+`dashboards/rdma_exporter_dashboard.grafana.com.json` keeps `uid: rdma-exporter` and `gnetId: 24241`. The org owner (`yuuki`) publishes a new revision from https://grafana.com/dashboards (update existing listing 24241). `go test ./dashboards/` fails if the export file is stale.
 
 ## Extending the Dashboard
 - Duplicate panels and swap in any other `rdma_*_total` counters exposed by the exporter (e.g., `rdma_duplicate_request_total`).
