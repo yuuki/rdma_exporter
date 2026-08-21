@@ -102,6 +102,11 @@ func main() {
 	}
 
 	rdmaCollector := collector.New(provider, logger, collectorOpts...)
+	probeCtx, probeCancel := context.WithTimeout(context.Background(), cfg.ScrapeTimeout)
+	if err := rdmaCollector.ProbeNetDevStats(probeCtx); err != nil {
+		logger.Warn("netdev capability probe failed", "err", err)
+	}
+	probeCancel()
 
 	registry := prometheus.NewRegistry()
 	registry.MustRegister(

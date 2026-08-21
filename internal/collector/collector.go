@@ -12,6 +12,7 @@ import (
 	"strings"
 	"sync"
 	"sync/atomic"
+	"syscall"
 	"time"
 	"unicode"
 
@@ -116,6 +117,7 @@ type RdmaCollector struct {
 	collectOptional         bool
 	collectQP               bool
 	physPortName            func(string) string
+	unsupportedNetDevs      map[string]struct{}
 
 	collectMu sync.Mutex
 	ctxValue  atomic.Pointer[context.Context]
@@ -793,6 +795,7 @@ func New(provider Provider, logger *slog.Logger, opts ...Option) *RdmaCollector 
 		portHwStatLookup:       make(map[string]string),
 		portOptionalMetrics:    make(map[string]metricEntry),
 		portOptionalStatLookup: make(map[string]string),
+		unsupportedNetDevs:     make(map[string]struct{}),
 	}
 
 	for _, spec := range optionalTrafficSpecs {
@@ -902,6 +905,68 @@ func (c *RdmaCollector) SetContext(ctx context.Context) {
 // ResetContext resets the collector back to the background context.
 func (c *RdmaCollector) ResetContext() {
 	c.storeContext(context.Background())
+}
+
+// ProbeNetDevStats checks whether each Ethernet netdev supports ethtool stats.
+// Interfaces that return EOPNOTSUPP (for example Linux bonding devices such as
+// bond0 behind mlx5_bond_*) are skipped on later scrapes. Call once at process start.
+func (c *RdmaCollector) ProbeNetDevStats(ctx context.Context) error {
+	if c.netDevStatsProvider == nil || !c.collectEthtool {
+		return nil
+	}
+
+	c.collectMu.Lock()
+	defer c.collectMu.Unlock()
+
+	devices, err := c.provider.Devices(ctx)
+	if err != nil {
+		return err
+	}
+
+	seen := make(map[string]struct{})
+	for _, device := range devices {
+		if device.IsVF {
+			continue
+		}
+		for _, port := range device.Ports {
+			attr := port.Attributes
+			if attr.LinkLayer != "Ethernet" || attr.NetDev == "" {
+				continue
+			}
+			if _, dup := seen[attr.NetDev]; dup {
+				continue
+			}
+			seen[attr.NetDev] = struct{}{}
+			if _, skip := c.unsupportedNetDevs[attr.NetDev]; skip {
+				continue
+			}
+
+			_, err := c.netDevStatsProvider.Stats(ctx, attr.NetDev)
+			if err == nil {
+				continue
+			}
+			if ctx.Err() != nil {
+				return ctx.Err()
+			}
+			if isUnsupportedEthtool(err) {
+				c.markNetDevUnsupported(device.Name, strconv.Itoa(port.ID), attr.NetDev, err)
+			}
+		}
+	}
+	return nil
+}
+
+func (c *RdmaCollector) markNetDevUnsupported(deviceName, portID, netDev string, err error) {
+	if _, ok := c.unsupportedNetDevs[netDev]; ok {
+		return
+	}
+	c.unsupportedNetDevs[netDev] = struct{}{}
+	c.logger.Warn("netdev ethtool stats are not supported; skipping netdev metrics for this interface",
+		"device", deviceName, "port", portID, "netdev", netDev, "err", err)
+}
+
+func isUnsupportedEthtool(err error) bool {
+	return errors.Is(err, syscall.EOPNOTSUPP) || errors.Is(err, syscall.ENOTSUP)
 }
 
 // Describe implements prometheus.Collector.
@@ -1413,11 +1478,18 @@ func (c *RdmaCollector) collectNetDevMetrics(
 	if attr.LinkLayer != "Ethernet" || attr.NetDev == "" {
 		return
 	}
+	if _, skip := c.unsupportedNetDevs[attr.NetDev]; skip {
+		return
+	}
 
 	stats, err := c.readNetDevStatsWithCache(ctx, attr.NetDev, cache)
 	if err != nil {
 		if ctx.Err() != nil {
 			c.logger.Warn("netdev scrape aborted by context", "device", deviceName, "port", portID, "netdev", attr.NetDev, "err", ctx.Err())
+			return
+		}
+		if isUnsupportedEthtool(err) {
+			c.markNetDevUnsupported(deviceName, portID, attr.NetDev, err)
 			return
 		}
 		c.logger.Warn("netdev scrape failed", "device", deviceName, "port", portID, "netdev", attr.NetDev, "err", err)
@@ -1484,7 +1556,7 @@ func (c *RdmaCollector) readNetDevStatsWithCache(
 	}
 
 	stats, err := c.netDevStatsProvider.Stats(ctx, netDev)
-	if err != nil {
+	if err != nil && !isUnsupportedEthtool(err) {
 		c.rocePFCScrapeErrors.Inc()
 		c.netDevHWScrapeErrors.Inc()
 	}
