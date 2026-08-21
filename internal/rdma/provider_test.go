@@ -160,6 +160,9 @@ func TestSysfsProviderVFDetection(t *testing.T) {
 	if pf.PFDevice != "" {
 		t.Errorf("PF PFDevice: want empty, got %q", pf.PFDevice)
 	}
+	if !pf.HasSRIOV {
+		t.Errorf("PF HasSRIOV: want true, got false")
+	}
 
 	// --- VF assertions ---
 	if vf.Name != "mlx5_4" {
@@ -173,6 +176,54 @@ func TestSysfsProviderVFDetection(t *testing.T) {
 	}
 	if vf.PFDevice != "mlx5_0" {
 		t.Errorf("VF PFDevice: want mlx5_0, got %q", vf.PFDevice)
+	}
+	if vf.HasSRIOV {
+		t.Errorf("host VF HasSRIOV: want false, got true")
+	}
+}
+
+func TestSysfsProviderHasSRIOVRequiresTotalVFsFile(t *testing.T) {
+	t.Parallel()
+
+	root := filepath.Join("testdata", "sysfs", "guest_vf")
+	provider := NewSysfsProvider()
+	provider.SetSysfsRoot(root)
+
+	devices, err := provider.Devices(context.Background())
+	if err != nil {
+		t.Fatalf("Devices returned error: %v", err)
+	}
+	if len(devices) != 1 {
+		t.Fatalf("expected 1 device without sriov_totalvfs, got %d", len(devices))
+	}
+	dev := devices[0]
+	if dev.PCIAddr != "0000:00:04.0" {
+		t.Errorf("PCIAddr: want 0000:00:04.0, got %q", dev.PCIAddr)
+	}
+	if dev.IsVF {
+		t.Errorf("IsVF: want false (no physfn), got true")
+	}
+	if dev.HasSRIOV {
+		t.Errorf("HasSRIOV: want false when sriov_totalvfs is absent, got true")
+	}
+}
+
+func TestPCIHasSRIOVTotalVFsZeroStillTrue(t *testing.T) {
+	t.Parallel()
+
+	root := t.TempDir()
+	devDir := filepath.Join(root, busPCIDevicesDir, "0000:1a:00.0")
+	if err := os.MkdirAll(devDir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(devDir, sriovTotalVFsName), []byte("0\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if !pciHasSRIOVTotalVFs(root, "0000:1a:00.0") {
+		t.Fatal("sriov_totalvfs=0 must still set HasSRIOV")
+	}
+	if pciHasSRIOVTotalVFs(root, "../evil") {
+		t.Fatal("non-BDF pciAddr must not be joined")
 	}
 }
 

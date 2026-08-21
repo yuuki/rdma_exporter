@@ -720,13 +720,13 @@ func New(provider Provider, logger *slog.Logger, opts ...Option) *RdmaCollector 
 		),
 		netdevVPortRDMABytesDesc: prometheus.NewDesc(
 			"rdma_netdev_vport_rdma_bytes_total",
-			"RDMA octets steered to or from this netdev's function vport. Ethtool {rx,tx}_vport_rdma_{unicast,multicast}_bytes. Not a physical-port *_phy total and not a sum of other function vports. Distinct from sysfs port_rcv_data and rdma_qp_{rx,tx}_bytes_total.",
+			"RDMA octets steered to or from this netdev's function vport. Ethtool {rx,tx}_vport_rdma_{unicast,multicast}_bytes. Not a physical-port *_phy total and not a sum of other function vports. Distinct from sysfs port_rcv_data and rdma_qp_{rx,tx}_bytes_total. Omitted when sriov_totalvfs is absent.",
 			[]string{"device", "port", "netdev", "direction", "traffic"},
 			nil,
 		),
 		netdevVPortRDMAPacketsDesc: prometheus.NewDesc(
 			"rdma_netdev_vport_rdma_packets_total",
-			"RDMA packets steered to or from this netdev's function vport. Ethtool {rx,tx}_vport_rdma_{unicast,multicast}_packets. Not a physical-port *_phy total and not a sum of other function vports. Distinct from sysfs port packet counters and rdma_qp_{rx,tx}_packets_total.",
+			"RDMA packets steered to or from this netdev's function vport. Ethtool {rx,tx}_vport_rdma_{unicast,multicast}_packets. Not a physical-port *_phy total and not a sum of other function vports. Distinct from sysfs port packet counters and rdma_qp_{rx,tx}_packets_total. Omitted when sriov_totalvfs is absent.",
 			[]string{"device", "port", "netdev", "direction", "traffic"},
 			nil,
 		),
@@ -1042,7 +1042,7 @@ func (c *RdmaCollector) Collect(ch chan<- prometheus.Metric) {
 			}
 
 			attr := port.Attributes
-			c.collectNetDevMetrics(ctx, ch, device.Name, portID, attr, device.IsVF, device.PCIAddr, netdevOwners, netDevStatsCache, netDevHWEmitted)
+			c.collectNetDevMetrics(ctx, ch, device.Name, portID, attr, device.IsVF, device.HasSRIOV, device.PCIAddr, netdevOwners, netDevStatsCache, netDevHWEmitted)
 
 			ch <- prometheus.MustNewConstMetric(
 				c.portInfoDesc,
@@ -1315,6 +1315,7 @@ func (c *RdmaCollector) collectNetDevMetrics(
 	deviceName, portID string,
 	attr rdma.PortAttributes,
 	isVF bool,
+	hasSRIOV bool,
 	pciAddr string,
 	netdevOwners map[string]int,
 	cache map[string]netDevStatsCacheEntry,
@@ -1327,8 +1328,9 @@ func (c *RdmaCollector) collectNetDevMetrics(
 		return
 	}
 	// Ethtool collection is skipped for IB devices flagged as PCI VFs.
-	// Remaining Ethernet ports are not guaranteed to be PFs (SF and guest VF
-	// without physfn still pass). vPort RDMA has extra omit gates.
+	// Remaining Ethernet ports are not guaranteed to be PFs (SF still pass).
+	// A BDF without physfn also passes this gate. vPort RDMA additionally
+	// requires sriov_totalvfs to exist on that BDF.
 	if isVF {
 		c.logger.Debug("skipping netdev collection for VF device", "device", deviceName, "port", portID)
 		return
@@ -1355,13 +1357,14 @@ func (c *RdmaCollector) collectNetDevMetrics(
 			return
 		}
 		hwEmitted[attr.NetDev] = struct{}{}
-		skipVPort := !isPCIFunctionBDF(pciAddr) || netdevOwners[attr.NetDev] != 1 || isRepresentorPhysPortName(c.lookupPhysPortName(attr.NetDev))
+		skipVPort := !isPCIFunctionBDF(pciAddr) || !hasSRIOV || netdevOwners[attr.NetDev] != 1 || isRepresentorPhysPortName(c.lookupPhysPortName(attr.NetDev))
 		if skipVPort {
 			c.logger.Debug("omitting vport RDMA metrics",
 				"device", deviceName,
 				"port", portID,
 				"netdev", attr.NetDev,
 				"pci_addr", pciAddr,
+				"has_sriov", hasSRIOV,
 			)
 		}
 		c.emitNetDevHWMetrics(ch, deviceName, portID, attr.NetDev, stats, skipVPort)
