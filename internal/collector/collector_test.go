@@ -1,6 +1,7 @@
 package collector
 
 import (
+	"bytes"
 	"context"
 	"errors"
 	"fmt"
@@ -9,6 +10,7 @@ import (
 	"strconv"
 	"strings"
 	"sync"
+	"syscall"
 	"testing"
 
 	"github.com/prometheus/client_golang/prometheus"
@@ -205,6 +207,14 @@ func (s *stubQPProvider) SetCount(device string, port int) int {
 func newDiscardLogger() *slog.Logger {
 	return slog.New(slog.NewTextHandler(io.Discard, &slog.HandlerOptions{Level: slog.LevelDebug}))
 }
+
+func newCaptureLogger() (*slog.Logger, *bytes.Buffer) {
+	var buf bytes.Buffer
+	logger := slog.New(slog.NewTextHandler(&buf, &slog.HandlerOptions{Level: slog.LevelInfo}))
+	return logger, &buf
+}
+
+const unsupportedNetDevLogMsg = "netdev ethtool stats are not supported; skipping netdev metrics for this interface"
 
 func TestCollectorExportsMetrics(t *testing.T) {
 	t.Parallel()
@@ -1313,6 +1323,94 @@ func TestCollectorIncrementsBothNetDevErrorCountersWhenBothEnabled(t *testing.T)
 	}
 	if got := findMetricValue(t, mfs, "rdma_netdev_scrape_errors_total"); got != 1 {
 		t.Fatalf("expected netdev scrape error counter to be 1, got %v", got)
+	}
+}
+
+func TestCollector_UnsupportedNetDevLogsOnceAtProbe(t *testing.T) {
+	t.Parallel()
+
+	provider, netDevProvider := bondedEthernetWithStatsError(fmt.Errorf("read ethtool stats for bond0: %w", syscall.EOPNOTSUPP))
+	logger, logs := newCaptureLogger()
+	c := New(provider, logger, WithNetDevStatsProvider(netDevProvider))
+
+	if err := c.ProbeNetDevStats(context.Background()); err != nil {
+		t.Fatalf("probe: %v", err)
+	}
+	if got := strings.Count(logs.String(), `msg="`+unsupportedNetDevLogMsg+`"`); got != 1 {
+		t.Fatalf("expected 1 unsupported log at probe, got %d\n%s", got, logs.String())
+	}
+	probeLogLen := logs.Len()
+
+	reg := prometheus.NewRegistry()
+	reg.MustRegister(c)
+	for i := 0; i < 2; i++ {
+		mfs, err := reg.Gather()
+		if err != nil {
+			t.Fatalf("gather %d: %v", i, err)
+		}
+		if got := findMetricValue(t, mfs, "rdma_roce_pfc_scrape_errors_total"); got != 0 {
+			t.Fatalf("gather %d: expected PFC scrape error counter to stay 0, got %v", i, got)
+		}
+	}
+	if extra := logs.String()[probeLogLen:]; extra != "" {
+		t.Fatalf("expected no additional logs on scrape, got %q", extra)
+	}
+	if got := netDevProvider.CallCount("bond0"); got != 1 {
+		t.Fatalf("expected ethtool stats to be probed once, got %d", got)
+	}
+}
+
+func TestCollector_UnsupportedNetDevSkipsLaterScrapes(t *testing.T) {
+	t.Parallel()
+
+	provider, netDevProvider := bondedEthernetWithStatsError(syscall.EOPNOTSUPP)
+	logger, logs := newCaptureLogger()
+	c := New(provider, logger, WithNetDevStatsProvider(netDevProvider))
+	reg := prometheus.NewRegistry()
+	reg.MustRegister(c)
+
+	if _, err := reg.Gather(); err != nil {
+		t.Fatalf("first gather: %v", err)
+	}
+	if got := strings.Count(logs.String(), `msg="`+unsupportedNetDevLogMsg+`"`); got != 1 {
+		t.Fatalf("expected 1 unsupported log on first scrape without probe, got %d\n%s", got, logs.String())
+	}
+	firstLogLen := logs.Len()
+
+	mfs, err := reg.Gather()
+	if err != nil {
+		t.Fatalf("second gather: %v", err)
+	}
+	if extra := logs.String()[firstLogLen:]; extra != "" {
+		t.Fatalf("expected no additional logs on later scrapes, got %q", extra)
+	}
+	if got := netDevProvider.CallCount("bond0"); got != 1 {
+		t.Fatalf("expected ethtool stats to be called once, got %d", got)
+	}
+	if got := findMetricValue(t, mfs, "rdma_roce_pfc_scrape_errors_total"); got != 0 {
+		t.Fatalf("expected PFC scrape error counter to stay 0, got %v", got)
+	}
+}
+
+func TestCollector_TransientNetDevErrorWarnsEachScrape(t *testing.T) {
+	t.Parallel()
+
+	provider, netDevProvider := bondedEthernetWithStatsError(errors.New("boom"))
+	logger, logs := newCaptureLogger()
+	c := New(provider, logger, WithNetDevStatsProvider(netDevProvider))
+	reg := prometheus.NewRegistry()
+	reg.MustRegister(c)
+
+	for i := 0; i < 2; i++ {
+		if _, err := reg.Gather(); err != nil {
+			t.Fatalf("gather %d: %v", i, err)
+		}
+	}
+	if got := strings.Count(logs.String(), `msg="netdev scrape failed"`); got != 2 {
+		t.Fatalf("expected scrape failure log on every scrape, got %d\n%s", got, logs.String())
+	}
+	if got := netDevProvider.CallCount("bond0"); got != 2 {
+		t.Fatalf("expected ethtool stats to be retried each scrape, got %d", got)
 	}
 }
 
@@ -2551,6 +2649,28 @@ func ethernetPFWithStats(stats map[string]uint64) (*stubProvider, *stubNetDevSta
 	if stats != nil {
 		netDevProvider.stats["ens1f0np0"] = stats
 	}
+	return provider, netDevProvider
+}
+
+func bondedEthernetWithStatsError(err error) (*stubProvider, *stubNetDevStatsProvider) {
+	provider := &stubProvider{
+		devices: []rdma.Device{
+			{
+				Name: "mlx5_bond_0",
+				Ports: []rdma.Port{
+					{
+						ID: 1,
+						Attributes: rdma.PortAttributes{
+							LinkLayer: "Ethernet",
+							NetDev:    "bond0",
+						},
+					},
+				},
+			},
+		},
+	}
+	netDevProvider := newStubNetDevStatsProvider()
+	netDevProvider.errs["bond0"] = err
 	return provider, netDevProvider
 }
 
