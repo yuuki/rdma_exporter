@@ -7,6 +7,7 @@ import (
 	"io/fs"
 	"os"
 	"path/filepath"
+	"regexp"
 	"strconv"
 	"strings"
 	"sync"
@@ -30,11 +31,14 @@ const (
 	rateFile            = "rate"
 
 	// SR-IOV PF/VF detection paths.
-	deviceDirName    = "device"          // symlink under class/infiniband/<dev>/device → PCI addr
-	physfnLinkName   = "physfn"          // symlink present only on VFs: device/physfn → PF PCI addr
-	infinibandSubDir = "infiniband"      // under /sys/bus/pci/devices/<pci>/infiniband/
-	busPCIDevicesDir = "bus/pci/devices" // /sys/bus/pci/devices/<pci>/
+	deviceDirName     = "device"          // symlink under class/infiniband/<dev>/device → PCI addr
+	physfnLinkName    = "physfn"          // symlink present only on VFs: device/physfn → PF PCI addr
+	sriovTotalVFsName = "sriov_totalvfs"  // present on PF PCI devices with the SR-IOV capability
+	infinibandSubDir  = "infiniband"      // under /sys/bus/pci/devices/<pci>/infiniband/
+	busPCIDevicesDir  = "bus/pci/devices" // /sys/bus/pci/devices/<pci>/
 )
+
+var pciFunctionBDFPattern = regexp.MustCompile(`(?i)^[0-9a-f]{4}:[0-9a-f]{2}:[0-9a-f]{2}\.[0-9a-f]$`)
 
 var (
 	// ref. https://codebrowser.dev/linux/linux/include/rdma/ib_verbs.h.html#ib_port_state
@@ -71,7 +75,12 @@ type Device struct {
 	// Empty string when the symlink cannot be resolved.
 	PCIAddr string
 	// IsVF is true when this device is a SR-IOV Virtual Function.
+	// Detection is fail-open: a missing physfn is treated as not a VF, so a
+	// guest VF (PCI BDF, no physfn) stays IsVF=false.
 	IsVF bool
+	// HasSRIOV is true when /sys/bus/pci/devices/<bdf>/sriov_totalvfs exists.
+	// The file's value is ignored (0 still counts). This is not used to flip IsVF.
+	HasSRIOV bool
 	// PFDevice is the IB device name of the parent Physical Function (e.g. "mlx5_0").
 	// Only populated when IsVF is true; empty for PFs.
 	PFDevice string
@@ -158,7 +167,7 @@ func (p *SysfsProvider) deviceFromRoot(ctx context.Context, root, deviceName str
 
 	// Resolve PCI address and PF/VF relationship via sysfs device symlink.
 	devicePath := filepath.Join(root, classInfinibandPath, deviceName, deviceDirName)
-	pciAddr, isVF, pfDevice := p.readDevicePCIInfo(root, devicePath)
+	pciAddr, isVF, pfDevice, hasSRIOV := p.readDevicePCIInfo(root, devicePath)
 
 	ports, err := p.portsFromRoot(ctx, root, deviceName)
 	if err != nil {
@@ -169,6 +178,7 @@ func (p *SysfsProvider) deviceFromRoot(ctx context.Context, root, deviceName str
 		Name:     deviceName,
 		PCIAddr:  pciAddr,
 		IsVF:     isVF,
+		HasSRIOV: hasSRIOV,
 		PFDevice: pfDevice,
 		Ports:    ports,
 	}, nil
@@ -184,18 +194,19 @@ func (p *SysfsProvider) deviceFromRoot(ctx context.Context, root, deviceName str
 //     e.g. /sys/class/infiniband/mlx5_12/device/physfn → ../0000:1a:00.0
 //  3. For VFs, resolve the PF PCI address and look up its IB device name
 //     e.g. /sys/bus/pci/devices/0000:1a:00.0/infiniband/ → mlx5_0
-func (p *SysfsProvider) readDevicePCIInfo(root, devicePath string) (pciAddr string, isVF bool, pfDevice string) {
+func (p *SysfsProvider) readDevicePCIInfo(root, devicePath string) (pciAddr string, isVF bool, pfDevice string, hasSRIOV bool) {
 	// Step 1: extract PCI address from device symlink target basename.
 	if link, err := os.Readlink(devicePath); err == nil {
 		pciAddr = filepath.Base(link) // e.g. "0000:1a:00.1"
 	}
+	hasSRIOV = pciHasSRIOVTotalVFs(root, pciAddr)
 
 	// Step 2: physfn symlink exists only on VFs.
 	physfnPath := filepath.Join(devicePath, physfnLinkName)
 	physfnLink, err := os.Readlink(physfnPath)
 	if err != nil {
-		// No physfn → this is a PF (or symlink resolution failed; treat as PF).
-		return pciAddr, false, ""
+		// No physfn → IsVF stays false (fail-open). HasSRIOV is independent.
+		return pciAddr, false, "", hasSRIOV
 	}
 
 	// Step 3: resolve PF PCI address and find the corresponding IB device name.
@@ -208,7 +219,15 @@ func (p *SysfsProvider) readDevicePCIInfo(root, devicePath string) (pciAddr stri
 		pfDevice = entries[0].Name() // e.g. "mlx5_0"
 	}
 
-	return pciAddr, true, pfDevice
+	return pciAddr, true, pfDevice, hasSRIOV
+}
+
+func pciHasSRIOVTotalVFs(root, pciAddr string) bool {
+	if !pciFunctionBDFPattern.MatchString(pciAddr) {
+		return false
+	}
+	_, err := os.Stat(filepath.Join(root, busPCIDevicesDir, pciAddr, sriovTotalVFsName))
+	return err == nil
 }
 
 func (p *SysfsProvider) devicesFromRoot(ctx context.Context, root string) ([]Device, error) {

@@ -866,13 +866,13 @@ func TestCollectorExportsVPortRDMATraffic(t *testing.T) {
 	reg.MustRegister(c)
 
 	expected := `
-# HELP rdma_netdev_vport_rdma_bytes_total RDMA octets steered to or from this netdev's function vport. Ethtool {rx,tx}_vport_rdma_{unicast,multicast}_bytes. Not a physical-port *_phy total and not a sum of other function vports. Distinct from sysfs port_rcv_data and rdma_qp_{rx,tx}_bytes_total.
+# HELP rdma_netdev_vport_rdma_bytes_total RDMA octets steered to or from this netdev's function vport. Ethtool {rx,tx}_vport_rdma_{unicast,multicast}_bytes. Not a physical-port *_phy total and not a sum of other function vports. Distinct from sysfs port_rcv_data and rdma_qp_{rx,tx}_bytes_total. Omitted when sriov_totalvfs is absent.
 # TYPE rdma_netdev_vport_rdma_bytes_total counter
 rdma_netdev_vport_rdma_bytes_total{device="mlx5_0",direction="rx",netdev="ens1f0np0",port="1",traffic="multicast"} 0
 rdma_netdev_vport_rdma_bytes_total{device="mlx5_0",direction="rx",netdev="ens1f0np0",port="1",traffic="unicast"} 1
 rdma_netdev_vport_rdma_bytes_total{device="mlx5_0",direction="tx",netdev="ens1f0np0",port="1",traffic="multicast"} 4
 rdma_netdev_vport_rdma_bytes_total{device="mlx5_0",direction="tx",netdev="ens1f0np0",port="1",traffic="unicast"} 2
-# HELP rdma_netdev_vport_rdma_packets_total RDMA packets steered to or from this netdev's function vport. Ethtool {rx,tx}_vport_rdma_{unicast,multicast}_packets. Not a physical-port *_phy total and not a sum of other function vports. Distinct from sysfs port packet counters and rdma_qp_{rx,tx}_packets_total.
+# HELP rdma_netdev_vport_rdma_packets_total RDMA packets steered to or from this netdev's function vport. Ethtool {rx,tx}_vport_rdma_{unicast,multicast}_packets. Not a physical-port *_phy total and not a sum of other function vports. Distinct from sysfs port packet counters and rdma_qp_{rx,tx}_packets_total. Omitted when sriov_totalvfs is absent.
 # TYPE rdma_netdev_vport_rdma_packets_total counter
 rdma_netdev_vport_rdma_packets_total{device="mlx5_0",direction="rx",netdev="ens1f0np0",port="1",traffic="multicast"} 7
 rdma_netdev_vport_rdma_packets_total{device="mlx5_0",direction="rx",netdev="ens1f0np0",port="1",traffic="unicast"} 5
@@ -894,8 +894,9 @@ func TestCollectorOmitsAmbiguousNetDevVPortRDMA(t *testing.T) {
 	provider := &stubProvider{
 		devices: []rdma.Device{
 			{
-				Name:    "mlx5_0",
-				PCIAddr: "0000:1a:00.0",
+				Name:     "mlx5_0",
+				PCIAddr:  "0000:1a:00.0",
+				HasSRIOV: true,
 				Ports: []rdma.Port{
 					{
 						ID:         1,
@@ -1028,10 +1029,10 @@ func TestCollectorVPortRDMAMetricsAreSparse(t *testing.T) {
 	reg.MustRegister(c)
 
 	expected := `
-# HELP rdma_netdev_vport_rdma_bytes_total RDMA octets steered to or from this netdev's function vport. Ethtool {rx,tx}_vport_rdma_{unicast,multicast}_bytes. Not a physical-port *_phy total and not a sum of other function vports. Distinct from sysfs port_rcv_data and rdma_qp_{rx,tx}_bytes_total.
+# HELP rdma_netdev_vport_rdma_bytes_total RDMA octets steered to or from this netdev's function vport. Ethtool {rx,tx}_vport_rdma_{unicast,multicast}_bytes. Not a physical-port *_phy total and not a sum of other function vports. Distinct from sysfs port_rcv_data and rdma_qp_{rx,tx}_bytes_total. Omitted when sriov_totalvfs is absent.
 # TYPE rdma_netdev_vport_rdma_bytes_total counter
 rdma_netdev_vport_rdma_bytes_total{device="mlx5_0",direction="rx",netdev="ens1f0np0",port="1",traffic="unicast"} 1
-# HELP rdma_netdev_vport_rdma_packets_total RDMA packets steered to or from this netdev's function vport. Ethtool {rx,tx}_vport_rdma_{unicast,multicast}_packets. Not a physical-port *_phy total and not a sum of other function vports. Distinct from sysfs port packet counters and rdma_qp_{rx,tx}_packets_total.
+# HELP rdma_netdev_vport_rdma_packets_total RDMA packets steered to or from this netdev's function vport. Ethtool {rx,tx}_vport_rdma_{unicast,multicast}_packets. Not a physical-port *_phy total and not a sum of other function vports. Distinct from sysfs port packet counters and rdma_qp_{rx,tx}_packets_total. Omitted when sriov_totalvfs is absent.
 # TYPE rdma_netdev_vport_rdma_packets_total counter
 rdma_netdev_vport_rdma_packets_total{device="mlx5_0",direction="tx",netdev="ens1f0np0",port="1",traffic="unicast"} 6
 `
@@ -1167,6 +1168,60 @@ func TestCollectorSkipsNetDevHWMetricsForVirtualFunction(t *testing.T) {
 	}
 	if got := netDevProvider.CallCount("enp26s0v0"); got != 0 {
 		t.Fatalf("expected VF netdev provider not to be called, got %d", got)
+	}
+}
+
+func TestCollectorOmitsVPortRDMAWithoutSRIOVKeepsHW(t *testing.T) {
+	t.Parallel()
+
+	provider := &stubProvider{
+		devices: []rdma.Device{
+			{
+				Name:     "mlx5_0",
+				PCIAddr:  "0000:00:04.0",
+				IsVF:     false,
+				HasSRIOV: false,
+				Ports: []rdma.Port{
+					{
+						ID: 1,
+						Attributes: rdma.PortAttributes{
+							LinkLayer: "Ethernet",
+							NetDev:    "ens4",
+						},
+					},
+				},
+			},
+		},
+	}
+	netDevProvider := newStubNetDevStatsProvider()
+	netDevProvider.stats["ens4"] = map[string]uint64{
+		"rx_prio3_buf_discard":          4,
+		"rx_vport_rdma_unicast_bytes":   88,
+		"rx_vport_rdma_unicast_packets": 87,
+	}
+
+	c := New(provider, newDiscardLogger(),
+		WithNetDevStatsProvider(netDevProvider),
+		WithRoCEPFCMetrics(false),
+		WithNetDevHWMetrics(true),
+		WithNetDevPhysPortName(func(string) string { return "p0" }),
+	)
+	reg := prometheus.NewRegistry()
+	reg.MustRegister(c)
+
+	expected := `
+# HELP rdma_netdev_prio_buf_discard_total Packets discarded due to lack of per-host receive buffers. Ethtool rx_prio[p]_buf_discard.
+# TYPE rdma_netdev_prio_buf_discard_total counter
+rdma_netdev_prio_buf_discard_total{device="mlx5_0",netdev="ens4",port="1",priority="3"} 4
+`
+	if err := testutil.GatherAndCompare(reg, strings.NewReader(expected),
+		"rdma_netdev_prio_buf_discard_total",
+		"rdma_netdev_vport_rdma_bytes_total",
+		"rdma_netdev_vport_rdma_packets_total"); err != nil {
+		t.Fatalf("expected missing sriov_totalvfs to omit only vport RDMA: %v", err)
+	}
+	if got := netDevProvider.CallCount("ens4"); got != 1 {
+		t.Fatalf("expected netdev provider to be called once, got %d", got)
 	}
 }
 
@@ -2471,8 +2526,9 @@ func ethernetPFWithStats(stats map[string]uint64) (*stubProvider, *stubNetDevSta
 	provider := &stubProvider{
 		devices: []rdma.Device{
 			{
-				Name:    "mlx5_0",
-				PCIAddr: "0000:1a:00.0",
+				Name:     "mlx5_0",
+				PCIAddr:  "0000:1a:00.0",
+				HasSRIOV: true,
 				Ports: []rdma.Port{
 					{
 						ID: 1,
