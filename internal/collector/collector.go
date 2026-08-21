@@ -102,6 +102,7 @@ type RdmaCollector struct {
 	qpScrapeStatusDesc         *prometheus.Desc
 	qpValueDescs               map[string]*prometheus.Desc
 
+	scrapeCollectorSuccessDesc  *prometheus.Desc
 	scrapeErrors                prometheus.Counter
 	rocePFCScrapeErrors         prometheus.Counter
 	netDevHWScrapeErrors        prometheus.Counter
@@ -111,8 +112,9 @@ type RdmaCollector struct {
 	netDevStatsProvider     NetDevStatsProvider
 	optionalCounterProvider OptionalCounterProvider
 	qpCounterProvider       QPCounterProvider
-	collectRoCEPFC          bool
-	collectNetDevHW         bool
+	collectEthtool          bool
+	collectOptional         bool
+	collectQP               bool
 	physPortName            func(string) string
 
 	collectMu sync.Mutex
@@ -556,6 +558,9 @@ func New(provider Provider, logger *slog.Logger, opts ...Option) *RdmaCollector 
 			"RDMA port metadata exported as labels.",
 			[]string{
 				"device", "port",
+				// netdev is the kernel interface from sysfs gid_attrs/ndevs
+				// (e.g. ens1f0np0). Empty when the port has no netdev.
+				"netdev",
 				"link_layer", "state", "phys_state", "link_width", "link_speed",
 				// SR-IOV VF/PF identification labels.
 				// pci_addr matches the pciAddr label in sriov_kubepoddevice, enabling join queries.
@@ -756,6 +761,12 @@ func New(provider Provider, logger *slog.Logger, opts ...Option) *RdmaCollector 
 			nil,
 		),
 		qpValueDescs: make(map[string]*prometheus.Desc, len(qpCounterValueNames)),
+		scrapeCollectorSuccessDesc: prometheus.NewDesc(
+			"rdma_scrape_collector_success",
+			"Whether this scrape's collector was usable. 1 means the collector is enabled and its provider initialized (and Prepare succeeded for netlink collectors). 0 means enabled but init or Prepare failed, or QP counters are unsupported. Absent when the collector is disabled. Per-port scrape failures increment the matching *_scrape_errors_total counter instead.",
+			[]string{"collector"},
+			nil,
+		),
 		scrapeErrors: prometheus.NewCounter(prometheus.CounterOpts{
 			Name: "rdma_scrape_errors_total",
 			Help: "Total number of errors encountered while scraping RDMA sysfs.",
@@ -817,27 +828,28 @@ func (c *RdmaCollector) storeContext(ctx context.Context) {
 	c.ctxValue.Store(&ctx)
 }
 
-// WithNetDevStatsProvider configures a provider used to fetch netdev statistics
-// for RoCEv2 PFC-related metrics. PFC collection is enabled by default when a
-// provider is configured; use WithRoCEPFCMetrics(false) to disable it.
+const (
+	collectorLabelEthtool          = "ethtool"
+	collectorLabelOptionalCounters = "optional-counters"
+	collectorLabelQPCounters       = "qp-counters"
+)
+
+// WithEthtoolCollector marks the ethtool collector as config-enabled.
+// Pass a provider with WithNetDevStatsProvider; a nil provider yields
+// rdma_scrape_collector_success{collector="ethtool"}=0.
+func WithEthtoolCollector() Option {
+	return func(c *RdmaCollector) {
+		c.collectEthtool = true
+	}
+}
+
+// WithNetDevStatsProvider configures a provider used to fetch netdev ethtool
+// statistics (RoCEv2 PFC and hardware families together) and enables the
+// ethtool collector.
 func WithNetDevStatsProvider(provider NetDevStatsProvider) Option {
 	return func(c *RdmaCollector) {
 		c.netDevStatsProvider = provider
-		c.collectRoCEPFC = true
-	}
-}
-
-// WithRoCEPFCMetrics enables or disables RoCEv2 PFC metric emission.
-func WithRoCEPFCMetrics(enabled bool) Option {
-	return func(c *RdmaCollector) {
-		c.collectRoCEPFC = enabled
-	}
-}
-
-// WithNetDevHWMetrics enables ethtool hardware counters (buffer, PCIe, PHY/FEC, IEEE 802.3x global pause, pause storm, vport RDMA).
-func WithNetDevHWMetrics(enabled bool) Option {
-	return func(c *RdmaCollector) {
-		c.collectNetDevHW = enabled
+		c.collectEthtool = true
 	}
 }
 
@@ -848,10 +860,26 @@ func WithNetDevPhysPortName(fn func(string) string) Option {
 	}
 }
 
+// WithOptionalCollector marks the optional-counters collector as config-enabled
+// without a provider (init failed).
+func WithOptionalCollector() Option {
+	return func(c *RdmaCollector) {
+		c.collectOptional = true
+	}
+}
+
 // WithOptionalCounterProvider enables optional RDMA hardware counters via netlink.
 func WithOptionalCounterProvider(provider OptionalCounterProvider) Option {
 	return func(c *RdmaCollector) {
 		c.optionalCounterProvider = provider
+		c.collectOptional = true
+	}
+}
+
+// WithQPCollector marks the qp-counters collector as config-enabled without a provider.
+func WithQPCollector() Option {
+	return func(c *RdmaCollector) {
+		c.collectQP = true
 	}
 }
 
@@ -859,6 +887,7 @@ func WithOptionalCounterProvider(provider OptionalCounterProvider) Option {
 func WithQPCounterProvider(provider QPCounterProvider) Option {
 	return func(c *RdmaCollector) {
 		c.qpCounterProvider = provider
+		c.collectQP = true
 	}
 }
 
@@ -879,43 +908,48 @@ func (c *RdmaCollector) ResetContext() {
 func (c *RdmaCollector) Describe(ch chan<- *prometheus.Desc) {
 	ch <- c.portInfoDesc
 	ch <- c.lifespanMillisecondsDesc
-	ch <- c.rocePFCPauseFramesDesc
-	ch <- c.rocePFCPauseDurationDesc
-	ch <- c.rocePFCPauseTransitionsDesc
-	ch <- c.netdevPrioBufDiscardDesc
-	ch <- c.netdevPrioCongDiscardDesc
-	ch <- c.netdevPrioDiscardsDesc
-	ch <- c.netdevPrioECNMarkedDesc
-	ch <- c.netdevDevOutOfBufferDesc
-	ch <- c.netdevRxOutOfBufferDesc
-	ch <- c.netdevRxDiscardsPhyDesc
-	ch <- c.pcieOutboundStalledPercentDesc
-	ch <- c.pcieOutboundStalledSecondsDesc
-	ch <- c.pcieOutboundOverflowDesc
-	ch <- c.pcieSignalIntegrityDesc
-	ch <- c.phyRxCorrectedBitsDesc
-	ch <- c.phyRxPCSSymbolErrDesc
-	ch <- c.phyRxBitsDesc
-	ch <- c.phyRxErrLaneDesc
-	ch <- c.phyRxCRCErrorsDesc
-	ch <- c.phyLinkDownEventsDesc
-	ch <- c.netdevGlobalPauseFramesDesc
-	ch <- c.netdevGlobalPauseDurationDesc
-	ch <- c.netdevGlobalPauseTransitionsDesc
-	ch <- c.netdevPauseStormEventsDesc
-	ch <- c.netdevVPortRDMABytesDesc
-	ch <- c.netdevVPortRDMAPacketsDesc
 	c.scrapeErrors.Describe(ch)
-	c.rocePFCScrapeErrors.Describe(ch)
-	c.netDevHWScrapeErrors.Describe(ch)
-	if c.optionalCounterProvider != nil {
+	if c.collectEthtool || c.collectOptional || c.collectQP {
+		ch <- c.scrapeCollectorSuccessDesc
+	}
+	if c.collectEthtool {
+		ch <- c.rocePFCPauseFramesDesc
+		ch <- c.rocePFCPauseDurationDesc
+		ch <- c.rocePFCPauseTransitionsDesc
+		ch <- c.netdevPrioBufDiscardDesc
+		ch <- c.netdevPrioCongDiscardDesc
+		ch <- c.netdevPrioDiscardsDesc
+		ch <- c.netdevPrioECNMarkedDesc
+		ch <- c.netdevDevOutOfBufferDesc
+		ch <- c.netdevRxOutOfBufferDesc
+		ch <- c.netdevRxDiscardsPhyDesc
+		ch <- c.pcieOutboundStalledPercentDesc
+		ch <- c.pcieOutboundStalledSecondsDesc
+		ch <- c.pcieOutboundOverflowDesc
+		ch <- c.pcieSignalIntegrityDesc
+		ch <- c.phyRxCorrectedBitsDesc
+		ch <- c.phyRxPCSSymbolErrDesc
+		ch <- c.phyRxBitsDesc
+		ch <- c.phyRxErrLaneDesc
+		ch <- c.phyRxCRCErrorsDesc
+		ch <- c.phyLinkDownEventsDesc
+		ch <- c.netdevGlobalPauseFramesDesc
+		ch <- c.netdevGlobalPauseDurationDesc
+		ch <- c.netdevGlobalPauseTransitionsDesc
+		ch <- c.netdevPauseStormEventsDesc
+		ch <- c.netdevVPortRDMABytesDesc
+		ch <- c.netdevVPortRDMAPacketsDesc
+		c.rocePFCScrapeErrors.Describe(ch)
+		c.netDevHWScrapeErrors.Describe(ch)
+	}
+	if c.collectOptional {
 		ch <- c.optionalCounterEnabledDesc
 		for _, spec := range optionalTrafficSpecs {
 			ch <- c.optionalTrafficDescs[spec.Name]
 		}
 		c.optionalCounterScrapeErrors.Describe(ch)
 	}
-	if c.qpCounterProvider != nil {
+	if c.collectQP {
 		ch <- c.qpCounterModeDesc
 		ch <- c.qpAutoMaskDesc
 		ch <- c.qpScrapeStatusDesc
@@ -961,6 +995,10 @@ func (c *RdmaCollector) Collect(ch chan<- prometheus.Metric) {
 		ctx = *stored
 	}
 
+	ethtoolOK := c.collectEthtool && c.netDevStatsProvider != nil
+	optionalOK := c.collectOptional && c.optionalCounterProvider != nil
+	qpOK := c.collectQP && c.qpCounterProvider != nil
+
 	devices, err := c.provider.Devices(ctx)
 	if err != nil {
 		if ctx.Err() != nil {
@@ -969,7 +1007,8 @@ func (c *RdmaCollector) Collect(ch chan<- prometheus.Metric) {
 			c.logger.Warn("rdma scrape failed", "err", err)
 		}
 		c.scrapeErrors.Inc()
-		c.scrapeErrors.Collect(ch)
+		c.emitCollectorSuccess(ch, ethtoolOK, optionalOK, qpOK)
+		c.collectErrorCounters(ch)
 		return
 	}
 
@@ -977,7 +1016,7 @@ func (c *RdmaCollector) Collect(ch chan<- prometheus.Metric) {
 	netDevHWEmitted := make(map[string]struct{})
 	netdevOwners := ethernetNetDevOwners(devices)
 	optionalReady := false
-	if c.optionalCounterProvider != nil {
+	if c.collectOptional && c.optionalCounterProvider != nil {
 		if err := c.optionalCounterProvider.Prepare(ctx); err != nil {
 			if ctx.Err() != nil {
 				c.logger.Warn("optional rdma counter scrape aborted by context", "err", ctx.Err())
@@ -985,6 +1024,7 @@ func (c *RdmaCollector) Collect(ch chan<- prometheus.Metric) {
 				c.logger.Warn("optional rdma counter dump failed", "err", err)
 			}
 			c.optionalCounterScrapeErrors.Inc()
+			optionalOK = false
 		} else {
 			optionalReady = true
 		}
@@ -1050,6 +1090,7 @@ func (c *RdmaCollector) Collect(ch chan<- prometheus.Metric) {
 				1,
 				device.Name,
 				portID,
+				attr.NetDev,
 				attr.LinkLayer,
 				attr.State,
 				attr.PhysState,
@@ -1066,19 +1107,44 @@ func (c *RdmaCollector) Collect(ch chan<- prometheus.Metric) {
 			"duration", time.Since(deviceStart))
 	}
 
-	if c.qpCounterProvider != nil {
-		c.collectQPCounters(ctx, ch, devices)
+	if c.collectQP && c.qpCounterProvider != nil {
+		if !c.collectQPCounters(ctx, ch, devices) {
+			qpOK = false
+		}
 	}
 
+	c.emitCollectorSuccess(ch, ethtoolOK, optionalOK, qpOK)
+	c.collectErrorCounters(ch)
+}
+
+func (c *RdmaCollector) collectErrorCounters(ch chan<- prometheus.Metric) {
 	c.scrapeErrors.Collect(ch)
-	c.rocePFCScrapeErrors.Collect(ch)
-	c.netDevHWScrapeErrors.Collect(ch)
-	if c.optionalCounterProvider != nil {
+	if c.collectEthtool {
+		c.rocePFCScrapeErrors.Collect(ch)
+		c.netDevHWScrapeErrors.Collect(ch)
+	}
+	if c.collectOptional {
 		c.optionalCounterScrapeErrors.Collect(ch)
 	}
-	if c.qpCounterProvider != nil {
+	if c.collectQP {
 		c.qpScrapeErrors.Collect(ch)
 	}
+}
+
+func (c *RdmaCollector) emitCollectorSuccess(ch chan<- prometheus.Metric, ethtoolOK, optionalOK, qpOK bool) {
+	emit := func(enabled, ok bool, label string) {
+		if !enabled {
+			return
+		}
+		value := 0.0
+		if ok {
+			value = 1
+		}
+		ch <- prometheus.MustNewConstMetric(c.scrapeCollectorSuccessDesc, prometheus.GaugeValue, value, label)
+	}
+	emit(c.collectEthtool, ethtoolOK, collectorLabelEthtool)
+	emit(c.collectOptional, optionalOK, collectorLabelOptionalCounters)
+	emit(c.collectQP, qpOK, collectorLabelQPCounters)
 }
 
 func sortedKeys[V any](m map[string]V) []string {
@@ -1161,7 +1227,7 @@ func (c *RdmaCollector) collectOptionalCounters(
 	}
 }
 
-func (c *RdmaCollector) collectQPCounters(ctx context.Context, ch chan<- prometheus.Metric, devices []rdma.Device) {
+func (c *RdmaCollector) collectQPCounters(ctx context.Context, ch chan<- prometheus.Metric, devices []rdma.Device) bool {
 	if err := c.qpCounterProvider.Prepare(ctx); err != nil {
 		if ctx.Err() != nil {
 			c.logger.Warn("qp counter scrape aborted by context", "err", ctx.Err())
@@ -1169,52 +1235,64 @@ func (c *RdmaCollector) collectQPCounters(ctx context.Context, ch chan<- prometh
 			c.logger.Warn("qp counter dump failed", "err", err)
 		}
 		c.qpScrapeErrors.Inc()
-		return
+		return false
 	}
+	ok := true
 	for _, device := range devices {
 		for _, port := range device.Ports {
-			c.collectQPPort(ctx, ch, device.Name, port.ID)
+			if !c.collectQPPort(ctx, ch, device.Name, port.ID) {
+				ok = false
+			}
 		}
 	}
+	return ok
 }
 
-func (c *RdmaCollector) collectQPPort(ctx context.Context, ch chan<- prometheus.Metric, deviceName string, portID int) {
+func qpShouldDump(mode rdmanl.QPMode) bool {
+	return mode.Mode == "auto" && mode.MaskType && !mode.MaskPID
+}
+
+func (c *RdmaCollector) collectQPPort(ctx context.Context, ch chan<- prometheus.Metric, deviceName string, portID int) bool {
 	portLabel := strconv.Itoa(portID)
 	mode, err := c.qpCounterProvider.QPMode(ctx, deviceName, portID)
 	if err != nil {
 		if ctx.Err() != nil {
 			c.logger.Warn("qp counter scrape aborted by context", "device", deviceName, "port", portLabel, "err", ctx.Err())
-			return
+			return true
 		}
 		c.logger.Warn("qp counter mode scrape failed", "device", deviceName, "port", portLabel, "err", err)
-		if err != rdmanl.ErrQPUnsupported {
+		if !errors.Is(err, rdmanl.ErrQPUnsupported) {
 			c.qpScrapeErrors.Inc()
 		}
 		c.emitQPScrapeStatus(ch, deviceName, portLabel, "error")
-		return
+		return !errors.Is(err, rdmanl.ErrQPUnsupported)
 	}
 	c.emitQPModeMetrics(ch, deviceName, portLabel, mode)
+	if !qpShouldDump(mode) {
+		return true
+	}
 
 	sets, err := c.qpCounterProvider.QPSets(ctx, deviceName, portID)
 	if err != nil {
 		if ctx.Err() != nil {
 			c.logger.Warn("qp counter scrape aborted by context", "device", deviceName, "port", portLabel, "err", ctx.Err())
-			return
+			return true
 		}
 		result := "error"
 		if errors.Is(err, rdmanl.ErrDumpOverflow) {
 			result = "overflow"
 		}
 		c.logger.Warn("qp counter scrape failed", "device", deviceName, "port", portLabel, "err", err)
-		if err != rdmanl.ErrQPUnsupported {
+		if !errors.Is(err, rdmanl.ErrQPUnsupported) {
 			c.qpScrapeErrors.Inc()
 		}
 		c.emitQPScrapeStatus(ch, deviceName, portLabel, result)
-		return
+		return !errors.Is(err, rdmanl.ErrQPUnsupported)
 	}
 
 	c.emitQPScrapeStatus(ch, deviceName, portLabel, "ok")
 	c.emitQPTotals(ch, deviceName, portLabel, sets)
+	return true
 }
 
 func (c *RdmaCollector) emitQPTotals(ch chan<- prometheus.Metric, deviceName, portLabel string, sets []rdmanl.QPSet) {
@@ -1321,10 +1399,7 @@ func (c *RdmaCollector) collectNetDevMetrics(
 	cache map[string]netDevStatsCacheEntry,
 	hwEmitted map[string]struct{},
 ) {
-	if c.netDevStatsProvider == nil {
-		return
-	}
-	if !c.collectRoCEPFC && !c.collectNetDevHW {
+	if c.netDevStatsProvider == nil || !c.collectEthtool {
 		return
 	}
 	// Ethtool collection is skipped for IB devices flagged as PCI VFs.
@@ -1349,26 +1424,22 @@ func (c *RdmaCollector) collectNetDevMetrics(
 		return
 	}
 
-	if c.collectRoCEPFC {
-		c.emitRoCEPFCMetrics(ch, deviceName, portID, attr.NetDev, stats)
+	c.emitRoCEPFCMetrics(ch, deviceName, portID, attr.NetDev, stats)
+	if _, ok := hwEmitted[attr.NetDev]; ok {
+		return
 	}
-	if c.collectNetDevHW {
-		if _, ok := hwEmitted[attr.NetDev]; ok {
-			return
-		}
-		hwEmitted[attr.NetDev] = struct{}{}
-		skipVPort := !isPCIFunctionBDF(pciAddr) || !hasSRIOV || netdevOwners[attr.NetDev] != 1 || isRepresentorPhysPortName(c.lookupPhysPortName(attr.NetDev))
-		if skipVPort {
-			c.logger.Debug("omitting vport RDMA metrics",
-				"device", deviceName,
-				"port", portID,
-				"netdev", attr.NetDev,
-				"pci_addr", pciAddr,
-				"has_sriov", hasSRIOV,
-			)
-		}
-		c.emitNetDevHWMetrics(ch, deviceName, portID, attr.NetDev, stats, skipVPort)
+	hwEmitted[attr.NetDev] = struct{}{}
+	skipVPort := !isPCIFunctionBDF(pciAddr) || !hasSRIOV || netdevOwners[attr.NetDev] != 1 || isRepresentorPhysPortName(c.lookupPhysPortName(attr.NetDev))
+	if skipVPort {
+		c.logger.Debug("omitting vport RDMA metrics",
+			"device", deviceName,
+			"port", portID,
+			"netdev", attr.NetDev,
+			"pci_addr", pciAddr,
+			"has_sriov", hasSRIOV,
+		)
 	}
+	c.emitNetDevHWMetrics(ch, deviceName, portID, attr.NetDev, stats, skipVPort)
 }
 
 func (c *RdmaCollector) emitRoCEPFCMetrics(
@@ -1414,12 +1485,8 @@ func (c *RdmaCollector) readNetDevStatsWithCache(
 
 	stats, err := c.netDevStatsProvider.Stats(ctx, netDev)
 	if err != nil {
-		if c.collectRoCEPFC {
-			c.rocePFCScrapeErrors.Inc()
-		}
-		if c.collectNetDevHW {
-			c.netDevHWScrapeErrors.Inc()
-		}
+		c.rocePFCScrapeErrors.Inc()
+		c.netDevHWScrapeErrors.Inc()
 	}
 	cache[netDev] = netDevStatsCacheEntry{
 		stats: stats,

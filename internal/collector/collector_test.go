@@ -3,6 +3,7 @@ package collector
 import (
 	"context"
 	"errors"
+	"fmt"
 	"io"
 	"log/slog"
 	"strconv"
@@ -248,7 +249,7 @@ func TestCollectorExportsMetrics(t *testing.T) {
 	expected := `
 # HELP rdma_port_info RDMA port metadata exported as labels.
 # TYPE rdma_port_info gauge
-rdma_port_info{device="mlx5_0",is_vf="false",link_layer="InfiniBand",link_speed="100 Gb/sec",link_width="4X",pci_addr="0000:1a:00.0",pf_device="",phys_state="LinkUp",port="1",state="ACTIVE"} 1
+rdma_port_info{device="mlx5_0",is_vf="false",link_layer="InfiniBand",link_speed="100 Gb/sec",link_width="4X",netdev="",pci_addr="0000:1a:00.0",pf_device="",phys_state="LinkUp",port="1",state="ACTIVE"} 1
 # HELP rdma_port_rcv_data_total The total number of data octets, divided by 4 (counting in double words, 32 bits), received on all VLs from the port.
 # TYPE rdma_port_rcv_data_total counter
 rdma_port_rcv_data_total{device="mlx5_0",port="1"} 5
@@ -263,6 +264,59 @@ rdma_symbol_error_total{device="mlx5_0",port="1"} 1
 	if err := testutil.GatherAndCompare(reg, strings.NewReader(expected),
 		"rdma_port_rcv_data_total", "rdma_port_xmit_data_total", "rdma_symbol_error_total", "rdma_port_info"); err != nil {
 		t.Fatalf("unexpected metrics output: %v", err)
+	}
+}
+
+func TestCollectorExportsPortInfoNetDev(t *testing.T) {
+	t.Parallel()
+
+	tests := []struct {
+		name   string
+		netdev string
+	}{
+		{name: "populated", netdev: "ens1f0np0"},
+		{name: "empty", netdev: ""},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+
+			provider := &stubProvider{
+				devices: []rdma.Device{
+					{
+						Name: "mlx5_0",
+						Ports: []rdma.Port{
+							{
+								ID: 1,
+								Attributes: rdma.PortAttributes{
+									LinkLayer: "Ethernet",
+									State:     "ACTIVE",
+									PhysState: "LinkUp",
+									LinkWidth: "4X",
+									LinkSpeed: "100 Gb/sec",
+									NetDev:    tt.netdev,
+								},
+							},
+						},
+					},
+				},
+			}
+
+			c := New(provider, newDiscardLogger())
+			reg := prometheus.NewRegistry()
+			reg.MustRegister(c)
+
+			expected := fmt.Sprintf(`
+# HELP rdma_port_info RDMA port metadata exported as labels.
+# TYPE rdma_port_info gauge
+rdma_port_info{device="mlx5_0",is_vf="false",link_layer="Ethernet",link_speed="100 Gb/sec",link_width="4X",netdev=%q,pci_addr="",pf_device="",phys_state="LinkUp",port="1",state="ACTIVE"} 1
+`, tt.netdev)
+
+			if err := testutil.GatherAndCompare(reg, strings.NewReader(expected), "rdma_port_info"); err != nil {
+				t.Fatalf("unexpected port info output: %v", err)
+			}
+		})
 	}
 }
 
@@ -631,10 +685,10 @@ func TestCollectorFetchesNetDevStatsOncePerScrape(t *testing.T) {
 	}
 }
 
-func TestCollectorOmitsNetDevHWMetricsByDefault(t *testing.T) {
+func TestCollectorOmitsEthtoolMetricsWithoutProvider(t *testing.T) {
 	t.Parallel()
 
-	provider, netDevProvider := ethernetPFWithStats(map[string]uint64{
+	provider, _ := ethernetPFWithStats(map[string]uint64{
 		"rx_prio3_buf_discard":          4,
 		"outbound_pci_stalled_rd":       12,
 		"rx_corrected_bits_phy":         8,
@@ -649,11 +703,12 @@ func TestCollectorOmitsNetDevHWMetricsByDefault(t *testing.T) {
 		"rx_vport_rdma_unicast_bytes":   8,
 	})
 
-	c := New(provider, newDiscardLogger(), WithNetDevStatsProvider(netDevProvider))
+	c := New(provider, newDiscardLogger())
 	reg := prometheus.NewRegistry()
 	reg.MustRegister(c)
 
 	if err := testutil.GatherAndCompare(reg, strings.NewReader(""),
+		"rdma_roce_pfc_pause_frames_total",
 		"rdma_netdev_prio_buf_discard_total",
 		"rdma_pcie_outbound_stalled_percent",
 		"rdma_phy_rx_corrected_bits_total",
@@ -662,8 +717,9 @@ func TestCollectorOmitsNetDevHWMetricsByDefault(t *testing.T) {
 		"rdma_netdev_global_pause_transitions_total",
 		"rdma_netdev_pause_storm_events_total",
 		"rdma_netdev_vport_rdma_bytes_total",
-		"rdma_netdev_vport_rdma_packets_total"); err != nil {
-		t.Fatalf("expected no netdev hardware metrics without the opt-in: %v", err)
+		"rdma_netdev_vport_rdma_packets_total",
+		"rdma_scrape_collector_success"); err != nil {
+		t.Fatalf("expected no ethtool metrics without the collector: %v", err)
 	}
 }
 
@@ -699,7 +755,6 @@ func TestCollectorExportsNetDevHWMetrics(t *testing.T) {
 
 	c := New(provider, newDiscardLogger(),
 		WithNetDevStatsProvider(netDevProvider),
-		WithNetDevHWMetrics(true),
 	)
 	reg := prometheus.NewRegistry()
 	reg.MustRegister(c)
@@ -801,8 +856,6 @@ func TestCollectorExportsGlobalPauseAndPauseStorm(t *testing.T) {
 
 	c := New(provider, newDiscardLogger(),
 		WithNetDevStatsProvider(netDevProvider),
-		WithRoCEPFCMetrics(false),
-		WithNetDevHWMetrics(true),
 	)
 	reg := prometheus.NewRegistry()
 	reg.MustRegister(c)
@@ -829,7 +882,6 @@ rdma_netdev_pause_storm_events_total{device="mlx5_0",netdev="ens1f0np0",port="1"
 		"rdma_netdev_global_pause_duration_total",
 		"rdma_netdev_global_pause_transitions_total",
 		"rdma_netdev_pause_storm_events_total",
-		"rdma_roce_pfc_pause_frames_total",
 	); err != nil {
 		t.Fatalf("unexpected global pause metrics: %v", err)
 	}
@@ -858,8 +910,6 @@ func TestCollectorExportsVPortRDMATraffic(t *testing.T) {
 
 	c := New(provider, newDiscardLogger(),
 		WithNetDevStatsProvider(netDevProvider),
-		WithRoCEPFCMetrics(false),
-		WithNetDevHWMetrics(true),
 		WithNetDevPhysPortName(func(string) string { return "p0" }),
 	)
 	reg := prometheus.NewPedanticRegistry()
@@ -882,7 +932,6 @@ rdma_netdev_vport_rdma_packets_total{device="mlx5_0",direction="tx",netdev="ens1
 	if err := testutil.GatherAndCompare(reg, strings.NewReader(expected),
 		"rdma_netdev_vport_rdma_bytes_total",
 		"rdma_netdev_vport_rdma_packets_total",
-		"rdma_roce_pfc_pause_frames_total",
 	); err != nil {
 		t.Fatalf("unexpected vport RDMA metrics: %v", err)
 	}
@@ -920,7 +969,6 @@ func TestCollectorOmitsAmbiguousNetDevVPortRDMA(t *testing.T) {
 
 	c := New(provider, newDiscardLogger(),
 		WithNetDevStatsProvider(netDevProvider),
-		WithNetDevHWMetrics(true),
 	)
 	reg := prometheus.NewRegistry()
 	reg.MustRegister(c)
@@ -955,8 +1003,6 @@ func TestCollectorOmitsNonPCIFunctionVPortRDMA(t *testing.T) {
 
 	c := New(provider, newDiscardLogger(),
 		WithNetDevStatsProvider(netDevProvider),
-		WithRoCEPFCMetrics(false),
-		WithNetDevHWMetrics(true),
 	)
 	reg := prometheus.NewRegistry()
 	reg.MustRegister(c)
@@ -989,8 +1035,6 @@ func TestCollectorOmitsRepresentorVPortRDMA(t *testing.T) {
 
 			c := New(provider, newDiscardLogger(),
 				WithNetDevStatsProvider(netDevProvider),
-				WithRoCEPFCMetrics(false),
-				WithNetDevHWMetrics(true),
 				WithNetDevPhysPortName(func(string) string { return physPortName }),
 			)
 			reg := prometheus.NewRegistry()
@@ -1021,8 +1065,6 @@ func TestCollectorVPortRDMAMetricsAreSparse(t *testing.T) {
 
 	c := New(provider, newDiscardLogger(),
 		WithNetDevStatsProvider(netDevProvider),
-		WithRoCEPFCMetrics(false),
-		WithNetDevHWMetrics(true),
 		WithNetDevPhysPortName(func(string) string { return "p0" }),
 	)
 	reg := prometheus.NewRegistry()
@@ -1052,7 +1094,6 @@ func TestCollectorNetDevHWMetricsAreSparse(t *testing.T) {
 
 	c := New(provider, newDiscardLogger(),
 		WithNetDevStatsProvider(netDevProvider),
-		WithNetDevHWMetrics(true),
 	)
 	reg := prometheus.NewRegistry()
 	reg.MustRegister(c)
@@ -1104,7 +1145,6 @@ func TestCollectorNetDevHWMetricsDedupesSharedNetDev(t *testing.T) {
 
 	c := New(provider, newDiscardLogger(),
 		WithNetDevStatsProvider(netDevProvider),
-		WithNetDevHWMetrics(true),
 	)
 	reg := prometheus.NewRegistry()
 	reg.MustRegister(c)
@@ -1155,7 +1195,6 @@ func TestCollectorSkipsNetDevHWMetricsForVirtualFunction(t *testing.T) {
 
 	c := New(provider, newDiscardLogger(),
 		WithNetDevStatsProvider(netDevProvider),
-		WithNetDevHWMetrics(true),
 	)
 	reg := prometheus.NewRegistry()
 	reg.MustRegister(c)
@@ -1202,8 +1241,6 @@ func TestCollectorOmitsVPortRDMAWithoutSRIOVKeepsHW(t *testing.T) {
 
 	c := New(provider, newDiscardLogger(),
 		WithNetDevStatsProvider(netDevProvider),
-		WithRoCEPFCMetrics(false),
-		WithNetDevHWMetrics(true),
 		WithNetDevPhysPortName(func(string) string { return "p0" }),
 	)
 	reg := prometheus.NewRegistry()
@@ -1225,7 +1262,7 @@ rdma_netdev_prio_buf_discard_total{device="mlx5_0",netdev="ens4",port="1",priori
 	}
 }
 
-func TestCollectorOmitsPFCWhenDisabled(t *testing.T) {
+func TestCollectorEthtoolEmitsPFCAndHWTogether(t *testing.T) {
 	t.Parallel()
 
 	provider, netDevProvider := ethernetPFWithStats(map[string]uint64{
@@ -1235,52 +1272,22 @@ func TestCollectorOmitsPFCWhenDisabled(t *testing.T) {
 
 	c := New(provider, newDiscardLogger(),
 		WithNetDevStatsProvider(netDevProvider),
-		WithRoCEPFCMetrics(false),
-		WithNetDevHWMetrics(true),
 	)
 	reg := prometheus.NewRegistry()
 	reg.MustRegister(c)
-
-	if err := testutil.GatherAndCompare(reg, strings.NewReader(""),
-		"rdma_roce_pfc_pause_frames_total"); err != nil {
-		t.Fatalf("expected PFC metrics to be omitted: %v", err)
-	}
 
 	expected := `
 # HELP rdma_netdev_prio_buf_discard_total Packets discarded due to lack of per-host receive buffers. Ethtool rx_prio[p]_buf_discard.
 # TYPE rdma_netdev_prio_buf_discard_total counter
 rdma_netdev_prio_buf_discard_total{device="mlx5_0",netdev="ens1f0np0",port="1",priority="3"} 4
+# HELP rdma_roce_pfc_pause_frames_total RoCEv2 PFC pause frames from ethtool stats. direction=rx: the peer XOFFed this NIC so this NIC cannot transmit on that priority. direction=tx: this NIC XOFFed the peer because it is not absorbing that priority.
+# TYPE rdma_roce_pfc_pause_frames_total counter
+rdma_roce_pfc_pause_frames_total{device="mlx5_0",direction="rx",netdev="ens1f0np0",port="1",priority="0"} 1
 `
 	if err := testutil.GatherAndCompare(reg, strings.NewReader(expected),
+		"rdma_roce_pfc_pause_frames_total",
 		"rdma_netdev_prio_buf_discard_total"); err != nil {
-		t.Fatalf("expected netdev hardware metrics with PFC disabled: %v", err)
-	}
-}
-
-func TestCollectorIncrementsNetDevHWErrorCounterOnly(t *testing.T) {
-	t.Parallel()
-
-	provider, netDevProvider := ethernetPFWithStats(nil)
-	netDevProvider.errs["ens1f0np0"] = errors.New("boom")
-
-	c := New(provider, newDiscardLogger(),
-		WithNetDevStatsProvider(netDevProvider),
-		WithRoCEPFCMetrics(false),
-		WithNetDevHWMetrics(true),
-	)
-	reg := prometheus.NewRegistry()
-	reg.MustRegister(c)
-
-	mfs, err := reg.Gather()
-	if err != nil {
-		t.Fatalf("unexpected gather error: %v", err)
-	}
-
-	if got := findMetricValue(t, mfs, "rdma_netdev_scrape_errors_total"); got != 1 {
-		t.Fatalf("expected netdev scrape error counter to be 1, got %v", got)
-	}
-	if got := findMetricValue(t, mfs, "rdma_roce_pfc_scrape_errors_total"); got != 0 {
-		t.Fatalf("expected PFC scrape error counter to stay 0, got %v", got)
+		t.Fatalf("expected ethtool collector to emit PFC and hardware families: %v", err)
 	}
 }
 
@@ -1292,7 +1299,6 @@ func TestCollectorIncrementsBothNetDevErrorCountersWhenBothEnabled(t *testing.T)
 
 	c := New(provider, newDiscardLogger(),
 		WithNetDevStatsProvider(netDevProvider),
-		WithNetDevHWMetrics(true),
 	)
 	reg := prometheus.NewRegistry()
 	reg.MustRegister(c)
@@ -2580,4 +2586,193 @@ func findLabeledGauge(t *testing.T, families []*dto.MetricFamily, name, label, v
 	}
 	t.Fatalf("metric %s not found", name)
 	return 0
+}
+
+func TestCollectorScrapeCollectorSuccessOnSysfsFailure(t *testing.T) {
+	t.Parallel()
+
+	provider := &stubProvider{err: errors.New("boom")}
+	c := New(provider, newDiscardLogger(),
+		WithEthtoolCollector(),
+		WithOptionalCollector(),
+		WithQPCollector(),
+	)
+	reg := prometheus.NewRegistry()
+	reg.MustRegister(c)
+
+	mfs, err := reg.Gather()
+	if err != nil {
+		t.Fatalf("unexpected gather error: %v", err)
+	}
+	if got := findLabeledGauge(t, mfs, "rdma_scrape_collector_success", "collector", "ethtool"); got != 0 {
+		t.Fatalf("ethtool success = %v, want 0 without provider", got)
+	}
+	if got := findLabeledGauge(t, mfs, "rdma_scrape_collector_success", "collector", "optional-counters"); got != 0 {
+		t.Fatalf("optional success = %v, want 0 without provider", got)
+	}
+	if got := findLabeledGauge(t, mfs, "rdma_scrape_collector_success", "collector", "qp-counters"); got != 0 {
+		t.Fatalf("qp success = %v, want 0 without provider", got)
+	}
+}
+
+func TestCollectorScrapeCollectorSuccessWhenProvidersReady(t *testing.T) {
+	t.Parallel()
+
+	provider := &stubProvider{
+		devices: []rdma.Device{{Name: "mlx5_0", Ports: []rdma.Port{{ID: 1}}}},
+	}
+	qp := newStubQPProvider()
+	qp.modes["mlx5_0/1"] = rdmanl.QPMode{Mode: "none"}
+
+	c := New(provider, newDiscardLogger(),
+		WithNetDevStatsProvider(newStubNetDevStatsProvider()),
+		WithOptionalCounterProvider(newStubOptionalCounterProvider()),
+		WithQPCounterProvider(qp),
+	)
+	reg := prometheus.NewRegistry()
+	reg.MustRegister(c)
+
+	mfs, err := reg.Gather()
+	if err != nil {
+		t.Fatalf("unexpected gather error: %v", err)
+	}
+	if got := findLabeledGauge(t, mfs, "rdma_scrape_collector_success", "collector", "ethtool"); got != 1 {
+		t.Fatalf("ethtool success = %v, want 1", got)
+	}
+	if got := findLabeledGauge(t, mfs, "rdma_scrape_collector_success", "collector", "optional-counters"); got != 1 {
+		t.Fatalf("optional success = %v, want 1", got)
+	}
+	if got := findLabeledGauge(t, mfs, "rdma_scrape_collector_success", "collector", "qp-counters"); got != 1 {
+		t.Fatalf("qp success = %v, want 1 after Prepare with skipped dump", got)
+	}
+}
+
+func TestCollectorOptionalPrepareFailureSetsCollectorSuccessZero(t *testing.T) {
+	t.Parallel()
+
+	provider := &stubProvider{
+		devices: []rdma.Device{{Name: "mlx5_0", Ports: []rdma.Port{{ID: 1}}}},
+	}
+	opt := newStubOptionalCounterProvider()
+	opt.prepareErr = errors.New("dump failed")
+
+	c := New(provider, newDiscardLogger(), WithOptionalCounterProvider(opt))
+	reg := prometheus.NewRegistry()
+	reg.MustRegister(c)
+
+	mfs, err := reg.Gather()
+	if err != nil {
+		t.Fatalf("unexpected gather error: %v", err)
+	}
+	if got := findLabeledGauge(t, mfs, "rdma_scrape_collector_success", "collector", "optional-counters"); got != 0 {
+		t.Fatalf("optional success = %v, want 0 after Prepare failure", got)
+	}
+}
+
+func TestCollectorQPUnsupportedSetsCollectorSuccessZero(t *testing.T) {
+	t.Parallel()
+
+	provider := &stubProvider{
+		devices: []rdma.Device{{Name: "mlx5_0", Ports: []rdma.Port{{ID: 1}}}},
+	}
+	qp := newStubQPProvider()
+	qp.modeErrs["mlx5_0/1"] = rdmanl.ErrQPUnsupported
+
+	c := New(provider, newDiscardLogger(), WithQPCounterProvider(qp))
+	reg := prometheus.NewRegistry()
+	reg.MustRegister(c)
+
+	mfs, err := reg.Gather()
+	if err != nil {
+		t.Fatalf("unexpected gather error: %v", err)
+	}
+	if got := findLabeledGauge(t, mfs, "rdma_scrape_collector_success", "collector", "qp-counters"); got != 0 {
+		t.Fatalf("qp success = %v, want 0 when unsupported", got)
+	}
+}
+
+func TestCollectorSkipsQPDumpWhenNotAutoTypeOnly(t *testing.T) {
+	t.Parallel()
+
+	cases := []struct {
+		name string
+		mode rdmanl.QPMode
+	}{
+		{name: "none", mode: rdmanl.QPMode{Mode: "none"}},
+		{name: "manual", mode: rdmanl.QPMode{Mode: "manual"}},
+		{name: "auto_pid", mode: rdmanl.QPMode{Mode: "auto", MaskPID: true}},
+		{name: "auto_type_and_pid", mode: rdmanl.QPMode{Mode: "auto", MaskType: true, MaskPID: true}},
+	}
+
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+
+			provider := &stubProvider{
+				devices: []rdma.Device{{Name: "mlx5_0", Ports: []rdma.Port{{ID: 1}}}},
+			}
+			qp := newStubQPProvider()
+			qp.modes["mlx5_0/1"] = tc.mode
+			qp.sets["mlx5_0/1"] = []rdmanl.QPSet{{
+				Mode:   "auto",
+				QPType: "RC",
+				Stats:  map[string]uint64{"out_of_buffer": 99},
+			}}
+
+			c := New(provider, newDiscardLogger(), WithQPCounterProvider(qp))
+			reg := prometheus.NewRegistry()
+			reg.MustRegister(c)
+
+			if err := testutil.GatherAndCompare(reg, strings.NewReader(""),
+				"rdma_qp_scrape_status",
+				"rdma_qp_out_of_buffer_total",
+			); err != nil {
+				t.Fatalf("expected skipped dump to omit status and totals: %v", err)
+			}
+			if got := qp.SetCount("mlx5_0", 1); got != 0 {
+				t.Fatalf("QPSets calls = %d, want 0", got)
+			}
+			if got := qp.ModeCount("mlx5_0", 1); got != 1 {
+				t.Fatalf("QPMode calls = %d, want 1", got)
+			}
+
+			current := tc.mode.Mode
+			if current != "none" && current != "auto" && current != "manual" {
+				current = "none"
+			}
+			none, auto, manual := 0.0, 0.0, 0.0
+			switch current {
+			case "auto":
+				auto = 1
+			case "manual":
+				manual = 1
+			default:
+				none = 1
+			}
+			typeMask, pidMask := 0.0, 0.0
+			if tc.mode.MaskType {
+				typeMask = 1
+			}
+			if tc.mode.MaskPID {
+				pidMask = 1
+			}
+			expected := fmt.Sprintf(`
+# HELP rdma_qp_auto_mask Whether auto-mode grouping includes this criterion. type and pid are independent bits.
+# TYPE rdma_qp_auto_mask gauge
+rdma_qp_auto_mask{criteria="pid",device="mlx5_0",port="1"} %g
+rdma_qp_auto_mask{criteria="type",device="mlx5_0",port="1"} %g
+# HELP rdma_qp_counter_mode QP statistic counter bind mode on the port. One series per mode; value 1 is the current mode.
+# TYPE rdma_qp_counter_mode gauge
+rdma_qp_counter_mode{device="mlx5_0",mode="auto",port="1"} %g
+rdma_qp_counter_mode{device="mlx5_0",mode="manual",port="1"} %g
+rdma_qp_counter_mode{device="mlx5_0",mode="none",port="1"} %g
+`, pidMask, typeMask, auto, manual, none)
+			if err := testutil.GatherAndCompare(reg, strings.NewReader(expected),
+				"rdma_qp_counter_mode",
+				"rdma_qp_auto_mask",
+			); err != nil {
+				t.Fatalf("expected mode/mask gauges when dump is skipped: %v", err)
+			}
+		})
+	}
 }
