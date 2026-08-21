@@ -54,6 +54,8 @@ Organize panels into three horizontal rows across a 24-column grid, following �
 
 ### Row 3 – Congestion & Error Deep Dive
 - **Time series: ECN / CNP Activity** – visualize `rdma_np_cnp_sent_total`, `rdma_np_ecn_marked_roce_packets_total`, `rdma_rp_cnp_handled_total`, `rdma_rp_cnp_ignored_total`.
+- **Time series: Optional CC** – `rate(rdma_cc_{rx_ce,rx_cnp,tx_cnp}_pkts_total[$interval])`. mlx5 optional netlink counters, not sysfs and not `rdma_np_*` / `rdma_rp_*`. Requires `--enable-rdma-optional-counters`.
+- **Time series: Optional CC enabled** – `rdma_optional_counter_enabled` filtered to `^cc_.*`. 1 = enabled, 0 = supported but disabled.
 - **Time series: Adaptive Retransmission / Timeout** – highlight reliability and congestion control behavior.
 - **Time series: PFC pause occupancy** – `rate(rdma_roce_pfc_pause_duration_total[$interval]) / 1e6`, split by `direction`. Panel description states the observation (rx = peer XOFFed this NIC; tx = this NIC XOFFed the peer), not a root cause.
 - **Time series: IEEE 802.3x pause occupancy** – `rate(rdma_netdev_global_pause_duration_total[$interval]) / 1e6`, split by `direction`. Distinct from PFC; keys exist only in global pause mode. Requires `--enable-netdev-hw-metrics`. Observation only.
@@ -62,6 +64,8 @@ Organize panels into three horizontal rows across a 24-column grid, following �
 - **Time series: IEEE 802.3x pause transitions** – `rate(rdma_netdev_global_pause_transitions_total[$interval])`. mlx5 receive only; no `direction` label. Requires `--enable-netdev-hw-metrics`.
 - **Time series: QP optional traffic bytes** – `rate(rdma_qp_rx_bytes_total[$interval])` and `rate(rdma_qp_tx_bytes_total[$interval])`, labeled `{device,port,qp_type}`. Requires `--enable-rdma-qp-counters`. Do not add to sysfs `rdma_<name>_total`.
 - **Time series: QP optional traffic packets** – `rate(rdma_qp_rx_packets_total[$interval])` and `rate(rdma_qp_tx_packets_total[$interval])`. Same dump constraints as bytes.
+- **Time series: port-level optional traffic bytes** – `rate(rdma_optional_rx_bytes_total[$interval])` and `rate(rdma_optional_tx_bytes_total[$interval])`. Link-wide mlx5 optional flow-counter octets. Do not add to sysfs `port_rcv_data`, `rdma_qp_*`, or vPort. Requires `--enable-rdma-optional-counters` only.
+- **Time series: port-level optional traffic packets** – `rate(rdma_optional_rx_packets_total[$interval])` and `rate(rdma_optional_tx_packets_total[$interval])`. Same-direction packet and byte names share one flow counter.
 - **Time series: PCIe stall seconds** – `rate(rdma_pcie_outbound_stalled_seconds_total[$interval])`. Requires `--enable-netdev-hw-metrics`. Do not `rate()` the 1-second percent gauge.
 - **Time series: PHY/FEC interval ratio** – `increase(rdma_phy_rx_corrected_bits_total[$interval]) / clamp_min(increase(rdma_phy_rx_bits_total[$interval]), 1)` and the PCS analogue. Requires `--enable-netdev-hw-metrics`.
 - **Stacked bars: Error Family Breakdown** – `rdma_port_rcv_errors_total`, `rdma_port_xmit_discards_total`, `rdma_port_rcv_remote_physical_errors_total`, `rdma_symbol_error_total`.
@@ -85,6 +89,8 @@ Organize panels into three horizontal rows across a 24-column grid, following �
 | Multicast vs. Unicast mix | `rate(rdma_port_multicast_rcv_packets_total{...}[$interval])` vs. `rate(rdma_port_unicast_rcv_packets_total{...}[$interval])` | Use dual-axis or field overrides |
 | Transmit wait | `rate(rdma_port_xmit_wait_total{job="$job", instance="$instance", device="$device", port="$port"}[$interval])` | Highlight sustained non-zero periods |
 | ECN / CNP signals | `rate(rdma_np_cnp_sent_total{...}[$interval])`, `rate(rdma_np_ecn_marked_roce_packets_total{...}[$interval])`, etc. | Group into repeating panel if needed |
+| Optional CC | `rate(rdma_cc_rx_ce_pkts_total{...}[$interval])`, `rate(rdma_cc_rx_cnp_pkts_total{...}[$interval])`, `rate(rdma_cc_tx_cnp_pkts_total{...}[$interval])` | Not sysfs; not NP/RP. Opt-in netlink. |
+| Optional CC enabled | `rdma_optional_counter_enabled{..., counter=~"^cc_.*"}` | Gauge 0/1. Exporter never enables counters. |
 | Adaptive retransmission | `rate(rdma_roce_adp_retrans_total{...}[$interval])`, `rate(rdma_roce_adp_retrans_to_total{...}[$interval])` | Watch for spikes |
 | PFC occupancy | `rate(rdma_roce_pfc_pause_duration_total{...}[$interval]) / 1e6` | Microseconds in the counter; divide by 1e6. Split by `direction`. |
 | IEEE 802.3x pause occupancy | `rate(rdma_netdev_global_pause_duration_total{...}[$interval]) / 1e6` | Distinct from PFC. Keys exist only in global pause mode. Split by `direction`. |
@@ -93,6 +99,8 @@ Organize panels into three horizontal rows across a 24-column grid, following �
 | IEEE 802.3x pause transitions | `rate(rdma_netdev_global_pause_transitions_total{...}[$interval])` | mlx5 receive only; no `direction` label. |
 | QP optional traffic bytes | `rate(rdma_qp_rx_bytes_total{...}[$interval])`, `rate(rdma_qp_tx_bytes_total{...}[$interval])` | Live auto-type bound QPs. Do not add to sysfs port totals. |
 | QP optional traffic packets | `rate(rdma_qp_rx_packets_total{...}[$interval])`, `rate(rdma_qp_tx_packets_total{...}[$interval])` | Appear only when the dump contains those keys. |
+| Port-level optional traffic bytes | `rate(rdma_optional_rx_bytes_total{...}[$interval])`, `rate(rdma_optional_tx_bytes_total{...}[$interval])` | Octets. Do not ×4. Do not add to QP or vPort. |
+| Port-level optional traffic packets | `rate(rdma_optional_rx_packets_total{...}[$interval])`, `rate(rdma_optional_tx_packets_total{...}[$interval])` | Shared directional flow counter with the byte names. |
 | PCIe stall | `rate(rdma_pcie_outbound_stalled_seconds_total{...}[$interval])` | Fraction of time stall exceeded 30%. Opt-in ethtool family. |
 | PHY FEC ratio | `increase(rdma_phy_rx_corrected_bits_total{...}[$interval]) / clamp_min(increase(rdma_phy_rx_bits_total{...}[$interval]), 1)` | Interval sample ratio, not instantaneous BER. |
 | Error breakdown | `rate(rdma_port_rcv_errors_total{...}[$interval])`, `rate(rdma_port_xmit_discards_total{...}[$interval])`, `rate(rdma_port_rcv_remote_physical_errors_total{...}[$interval])`, `rate(rdma_symbol_error_total{...}[$interval])`, `rate(rdma_port_rcv_switch_relay_errors_total{...}[$interval])`, `rate(rdma_port_rcv_constraint_errors_total{...}[$interval])`, `rate(rdma_port_xmit_constraint_errors_total{...}[$interval])` | Stack by metric; toggle visibility for high-cardinality fabrics |
@@ -133,9 +141,9 @@ Precompute heavy expressions to accelerate dashboards and keep query inspector r
 - **Import Experience**: Ensure dashboard imports cleanly via JSON/ID upload; prompt users only for the Prometheus datasource.
 
 ## 12. Publication Checklist
-1. Validate dashboard locally (Grafana ≥ 9.5) with representative datasets and capture three screenshots (overview, throughput, error deep dive) following Grafana image guidelines.
+1. Validate dashboard locally (Grafana ≥ 10.4) with representative datasets and capture three screenshots (overview, throughput, error deep dive) following Grafana image guidelines.
 2. Verify descriptions, tags (`rdma`, `roce`, `infiniband`, `networking`, `prometheus`), and minimum Grafana version metadata.
-3. Upload to Grafana.com community gallery; retain dashboard ID for repository README updates.
+3. Generate `dashboards/rdma_exporter_dashboard.grafana.com.json` with `make grafana-com-export` and upload it as a new revision of Grafana.com listing 24241 (`gnetId` 24241, `uid` `rdma-exporter`). Do not upload the provisioning JSON (missing `__inputs` / `__requires`).
 4. Document import instructions (ID/URL/JSON) in project README.
 
 ## 13. Known Pitfalls and Mitigations
@@ -143,11 +151,11 @@ Precompute heavy expressions to accelerate dashboards and keep query inspector r
 - **Expensive variable queries**: Swap `label_values()` for `query_result(count by (...))` when scrape performance degrades.
 - **Unit mismatches**: Enforce `×4` conversion for `_data_total` counters; highlight this in panel descriptions and recording rules.
 - **Regenerating UID**: Prior to publishing, ensure JSON exports retain a fixed `uid` to avoid breaking embedded links or provisioning setups.
-- **Grafana.com external sharing**: Grafana Labs’ community gallery validates dashboards against the “Export for sharing externally” format. The repository JSON is the provisioning format (no `__inputs` / `__requires` blocks), so re-export from Grafana UI with that option—or manually add the required metadata—before uploading to avoid the “Old dashboard JSON format” error.
+- **Grafana.com external sharing**: Grafana Labs’ community gallery validates dashboards against the “Export for sharing externally” format. The repository source of truth is the provisioning JSON (no `__inputs` / `__requires`). `make grafana-com-export` writes the share form with `gnetId` 24241. Uploading the provisioning file produces the “Old dashboard JSON format” error.
 
 ## 14. Appendix – Future Enhancements
 - Automate JSON generation via Grafana provisioning pipelines and include schema validation in CI.
 - Extend dashboard links to per-switch telemetry dashboards once available.
 - Evaluate Grafana 12+ Git Sync for two-way synchronization between hosted Grafana Cloud and repository-managed JSON.
 - Prototype optional deep-dive panels that visualize additional collector counters (`port_rcv_switch_relay_errors`, `port_rcv_constraint_errors`, `port_xmit_constraint_errors`, etc.) when operators need finer-grained failure attribution.
-- Republish Grafana.com dashboard 24241 after the bundled JSON change; that listing is not updated by this repository change alone.
+- After each bundled JSON change, regenerate the Grafana.com 24241 share export with `make grafana-com-export`. The live listing stays on the previous revision until the owner uploads that file.
