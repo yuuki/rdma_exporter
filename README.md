@@ -73,52 +73,22 @@ rdma statistic mode link mlx5_0/1
 ./rdma_exporter
 ```
 
-To re-apply after boot or hotplug, use a root oneshot (not the `rdma_exporter` user). This example **owns** the complete optional-counter set as the three `cc_*` names; include any other optional counters you must keep in the same `set` line (for port traffic totals, add `rdma_rx_bytes,rdma_tx_bytes,rdma_rx_packets,rdma_tx_packets`). Skip ports that do not advertise `cc_*`, and do not hide `set` failures:
+To re-apply after boot or hotplug, use a root oneshot (not the `rdma_exporter` user). The repository ships [`deploy/scripts/rdma-enable-hardware-counters.sh`](deploy/scripts/rdma-enable-hardware-counters.sh), which **owns** the complete optional-counter set as the three `cc_*` names by default; override `RDMA_OPTIONAL_COUNTERS` to keep other mlx5 optional names in the same `set` line. Skip ports that do not advertise `cc_*`, and do not hide `set` failures.
+
+Install the script, systemd unit, and udev rule like other RDMA user services ([rdma-core udev.md](https://github.com/linux-rdma/rdma-core/blob/master/Documentation/udev.md)). Do not use udev `RUN+=` (it blocks the udev queue):
 
 ```bash
-#!/bin/sh
-set -eu
-counters=cc_rx_ce_pkts,cc_rx_cnp_pkts,cc_tx_cnp_pkts
-status=0
-for port_dir in /sys/class/infiniband/*/ports/*; do
-  [ -d "$port_dir" ] || continue
-  dev=$(basename "$(dirname "$(dirname "$port_dir")")")
-  port=$(basename "$port_dir")
-  link="$dev/$port"
-  if ! rdma statistic mode supported link "$link" | grep -q cc_rx_ce_pkts; then
-    continue
-  fi
-  rdma statistic set link "$link" optional-counters "$counters" || status=1
-done
-exit "$status"
-```
-
-Install it as `/usr/local/sbin/rdma-enable-optional-counters` and hook it like other RDMA user services ([rdma-core udev.md](https://github.com/linux-rdma/rdma-core/blob/master/Documentation/udev.md)). Do not use udev `RUN+=` (it blocks the udev queue). Activate a oneshot via systemd:
-
-```ini
-# /etc/systemd/system/rdma-optional-counters.service
-[Unit]
-Description=Enable mlx5 optional RDMA hardware counters
-Documentation=man:rdma-statistic(8)
-After=rdma-hw.target
-
-[Service]
-Type=oneshot
-ExecStart=/usr/local/sbin/rdma-enable-optional-counters
-
-[Install]
-WantedBy=rdma-hw.target
-```
-
-```
-# /etc/udev/rules.d/90-rdma-optional-counters.rules
-ACTION=="add", SUBSYSTEM=="infiniband", TAG+="systemd", ENV{SYSTEMD_WANTS}="rdma-optional-counters.service"
-```
-
-```bash
+sudo install -Dm0755 deploy/scripts/rdma-enable-hardware-counters.sh \
+  /usr/local/sbin/rdma-enable-hardware-counters
+sudo install -Dm0644 deploy/systemd/rdma-hardware-counters.service \
+  /etc/systemd/system/rdma-hardware-counters.service
+sudo install -Dm0644 deploy/udev/90-rdma-hardware-counters.rules \
+  /etc/udev/rules.d/90-rdma-hardware-counters.rules
 sudo systemctl daemon-reload
-sudo systemctl enable rdma-optional-counters.service
+sudo systemctl enable rdma-hardware-counters.service
 ```
+
+Optional: copy [`deploy/systemd/rdma-hardware-counters.env.example`](deploy/systemd/rdma-hardware-counters.env.example) to `/etc/rdma-hardware-counters.env` and uncomment `RDMA_ENABLE_QP_COUNTERS=1` when scraping `--collector.qp-counters`. The script then extends the optional-counter set with `rdma_{rx,tx}_{bytes,packets}` and runs `rdma statistic qp set link ... auto type on optional-counters on` on each supported port. Install [`deploy/systemd/rdma_exporter-qp-counters.conf.example`](deploy/systemd/rdma_exporter-qp-counters.conf.example) as `/etc/systemd/system/rdma_exporter.service.d/qp-counters.conf` so the exporter enables the QP collector.
 
 `enable` without `--now` lets the first hardware appearance start `rdma-hw.target`. `SYSTEMD_WANTS` re-runs the oneshot on later `add` events (VF, driver reload). If `rdma-hw.target` is absent, use `After=network-online.target` and `WantedBy=multi-user.target`, and keep the udev rule for hotplug. After applying, `rdma statistic mode` should list the intended Optional-set.
 
@@ -131,16 +101,11 @@ sudo rdma statistic qp set link mlx5_0/1 auto type on
 ./rdma_exporter --collector.qp-counters
 ```
 
-QP dump keys appear as `rdma_qp_*` only after the operator enables the names in the port optional-set (`set` replaces the whole list) and turns QP `optional-counters on` (mlx5, Linux 6.15+), **before** user QPs go INIT. That needs `--collector.qp-counters`. It is not a gate for port-level `rdma_optional_*`.
-
-```bash
-sudo rdma statistic set link mlx5_0/1 optional-counters cc_rx_ce_pkts,cc_rx_cnp_pkts,cc_tx_cnp_pkts,rdma_rx_bytes,rdma_tx_bytes,rdma_rx_packets,rdma_tx_packets
-sudo rdma statistic qp set link mlx5_0/1 auto type on optional-counters on
-```
+QP dump keys appear as `rdma_qp_*` only after the operator enables the names in the port optional-set (`set` replaces the whole list) and turns QP `optional-counters on` (mlx5, Linux 6.15+), **before** user QPs go INIT. That needs `--collector.qp-counters`. It is not a gate for port-level `rdma_optional_*`. Use the hardware-counters oneshot with `RDMA_ENABLE_QP_COUNTERS=1` (see above) instead of manual `rdma statistic set` / `rdma statistic qp set` on each port.
 
 Port-level `--collector.optional-counters` (default on) emits `_total` for `cc_*` and, when the matching netlink names are enabled and a value was read, `rdma_optional_{rx,tx}_{bytes,packets}_total` from `rdma_{rx,tx}_{bytes,packets}`. These are link-wide mlx5 optional flow counters (Linux 6.15+), not sysfs `port_rcv_data`, not `rdma_qp_*`, and not `rdma_netdev_vport_rdma_*`. Packet and byte counters in the same direction share one hardware flow counter: a newly enabled sibling can include history while the other stays on, and the counter resets only after both names in that direction are disabled. `rdma_optional_counter_enabled` continues to cover every optional name. Port-level `rdma_optional_*` needs only the port optional-set; it does not need `--collector.qp-counters` or QP `optional-counters on`.
 
-The port optional-set and QP `auto` / `optional-counters on` are not persistent. Re-apply both after boot, driver reload, or VF hotplug with the same systemd oneshot + udev `SYSTEMD_WANTS` pattern (`After=rdma-hw.target`; do not use udev `RUN+=`). Start the oneshot before RDMA applications.
+The port optional-set and QP `auto` / `optional-counters on` are not persistent. Re-apply both after boot, driver reload, or VF hotplug with the hardware-counters oneshot and udev `SYSTEMD_WANTS` pattern (`After=rdma-hw.target`; do not use udev `RUN+=`). Start the oneshot before RDMA applications.
 
 Some mlx5 QP counters are 32-bit and can wrap. Prefer short `rate()` windows (on the order of the scrape interval) rather than long-range `increase()`.
 
@@ -273,7 +238,8 @@ GOCACHE=$(pwd)/.gocache GOMODCACHE=$(pwd)/.gomodcache go test ./...
 
 ## Deployment
 
-- A systemd unit file is available under `deploy/systemd/rdma_exporter.service`.
+- systemd unit files: [`deploy/systemd/rdma_exporter.service`](deploy/systemd/rdma_exporter.service), [`deploy/systemd/rdma-hardware-counters.service`](deploy/systemd/rdma-hardware-counters.service).
+- Hardware counter enablement (optional and QP auto mode): [`deploy/scripts/rdma-enable-hardware-counters.sh`](deploy/scripts/rdma-enable-hardware-counters.sh), [`deploy/systemd/rdma-hardware-counters.env.example`](deploy/systemd/rdma-hardware-counters.env.example), [`deploy/systemd/rdma_exporter-qp-counters.conf.example`](deploy/systemd/rdma_exporter-qp-counters.conf.example), [`deploy/udev/90-rdma-hardware-counters.rules`](deploy/udev/90-rdma-hardware-counters.rules).
 - A multi-stage Dockerfile lives at the repository root; see `docs/deployment.md` for build and run instructions.
 
 ## Development Notes
