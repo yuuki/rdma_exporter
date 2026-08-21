@@ -1,0 +1,2 @@
+[Service]
+Environment=RDMA_EXPORTER_COLLECTOR_QP_COUNTERS=true
