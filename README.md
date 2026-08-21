@@ -15,7 +15,7 @@ For details on GitHub Actions status badges, see the [official documentation](ht
 
 ## Features
 - Publishes counters from `/sys/class/infiniband/<dev>/<port>/counters` and `/hw_counters` as `rdma_<counter>_total` metrics that match NVIDIA's *Understanding mlx5 Linux Counters and Status Parameters* guide (e.g. `rdma_port_rcv_data_total`, `rdma_symbol_error_total`, `rdma_duplicate_request_total`). The sysfs `lifespan` knob is exported as the gauge `rdma_lifespan_milliseconds`, not as a `_total` counter.
-- Exposes port metadata (link layer, state, width, speed, PCI address, VF/PF relationship, etc.) through `rdma_port_info`.
+- Exposes port metadata (link layer, state, width, speed, netdev, PCI address, VF/PF relationship, etc.) through `rdma_port_info`.
 - Tracks scrape failures with `rdma_scrape_errors_total`.
 - **Supports device exclusion** (`--exclude-devices`) to prevent kernel log flooding on firmware-restricted devices (NVIDIA DGX, Umbriel, GB200 systems).
 - Ships with an HTTP server that serves `/metrics` and `/healthz` and gracefully shuts down on `SIGINT`/`SIGTERM`.
@@ -161,7 +161,7 @@ Every CLI flag has an equivalent environment variable. Environment values provid
 ## Metrics
 - `rdma_<counter>_total{device,port}` – Port and hardware counters aligned with NVIDIA documentation (e.g. `rdma_port_rcv_data_total`, `rdma_symbol_error_total`, `rdma_duplicate_request_total`).
 - `rdma_lifespan_milliseconds{device,port}` – Gauge of the sysfs `hw_counters/lifespan` update period in **milliseconds** (kernel default 10, writable range 0–10000). Not a cumulative counter; do not `rate()` it. Replaces the former mis-typed `rdma_lifespan_total`. The exporter does not write this file.
-- `rdma_port_info{device,port,link_layer,state,phys_state,link_width,link_speed,pci_addr,is_vf,pf_device}` – Gauge set to `1` with descriptive labels. `pci_addr` carries the device's PCI address (e.g. `0000:1a:00.0`); `is_vf` is `"true"` for SR-IOV virtual functions; `pf_device` names the parent PF IB device when `is_vf="true"` (empty otherwise). These enable joins with external sources keyed by PCI address (e.g. `sriov_kubepoddevice`) for per-VF/per-pod RDMA bandwidth attribution.
+- `rdma_port_info{device,port,netdev,link_layer,state,phys_state,link_width,link_speed,pci_addr,is_vf,pf_device}` – Gauge set to `1` with descriptive labels. `netdev` is the kernel interface from sysfs `gid_attrs/ndevs` (e.g. `ens1f0np0`); empty when the port has no netdev. `pci_addr` carries the device's PCI address (e.g. `0000:1a:00.0`); `is_vf` is `"true"` for SR-IOV virtual functions; `pf_device` names the parent PF IB device when `is_vf="true"` (empty otherwise). These enable joins with counters on `{device,port}` and with external sources keyed by PCI address (e.g. `sriov_kubepoddevice`) for per-VF/per-pod RDMA bandwidth attribution.
 - `rdma_scrape_errors_total{}` – Counter incremented when sysfs collection fails.
 - `rdma_roce_pfc_pause_frames_total{device,port,netdev,direction,priority}` – RoCEv2 PFC pause frames from ethtool stats.
 - `rdma_roce_pfc_pause_duration_total{device,port,netdev,direction,priority}` – Cumulative PFC pause duration in **microseconds**. Occupancy is `rate(...[$interval]) / 1e6`.

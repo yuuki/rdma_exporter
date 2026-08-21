@@ -3,6 +3,7 @@ package collector
 import (
 	"context"
 	"errors"
+	"fmt"
 	"io"
 	"log/slog"
 	"strconv"
@@ -248,7 +249,7 @@ func TestCollectorExportsMetrics(t *testing.T) {
 	expected := `
 # HELP rdma_port_info RDMA port metadata exported as labels.
 # TYPE rdma_port_info gauge
-rdma_port_info{device="mlx5_0",is_vf="false",link_layer="InfiniBand",link_speed="100 Gb/sec",link_width="4X",pci_addr="0000:1a:00.0",pf_device="",phys_state="LinkUp",port="1",state="ACTIVE"} 1
+rdma_port_info{device="mlx5_0",is_vf="false",link_layer="InfiniBand",link_speed="100 Gb/sec",link_width="4X",netdev="",pci_addr="0000:1a:00.0",pf_device="",phys_state="LinkUp",port="1",state="ACTIVE"} 1
 # HELP rdma_port_rcv_data_total The total number of data octets, divided by 4 (counting in double words, 32 bits), received on all VLs from the port.
 # TYPE rdma_port_rcv_data_total counter
 rdma_port_rcv_data_total{device="mlx5_0",port="1"} 5
@@ -263,6 +264,59 @@ rdma_symbol_error_total{device="mlx5_0",port="1"} 1
 	if err := testutil.GatherAndCompare(reg, strings.NewReader(expected),
 		"rdma_port_rcv_data_total", "rdma_port_xmit_data_total", "rdma_symbol_error_total", "rdma_port_info"); err != nil {
 		t.Fatalf("unexpected metrics output: %v", err)
+	}
+}
+
+func TestCollectorExportsPortInfoNetDev(t *testing.T) {
+	t.Parallel()
+
+	tests := []struct {
+		name   string
+		netdev string
+	}{
+		{name: "populated", netdev: "ens1f0np0"},
+		{name: "empty", netdev: ""},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+
+			provider := &stubProvider{
+				devices: []rdma.Device{
+					{
+						Name: "mlx5_0",
+						Ports: []rdma.Port{
+							{
+								ID: 1,
+								Attributes: rdma.PortAttributes{
+									LinkLayer: "Ethernet",
+									State:     "ACTIVE",
+									PhysState: "LinkUp",
+									LinkWidth: "4X",
+									LinkSpeed: "100 Gb/sec",
+									NetDev:    tt.netdev,
+								},
+							},
+						},
+					},
+				},
+			}
+
+			c := New(provider, newDiscardLogger())
+			reg := prometheus.NewRegistry()
+			reg.MustRegister(c)
+
+			expected := fmt.Sprintf(`
+# HELP rdma_port_info RDMA port metadata exported as labels.
+# TYPE rdma_port_info gauge
+rdma_port_info{device="mlx5_0",is_vf="false",link_layer="Ethernet",link_speed="100 Gb/sec",link_width="4X",netdev=%q,pci_addr="",pf_device="",phys_state="LinkUp",port="1",state="ACTIVE"} 1
+`, tt.netdev)
+
+			if err := testutil.GatherAndCompare(reg, strings.NewReader(expected), "rdma_port_info"); err != nil {
+				t.Fatalf("unexpected port info output: %v", err)
+			}
+		})
 	}
 }
 

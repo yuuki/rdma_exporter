@@ -556,6 +556,9 @@ func New(provider Provider, logger *slog.Logger, opts ...Option) *RdmaCollector 
 			"RDMA port metadata exported as labels.",
 			[]string{
 				"device", "port",
+				// netdev is the kernel interface from sysfs gid_attrs/ndevs
+				// (e.g. ens1f0np0). Empty when the port has no netdev.
+				"netdev",
 				"link_layer", "state", "phys_state", "link_width", "link_speed",
 				// SR-IOV VF/PF identification labels.
 				// pci_addr matches the pciAddr label in sriov_kubepoddevice, enabling join queries.
@@ -1050,6 +1053,7 @@ func (c *RdmaCollector) Collect(ch chan<- prometheus.Metric) {
 				1,
 				device.Name,
 				portID,
+				attr.NetDev,
 				attr.LinkLayer,
 				attr.State,
 				attr.PhysState,
