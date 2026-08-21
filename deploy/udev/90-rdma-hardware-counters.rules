@@ -1,0 +1,1 @@
+ACTION=="add", SUBSYSTEM=="infiniband", TAG+="systemd", ENV{SYSTEMD_WANTS}="rdma-hardware-counters.service"

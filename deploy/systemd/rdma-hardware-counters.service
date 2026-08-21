@@ -1,0 +1,12 @@
+[Unit]
+Description=Enable mlx5 optional RDMA hardware counters and optional QP auto mode
+Documentation=man:rdma-statistic(8) https://github.com/yuuki/rdma_exporter
+After=rdma-hw.target
+
+[Service]
+Type=oneshot
+EnvironmentFile=-/etc/rdma-hardware-counters.env
+ExecStart=/usr/local/sbin/rdma-enable-hardware-counters
+
+[Install]
+WantedBy=rdma-hw.target
