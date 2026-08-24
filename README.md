@@ -28,7 +28,7 @@ For details on GitHub Actions status badges, see the [official documentation](ht
 
 ## Requirements
 
-- Go 1.26.6 or newer.
+- Go 1.27.0 or newer.
 - Linux with read access to `/sys/class/infiniband` (for production use).
 
 ## Build
