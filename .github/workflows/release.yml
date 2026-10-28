@@ -95,8 +95,8 @@ jobs:
             VERSION=${{ needs.init-release-version.outputs.version }}
             COMMIT=${{ github.sha }}
           tags: |
-            hub.6scloud.com/rdma_exporter:latest
-            hub.6scloud.com/rdma_exporter:${{ needs.init-release-version.outputs.version }}
+            hub.6scloud.com/d1r7umcsfi9c73b4drdg/rdma_exporter:latest
+            hub.6scloud.com/d1r7umcsfi9c73b4drdg/rdma_exporter:${{ needs.init-release-version.outputs.version }}
           cache-from: type=gha
           cache-to: type=gha,mode=max
 
@@ -119,5 +119,5 @@ jobs:
             ## Docker Image
 
             ```bash
-            docker pull hub.6scloud.com/rdma_exporter:${{ needs.init-release-version.outputs.version }}
+            docker pull hub.6scloud.com/d1r7umcsfi9c73b4drdg/rdma_exporter:${{ needs.init-release-version.outputs.version }}
             ```
