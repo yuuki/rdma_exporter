@@ -364,10 +364,12 @@ func TestSysfsProviderDevicesScenarios(t *testing.T) {
 		{
 			// Directories and symlinks to directories are devices; regular
 			// files, symlinks to files, dangling symlinks and excluded names
-			// are skipped. Ports keep directory order, skip regular files and
-			// non-numeric names, and read their attributes from the directory
-			// of the parsed number, so "05" gets the counters of ports/05 but
-			// the attributes of ports/5.
+			// are skipped. Ports come in name order (os.ReadDir sorts), not
+			// port number order. They skip regular files, symlinks (even to a
+			// port directory) and non-numeric names, and read their attributes
+			// from the directory of the parsed number, so "05" gets the
+			// counters of ports/05 but the attributes of ports/5. A ports
+			// directory with only skipped entries yields an empty slice.
 			name:     "skips entries that are not devices or ports",
 			scenario: "entries",
 			exclude:  []string{"mlx5_6"},
@@ -396,30 +398,31 @@ func TestSysfsProviderDevicesScenarios(t *testing.T) {
 					Ports: []Port{{ID: 1, Attributes: PortAttributes{LinkLayer: "Ethernet"}}},
 				},
 				{Name: "mlx5_5"},
+				{Name: "mlx5_7", Ports: []Port{}},
 			},
 		},
 		{
 			name:     "class path is not a directory",
 			scenario: "class_not_dir",
-			wantErr:  "open testdata/sysfs/class_not_dir/class/infiniband: not a directory",
+			wantErr:  "open testdata/sysfs/class_not_dir/class/infiniband: " + syscall.ENOTDIR.Error(),
 			wantIs:   syscall.ENOTDIR,
 		},
 		{
 			name:     "ports path is not a directory",
 			scenario: "ports_not_dir",
-			wantErr:  "collect ports for mlx5_1: open testdata/sysfs/ports_not_dir/class/infiniband/mlx5_1/ports: not a directory",
+			wantErr:  "collect ports for mlx5_1: open testdata/sysfs/ports_not_dir/class/infiniband/mlx5_1/ports: " + syscall.ENOTDIR.Error(),
 			wantIs:   syscall.ENOTDIR,
 		},
 		{
 			name:     "counters path is not a directory",
 			scenario: "counters_not_dir",
-			wantErr:  "collect ports for mlx5_0: read counters for mlx5_0 port 1: open testdata/sysfs/counters_not_dir/class/infiniband/mlx5_0/ports/1/counters: not a directory",
+			wantErr:  "collect ports for mlx5_0: read counters for mlx5_0 port 1: open testdata/sysfs/counters_not_dir/class/infiniband/mlx5_0/ports/1/counters: " + syscall.ENOTDIR.Error(),
 			wantIs:   syscall.ENOTDIR,
 		},
 		{
 			name:     "hw_counters path is not a directory",
 			scenario: "hw_counters_not_dir",
-			wantErr:  "collect ports for mlx5_0: read hw counters for mlx5_0 port 1: open testdata/sysfs/hw_counters_not_dir/class/infiniband/mlx5_0/ports/1/hw_counters: not a directory",
+			wantErr:  "collect ports for mlx5_0: read hw counters for mlx5_0 port 1: open testdata/sysfs/hw_counters_not_dir/class/infiniband/mlx5_0/ports/1/hw_counters: " + syscall.ENOTDIR.Error(),
 			wantIs:   syscall.ENOTDIR,
 		},
 	}
@@ -479,7 +482,15 @@ func TestSysfsProviderScanStopsOnCanceledContext(t *testing.T) {
 		{
 			name: "ports",
 			scan: func() (any, error) {
+				// The first entry, "05", is a port.
 				return provider.portsFromRoot(ctx, filepath.Join("testdata", "sysfs", "entries"), "mlx5_0")
+			},
+			wantErr: context.Canceled,
+		},
+		{
+			name: "ports with only skipped entries",
+			scan: func() (any, error) {
+				return provider.portsFromRoot(ctx, filepath.Join("testdata", "sysfs", "entries"), "mlx5_7")
 			},
 			wantErr: context.Canceled,
 		},
