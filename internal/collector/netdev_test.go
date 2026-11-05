@@ -138,3 +138,18 @@ func TestEmitNetDevHWMetricsOrder(t *testing.T) {
 		})
 	}
 }
+
+// netDevHWSeriesFor turns every submatch of a family's pattern into a label,
+// so a pattern with a capture group too many or too few would make
+// MustNewConstMetric panic at scrape time.
+func TestNetDevHWFamiliesLabelEverySubmatch(t *testing.T) {
+	t.Parallel()
+
+	c := New(&stubProvider{}, newDiscardLogger())
+	for _, family := range c.netDevHWFamilies() {
+		labels := make([]string, 3+family.pattern.NumSubexp()) // device, port, netdev, submatches
+		if _, err := prometheus.NewConstMetric(family.desc, family.valueType, 0, labels...); err != nil {
+			t.Errorf("pattern %s: submatches do not fit the descriptor labels: %v", family.pattern, err)
+		}
+	}
+}
