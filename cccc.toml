@@ -7,6 +7,11 @@
 exclude = [
   "*_test.go",       # Go tests
   "**/testdata/**",  # test fixtures
+  "vendor/**",       # vendored Go modules (go mod vendor)
 ]
 
-# No max-cognitive / max-cyclomatic gate: the numbers are reported, not enforced.
+# Fail when a function's cognitive complexity exceeds this. The threshold is a
+# ratchet toward 15, SonarSource's default: it is the highest score in the code
+# today, so split a function that would exceed it rather than raising it, and
+# lower it whenever refactoring brings the maximum down.
+max-cognitive = 20

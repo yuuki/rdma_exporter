@@ -929,29 +929,40 @@ func (c *RdmaCollector) ProbeNetDevStats(ctx context.Context) error {
 			continue
 		}
 		for _, port := range device.Ports {
-			attr := port.Attributes
-			if attr.LinkLayer != "Ethernet" || attr.NetDev == "" {
-				continue
-			}
-			if _, dup := seen[attr.NetDev]; dup {
-				continue
-			}
-			seen[attr.NetDev] = struct{}{}
-			if _, skip := c.unsupportedNetDevs[attr.NetDev]; skip {
-				continue
-			}
-
-			_, err := c.netDevStatsProvider.Stats(ctx, attr.NetDev)
-			if err == nil {
-				continue
-			}
-			if ctx.Err() != nil {
-				return ctx.Err()
-			}
-			if isUnsupportedEthtool(err) {
-				c.markNetDevUnsupported(device.Name, strconv.Itoa(port.ID), attr.NetDev, err)
+			if err := c.probePortNetDev(ctx, device.Name, port, seen); err != nil {
+				return err
 			}
 		}
+	}
+	return nil
+}
+
+// probePortNetDev reads ethtool stats for the port's Ethernet netdev unless
+// an earlier port (seen) or an earlier probe (unsupportedNetDevs) covered it,
+// and marks the netdev unsupported on EOPNOTSUPP. It returns an error only
+// when the read fails after ctx has ended.
+func (c *RdmaCollector) probePortNetDev(ctx context.Context, deviceName string, port rdma.Port, seen map[string]struct{}) error {
+	attr := port.Attributes
+	if attr.LinkLayer != "Ethernet" || attr.NetDev == "" {
+		return nil
+	}
+	if _, dup := seen[attr.NetDev]; dup {
+		return nil
+	}
+	seen[attr.NetDev] = struct{}{}
+	if _, skip := c.unsupportedNetDevs[attr.NetDev]; skip {
+		return nil
+	}
+
+	_, err := c.netDevStatsProvider.Stats(ctx, attr.NetDev)
+	if err == nil {
+		return nil
+	}
+	if ctx.Err() != nil {
+		return ctx.Err()
+	}
+	if isUnsupportedEthtool(err) {
+		c.markNetDevUnsupported(deviceName, strconv.Itoa(port.ID), attr.NetDev, err)
 	}
 	return nil
 }
@@ -1055,10 +1066,7 @@ func (c *RdmaCollector) Collect(ch chan<- prometheus.Metric) {
 	c.collectMu.Lock()
 	defer c.collectMu.Unlock()
 
-	ctx := context.Background()
-	if stored := c.ctxValue.Load(); stored != nil {
-		ctx = *stored
-	}
+	ctx := c.loadContext()
 
 	ethtoolOK := c.collectEthtool && c.netDevStatsProvider != nil
 	optionalOK := c.collectOptional && c.optionalCounterProvider != nil
@@ -1066,120 +1074,161 @@ func (c *RdmaCollector) Collect(ch chan<- prometheus.Metric) {
 
 	devices, err := c.provider.Devices(ctx)
 	if err != nil {
-		if ctx.Err() != nil {
-			c.logger.Warn("rdma scrape aborted by context", "err", ctx.Err())
-		} else {
-			c.logger.Warn("rdma scrape failed", "err", err)
-		}
+		c.warnScrapeFailure(ctx, err, "rdma scrape aborted by context", "rdma scrape failed")
 		c.scrapeErrors.Inc()
 		c.emitCollectorSuccess(ch, ethtoolOK, optionalOK, qpOK)
 		c.collectErrorCounters(ch)
 		return
 	}
 
-	netDevStatsCache := make(map[string]netDevStatsCacheEntry)
-	netDevHWEmitted := make(map[string]struct{})
-	netdevOwners := ethernetNetDevOwners(devices)
-	optionalReady := false
-	if c.collectOptional && c.optionalCounterProvider != nil {
-		if err := c.optionalCounterProvider.Prepare(ctx); err != nil {
-			if ctx.Err() != nil {
-				c.logger.Warn("optional rdma counter scrape aborted by context", "err", ctx.Err())
-			} else {
-				c.logger.Warn("optional rdma counter dump failed", "err", err)
-			}
-			c.optionalCounterScrapeErrors.Inc()
-			optionalOK = false
-		} else {
-			optionalReady = true
-		}
+	scrape := &portScrape{
+		netDevStatsCache: make(map[string]netDevStatsCacheEntry),
+		netDevHWEmitted:  make(map[string]struct{}),
+		netdevOwners:     ethernetNetDevOwners(devices),
+	}
+	if optionalOK {
+		optionalOK = c.prepareOptionalCounters(ctx)
+		scrape.optionalReady = optionalOK
 	}
 
 	for _, device := range devices {
-		deviceStart := time.Now()
-		portIDStrings := make([]string, len(device.Ports))
-		for i, port := range device.Ports {
-			portID := strconv.Itoa(port.ID)
-			portIDStrings[i] = portID
-
-			if len(port.Stats) > 0 {
-				names := sortedKeys(port.Stats)
-				for _, name := range names {
-					value := float64(port.Stats[name])
-					desc := c.statMetricDesc(name)
-					ch <- prometheus.MustNewConstMetric(
-						desc,
-						prometheus.CounterValue,
-						value,
-						device.Name,
-						portID,
-					)
-				}
-			}
-
-			if len(port.HwStats) > 0 {
-				names := sortedKeys(port.HwStats)
-				for _, name := range names {
-					value := float64(port.HwStats[name])
-					if name == "lifespan" {
-						ch <- prometheus.MustNewConstMetric(
-							c.lifespanMillisecondsDesc,
-							prometheus.GaugeValue,
-							value,
-							device.Name,
-							portID,
-						)
-						continue
-					}
-					desc := c.hwMetricDesc(name)
-					ch <- prometheus.MustNewConstMetric(
-						desc,
-						prometheus.CounterValue,
-						value,
-						device.Name,
-						portID,
-					)
-				}
-			}
-
-			if optionalReady {
-				c.collectOptionalCounters(ctx, ch, device.Name, port.ID, portID, port.HwStats)
-			}
-
-			attr := port.Attributes
-			c.collectNetDevMetrics(ctx, ch, device.Name, portID, attr, device.IsVF, device.HasSRIOV, device.PCIAddr, netdevOwners, netDevStatsCache, netDevHWEmitted)
-
-			ch <- prometheus.MustNewConstMetric(
-				c.portInfoDesc,
-				prometheus.GaugeValue,
-				1,
-				device.Name,
-				portID,
-				attr.NetDev,
-				attr.LinkLayer,
-				attr.State,
-				attr.PhysState,
-				attr.LinkWidth,
-				attr.LinkSpeed,
-				device.PCIAddr,
-				strconv.FormatBool(device.IsVF),
-				device.PFDevice,
-			)
-		}
-		c.logger.Debug("rdma device scraped",
-			"device", device.Name,
-			"ports", portIDStrings,
-			"duration", time.Since(deviceStart))
+		c.collectDevice(ctx, ch, scrape, device)
 	}
 
-	if c.collectQP && c.qpCounterProvider != nil {
-		if !c.collectQPCounters(ctx, ch, devices) {
-			qpOK = false
-		}
+	if qpOK {
+		qpOK = c.collectQPCounters(ctx, ch, devices)
 	}
 
 	c.emitCollectorSuccess(ch, ethtoolOK, optionalOK, qpOK)
 	c.collectErrorCounters(ch)
+}
+
+// loadContext returns the context set by SetContext for this scrape.
+func (c *RdmaCollector) loadContext() context.Context {
+	if stored := c.ctxValue.Load(); stored != nil {
+		return *stored
+	}
+	return context.Background()
+}
+
+// warnScrapeFailure logs err, or the context error under abortedMsg when the
+// scrape context has ended.
+func (c *RdmaCollector) warnScrapeFailure(ctx context.Context, err error, abortedMsg, failedMsg string) {
+	if ctx.Err() != nil {
+		c.logger.Warn(abortedMsg, "err", ctx.Err())
+		return
+	}
+	c.logger.Warn(failedMsg, "err", err)
+}
+
+// prepareOptionalCounters runs the optional counter provider's per-scrape
+// Prepare and reports whether its counters can be read on this scrape.
+func (c *RdmaCollector) prepareOptionalCounters(ctx context.Context) bool {
+	if err := c.optionalCounterProvider.Prepare(ctx); err != nil {
+		c.warnScrapeFailure(ctx, err, "optional rdma counter scrape aborted by context", "optional rdma counter dump failed")
+		c.optionalCounterScrapeErrors.Inc()
+		return false
+	}
+	return true
+}
+
+// portScrape is the state one Collect call shares across all ports.
+type portScrape struct {
+	optionalReady    bool
+	netdevOwners     map[string]int
+	netDevStatsCache map[string]netDevStatsCacheEntry
+	netDevHWEmitted  map[string]struct{}
+}
+
+func (c *RdmaCollector) collectDevice(ctx context.Context, ch chan<- prometheus.Metric, scrape *portScrape, device rdma.Device) {
+	deviceStart := time.Now()
+	portIDStrings := make([]string, len(device.Ports))
+	for i, port := range device.Ports {
+		portIDStrings[i] = c.collectPort(ctx, ch, scrape, device, port)
+	}
+	c.logger.Debug("rdma device scraped",
+		"device", device.Name,
+		"ports", portIDStrings,
+		"duration", time.Since(deviceStart))
+}
+
+// collectPort emits every per-port family of one port and returns its port label.
+func (c *RdmaCollector) collectPort(ctx context.Context, ch chan<- prometheus.Metric, scrape *portScrape, device rdma.Device, port rdma.Port) string {
+	portID := strconv.Itoa(port.ID)
+	c.emitPortStats(ch, device.Name, portID, port.Stats)
+	c.emitPortHwStats(ch, device.Name, portID, port.HwStats)
+
+	if scrape.optionalReady {
+		c.collectOptionalCounters(ctx, ch, device.Name, port.ID, portID, port.HwStats)
+	}
+
+	attr := port.Attributes
+	c.collectNetDevMetrics(ctx, ch, device.Name, portID, attr, device.IsVF, device.HasSRIOV, device.PCIAddr, scrape.netdevOwners, scrape.netDevStatsCache, scrape.netDevHWEmitted)
+	c.emitPortInfo(ch, device, portID, attr)
+	return portID
+}
+
+// emitPortStats emits the sysfs counters of a port, sorted by name.
+func (c *RdmaCollector) emitPortStats(ch chan<- prometheus.Metric, deviceName, portID string, stats map[string]uint64) {
+	if len(stats) == 0 {
+		return
+	}
+	for _, name := range sortedKeys(stats) {
+		ch <- prometheus.MustNewConstMetric(
+			c.statMetricDesc(name),
+			prometheus.CounterValue,
+			float64(stats[name]),
+			deviceName,
+			portID,
+		)
+	}
+}
+
+// emitPortHwStats emits the sysfs hw_counters of a port, sorted by name.
+// lifespan is a configuration knob, so it becomes a gauge in milliseconds.
+func (c *RdmaCollector) emitPortHwStats(ch chan<- prometheus.Metric, deviceName, portID string, hwStats map[string]uint64) {
+	if len(hwStats) == 0 {
+		return
+	}
+	for _, name := range sortedKeys(hwStats) {
+		value := float64(hwStats[name])
+		if name == "lifespan" {
+			ch <- prometheus.MustNewConstMetric(
+				c.lifespanMillisecondsDesc,
+				prometheus.GaugeValue,
+				value,
+				deviceName,
+				portID,
+			)
+			continue
+		}
+		ch <- prometheus.MustNewConstMetric(
+			c.hwMetricDesc(name),
+			prometheus.CounterValue,
+			value,
+			deviceName,
+			portID,
+		)
+	}
+}
+
+func (c *RdmaCollector) emitPortInfo(ch chan<- prometheus.Metric, device rdma.Device, portID string, attr rdma.PortAttributes) {
+	ch <- prometheus.MustNewConstMetric(
+		c.portInfoDesc,
+		prometheus.GaugeValue,
+		1,
+		device.Name,
+		portID,
+		attr.NetDev,
+		attr.LinkLayer,
+		attr.State,
+		attr.PhysState,
+		attr.LinkWidth,
+		attr.LinkSpeed,
+		device.PCIAddr,
+		strconv.FormatBool(device.IsVF),
+		device.PFDevice,
+	)
 }
 
 func (c *RdmaCollector) collectErrorCounters(ch chan<- prometheus.Metric) {

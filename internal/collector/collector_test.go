@@ -7,6 +7,9 @@ import (
 	"fmt"
 	"io"
 	"log/slog"
+	"maps"
+	"regexp"
+	"slices"
 	"strconv"
 	"strings"
 	"sync"
@@ -2892,6 +2895,410 @@ rdma_qp_counter_mode{device="mlx5_0",mode="none",port="1"} %g
 				"rdma_qp_auto_mask",
 			); err != nil {
 				t.Fatalf("expected mode/mask gauges when dump is skipped: %v", err)
+			}
+		})
+	}
+}
+
+var descFQNamePattern = regexp.MustCompile(`fqName: "([^"]*)"`)
+
+// emitted runs emit and renders every metric it sends, in emission order, as
+// `name{labels} type value`.
+func emitted(t *testing.T, emit func(ch chan<- prometheus.Metric)) []string {
+	t.Helper()
+	ch := make(chan prometheus.Metric)
+	go func() {
+		defer close(ch)
+		emit(ch)
+	}()
+	var out []string
+	for m := range ch {
+		var pb dto.Metric
+		if err := m.Write(&pb); err != nil {
+			t.Fatalf("write metric: %v", err)
+		}
+		name := descFQNamePattern.FindStringSubmatch(m.Desc().String())[1]
+		labels := make([]string, 0, len(pb.GetLabel()))
+		for _, l := range pb.GetLabel() {
+			labels = append(labels, l.GetName()+"="+strconv.Quote(l.GetValue()))
+		}
+		kind, value := "untyped", pb.GetUntyped().GetValue()
+		switch {
+		case pb.Counter != nil:
+			kind, value = "counter", pb.GetCounter().GetValue()
+		case pb.Gauge != nil:
+			kind, value = "gauge", pb.GetGauge().GetValue()
+		}
+		out = append(out, fmt.Sprintf("%s{%s} %s %g", name, strings.Join(labels, ","), kind, value))
+	}
+	return out
+}
+
+func assertEmitted(t *testing.T, got, want []string) {
+	t.Helper()
+	if slices.Equal(got, want) {
+		return
+	}
+	t.Fatalf("emitted metrics differ\ngot:\n%s\nwant:\n%s", strings.Join(got, "\n"), strings.Join(want, "\n"))
+}
+
+func TestCollectEmissionOrder(t *testing.T) {
+	t.Parallel()
+
+	provider := &stubProvider{
+		devices: []rdma.Device{
+			{
+				Name:     "mlx5_0",
+				PCIAddr:  "0000:1a:00.0",
+				HasSRIOV: true,
+				Ports: []rdma.Port{
+					{
+						ID:      1,
+						Stats:   map[string]uint64{"port_xmit_data": 10, "port_rcv_data": 5},
+						HwStats: map[string]uint64{"out_of_sequence": 2, "lifespan": 10},
+						Attributes: rdma.PortAttributes{
+							LinkLayer: "Ethernet", State: "ACTIVE", PhysState: "LinkUp",
+							LinkWidth: "4X", LinkSpeed: "100 Gb/sec", NetDev: "ens1f0np0",
+						},
+					},
+					{
+						ID:         2,
+						Attributes: rdma.PortAttributes{LinkLayer: "Ethernet", NetDev: "ens1f1np1"},
+					},
+				},
+			},
+			{
+				Name:     "mlx5_1",
+				PCIAddr:  "0000:1a:00.2",
+				IsVF:     true,
+				PFDevice: "mlx5_0",
+				Ports: []rdma.Port{
+					{
+						ID:         1,
+						Stats:      map[string]uint64{"port_rcv_packets": 3},
+						Attributes: rdma.PortAttributes{LinkLayer: "Ethernet", NetDev: "ens1f0v0"},
+					},
+				},
+			},
+		},
+	}
+	netDevProvider := newStubNetDevStatsProvider()
+	netDevProvider.stats["ens1f0np0"] = map[string]uint64{
+		"tx_prio3_pause_duration":     2,
+		"rx_prio0_pause":              1,
+		"rx_prio3_buf_discard":        4,
+		"rx_vport_rdma_unicast_bytes": 7,
+		"rx_bits_phy":                 20,
+		"rx_packets":                  99,
+	}
+	netDevProvider.errs["ens1f1np1"] = errors.New("boom")
+	opt := newStubOptionalCounterProvider()
+	opt.counters["mlx5_0/1"] = []rdmanl.OptionalCounter{
+		{Name: "rdma_tx_bytes", Enabled: false},
+		{Name: "cc_rx_ce_pkts", Enabled: true, Value: 4, HasValue: true},
+		{Name: "out_of_sequence", Enabled: true, Value: 9, HasValue: true},
+		{Name: "rdma_rx_bytes", Enabled: true, Value: 100, HasValue: true},
+	}
+	opt.errs["mlx5_0/2"] = errors.New("boom")
+	opt.counters["mlx5_1/1"] = []rdmanl.OptionalCounter{
+		{Name: "cc_tx_cnp_pkts", Enabled: true, HasValue: false},
+	}
+	qp := newStubQPProvider()
+	qp.modes["mlx5_0/1"] = rdmanl.QPMode{Mode: "auto", MaskType: true}
+	qp.sets["mlx5_0/1"] = []rdmanl.QPSet{
+		{Mode: "auto", QPType: "UD", Stats: map[string]uint64{"out_of_buffer": 1}},
+		{Mode: "auto", QPType: "RC", Stats: map[string]uint64{"out_of_buffer": 3, "duplicate_request": 2}},
+	}
+	qp.modes["mlx5_0/2"] = rdmanl.QPMode{Mode: "manual"}
+	qp.modeErrs["mlx5_1/1"] = errors.New("boom")
+
+	c := New(provider, newDiscardLogger(),
+		WithNetDevStatsProvider(netDevProvider),
+		WithNetDevPhysPortName(func(string) string { return "p0" }),
+		WithOptionalCounterProvider(opt),
+		WithQPCounterProvider(qp),
+	)
+
+	want := []string{
+		`rdma_port_rcv_data_total{device="mlx5_0",port="1"} counter 5`,
+		`rdma_port_xmit_data_total{device="mlx5_0",port="1"} counter 10`,
+		`rdma_lifespan_milliseconds{device="mlx5_0",port="1"} gauge 10`,
+		`rdma_out_of_sequence_total{device="mlx5_0",port="1"} counter 2`,
+		`rdma_optional_counter_enabled{counter="rdma_tx_bytes",device="mlx5_0",port="1"} gauge 0`,
+		`rdma_optional_counter_enabled{counter="cc_rx_ce_pkts",device="mlx5_0",port="1"} gauge 1`,
+		`rdma_cc_rx_ce_pkts_total{device="mlx5_0",port="1"} counter 4`,
+		`rdma_optional_counter_enabled{counter="out_of_sequence",device="mlx5_0",port="1"} gauge 1`,
+		`rdma_optional_counter_enabled{counter="rdma_rx_bytes",device="mlx5_0",port="1"} gauge 1`,
+		`rdma_optional_rx_bytes_total{device="mlx5_0",port="1"} counter 100`,
+		`rdma_roce_pfc_pause_frames_total{device="mlx5_0",direction="rx",netdev="ens1f0np0",port="1",priority="0"} counter 1`,
+		`rdma_roce_pfc_pause_duration_total{device="mlx5_0",direction="tx",netdev="ens1f0np0",port="1",priority="3"} counter 2`,
+		`rdma_phy_rx_bits_total{device="mlx5_0",netdev="ens1f0np0",port="1"} counter 20`,
+		`rdma_netdev_prio_buf_discard_total{device="mlx5_0",netdev="ens1f0np0",port="1",priority="3"} counter 4`,
+		`rdma_netdev_vport_rdma_bytes_total{device="mlx5_0",direction="rx",netdev="ens1f0np0",port="1",traffic="unicast"} counter 7`,
+		`rdma_port_info{device="mlx5_0",is_vf="false",link_layer="Ethernet",link_speed="100 Gb/sec",link_width="4X",netdev="ens1f0np0",pci_addr="0000:1a:00.0",pf_device="",phys_state="LinkUp",port="1",state="ACTIVE"} gauge 1`,
+		`rdma_port_info{device="mlx5_0",is_vf="false",link_layer="Ethernet",link_speed="",link_width="",netdev="ens1f1np1",pci_addr="0000:1a:00.0",pf_device="",phys_state="",port="2",state=""} gauge 1`,
+		`rdma_port_rcv_packets_total{device="mlx5_1",port="1"} counter 3`,
+		`rdma_optional_counter_enabled{counter="cc_tx_cnp_pkts",device="mlx5_1",port="1"} gauge 1`,
+		`rdma_port_info{device="mlx5_1",is_vf="true",link_layer="Ethernet",link_speed="",link_width="",netdev="ens1f0v0",pci_addr="0000:1a:00.2",pf_device="mlx5_0",phys_state="",port="1",state=""} gauge 1`,
+		`rdma_qp_counter_mode{device="mlx5_0",mode="none",port="1"} gauge 0`,
+		`rdma_qp_counter_mode{device="mlx5_0",mode="auto",port="1"} gauge 1`,
+		`rdma_qp_counter_mode{device="mlx5_0",mode="manual",port="1"} gauge 0`,
+		`rdma_qp_auto_mask{criteria="type",device="mlx5_0",port="1"} gauge 1`,
+		`rdma_qp_auto_mask{criteria="pid",device="mlx5_0",port="1"} gauge 0`,
+		`rdma_qp_scrape_status{device="mlx5_0",port="1",result="ok"} gauge 1`,
+		`rdma_qp_scrape_status{device="mlx5_0",port="1",result="overflow"} gauge 0`,
+		`rdma_qp_scrape_status{device="mlx5_0",port="1",result="error"} gauge 0`,
+		`rdma_qp_duplicate_request_total{device="mlx5_0",port="1",qp_type="RC"} counter 2`,
+		`rdma_qp_out_of_buffer_total{device="mlx5_0",port="1",qp_type="RC"} counter 3`,
+		`rdma_qp_out_of_buffer_total{device="mlx5_0",port="1",qp_type="UD"} counter 1`,
+		`rdma_qp_counter_mode{device="mlx5_0",mode="none",port="2"} gauge 0`,
+		`rdma_qp_counter_mode{device="mlx5_0",mode="auto",port="2"} gauge 0`,
+		`rdma_qp_counter_mode{device="mlx5_0",mode="manual",port="2"} gauge 1`,
+		`rdma_qp_auto_mask{criteria="type",device="mlx5_0",port="2"} gauge 0`,
+		`rdma_qp_auto_mask{criteria="pid",device="mlx5_0",port="2"} gauge 0`,
+		`rdma_qp_scrape_status{device="mlx5_1",port="1",result="ok"} gauge 0`,
+		`rdma_qp_scrape_status{device="mlx5_1",port="1",result="overflow"} gauge 0`,
+		`rdma_qp_scrape_status{device="mlx5_1",port="1",result="error"} gauge 1`,
+		`rdma_scrape_collector_success{collector="ethtool"} gauge 1`,
+		`rdma_scrape_collector_success{collector="optional-counters"} gauge 1`,
+		`rdma_scrape_collector_success{collector="qp-counters"} gauge 1`,
+		`rdma_scrape_errors_total{} counter 0`,
+		`rdma_roce_pfc_scrape_errors_total{} counter 1`,
+		`rdma_netdev_scrape_errors_total{} counter 1`,
+		`rdma_optional_counter_scrape_errors_total{} counter 2`,
+		`rdma_qp_scrape_errors_total{} counter 1`,
+	}
+	assertEmitted(t, emitted(t, c.Collect), want)
+}
+
+func TestCollectDevicesFailureSkipsProvidersAndReportsThemUsable(t *testing.T) {
+	t.Parallel()
+
+	opt := newStubOptionalCounterProvider()
+	qp := newStubQPProvider()
+	netDevProvider := newStubNetDevStatsProvider()
+	c := New(&stubProvider{err: errors.New("boom")}, newDiscardLogger(),
+		WithNetDevStatsProvider(netDevProvider),
+		WithOptionalCounterProvider(opt),
+		WithQPCounterProvider(qp),
+	)
+
+	assertEmitted(t, emitted(t, c.Collect), []string{
+		`rdma_scrape_collector_success{collector="ethtool"} gauge 1`,
+		`rdma_scrape_collector_success{collector="optional-counters"} gauge 1`,
+		`rdma_scrape_collector_success{collector="qp-counters"} gauge 1`,
+		`rdma_scrape_errors_total{} counter 1`,
+		`rdma_roce_pfc_scrape_errors_total{} counter 0`,
+		`rdma_netdev_scrape_errors_total{} counter 0`,
+		`rdma_optional_counter_scrape_errors_total{} counter 0`,
+		`rdma_qp_scrape_errors_total{} counter 0`,
+	})
+	if opt.PrepareCount() != 0 || qp.PrepareCount() != 0 {
+		t.Fatalf("Prepare calls: optional=%d qp=%d, want 0", opt.PrepareCount(), qp.PrepareCount())
+	}
+}
+
+func TestCollectLogsScrapeFailures(t *testing.T) {
+	t.Parallel()
+
+	cases := []struct {
+		name       string
+		devicesErr error
+		prepareErr error
+		canceled   bool
+		wantLog    string
+	}{
+		{
+			name:       "devices failure",
+			devicesErr: errors.New("boom"),
+			wantLog:    `level=WARN msg="rdma scrape failed" err=boom`,
+		},
+		{
+			name:       "devices failure after cancel",
+			devicesErr: errors.New("boom"),
+			canceled:   true,
+			wantLog:    `level=WARN msg="rdma scrape aborted by context" err="context canceled"`,
+		},
+		{
+			name:       "optional prepare failure",
+			prepareErr: errors.New("dump failed"),
+			wantLog:    `level=WARN msg="optional rdma counter dump failed" err="dump failed"`,
+		},
+		{
+			name:       "optional prepare failure after cancel",
+			prepareErr: errors.New("dump failed"),
+			canceled:   true,
+			wantLog:    `level=WARN msg="optional rdma counter scrape aborted by context" err="context canceled"`,
+		},
+	}
+
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+
+			provider := &stubProvider{
+				devices: []rdma.Device{{Name: "mlx5_0", Ports: []rdma.Port{{ID: 1}}}},
+				err:     tc.devicesErr,
+			}
+			opt := newStubOptionalCounterProvider()
+			opt.prepareErr = tc.prepareErr
+			logger, logs := newCaptureLogger()
+			c := New(provider, logger, WithOptionalCounterProvider(opt))
+			ctx, cancel := context.WithCancel(context.Background())
+			defer cancel()
+			if tc.canceled {
+				cancel()
+			}
+			c.SetContext(ctx)
+
+			emitted(t, c.Collect)
+			if got := strings.Count(logs.String(), tc.wantLog); got != 1 {
+				t.Fatalf("want one %q log, got %d\n%s", tc.wantLog, got, logs.String())
+			}
+		})
+	}
+}
+
+func TestProbeNetDevStats(t *testing.T) {
+	t.Parallel()
+
+	ethernetPort := func(id int, netDev string) rdma.Port {
+		return rdma.Port{ID: id, Attributes: rdma.PortAttributes{LinkLayer: "Ethernet", NetDev: netDev}}
+	}
+	unsupported := fmt.Errorf("read ethtool stats: %w", syscall.EOPNOTSUPP)
+
+	cases := []struct {
+		name            string
+		devices         []rdma.Device
+		devicesErr      error
+		noStatsProvider bool
+		statsErrs       map[string]error
+		canceled        bool
+		probes          int
+		wantErr         error
+		wantCalls       map[string]int
+		wantUnsupported []string
+		wantLogs        []string
+	}{
+		{
+			name:            "no stats provider",
+			devicesErr:      errors.New("boom"),
+			noStatsProvider: true,
+		},
+		{
+			name:       "devices failure",
+			devicesErr: errors.New("boom"),
+			wantErr:    errors.New("boom"),
+		},
+		{
+			name: "skips VFs, non-Ethernet ports and ports without netdev",
+			devices: []rdma.Device{
+				{Name: "mlx5_1", IsVF: true, Ports: []rdma.Port{ethernetPort(1, "vf0")}},
+				{Name: "mlx5_0", Ports: []rdma.Port{
+					{ID: 1, Attributes: rdma.PortAttributes{LinkLayer: "InfiniBand", NetDev: "ib0"}},
+					ethernetPort(2, ""),
+				}},
+			},
+			statsErrs: map[string]error{"vf0": unsupported, "ib0": unsupported},
+			wantCalls: map[string]int{"vf0": 0, "ib0": 0},
+		},
+		{
+			name: "probes a shared netdev once",
+			devices: []rdma.Device{
+				{Name: "mlx5_bond_0", Ports: []rdma.Port{ethernetPort(1, "bond0")}},
+				{Name: "mlx5_bond_1", Ports: []rdma.Port{ethernetPort(2, "bond0")}},
+			},
+			statsErrs:       map[string]error{"bond0": unsupported},
+			wantCalls:       map[string]int{"bond0": 1},
+			wantUnsupported: []string{"bond0"},
+			wantLogs:        []string{`msg="` + unsupportedNetDevLogMsg + `" device=mlx5_bond_0 port=1 netdev=bond0`},
+		},
+		{
+			name: "supported and transiently failing netdevs stay probed",
+			devices: []rdma.Device{
+				{Name: "mlx5_0", Ports: []rdma.Port{ethernetPort(1, "ens1"), ethernetPort(2, "ens2")}},
+			},
+			statsErrs: map[string]error{"ens2": errors.New("boom")},
+			probes:    2,
+			wantCalls: map[string]int{"ens1": 2, "ens2": 2},
+		},
+		{
+			name: "ENOTSUP marks the netdev",
+			devices: []rdma.Device{
+				{Name: "mlx5_0", Ports: []rdma.Port{ethernetPort(1, "ens1")}},
+			},
+			statsErrs:       map[string]error{"ens1": syscall.ENOTSUP},
+			wantCalls:       map[string]int{"ens1": 1},
+			wantUnsupported: []string{"ens1"},
+		},
+		{
+			name: "unsupported netdevs are not probed again",
+			devices: []rdma.Device{
+				{Name: "mlx5_0", Ports: []rdma.Port{ethernetPort(1, "bond0"), ethernetPort(2, "ens2")}},
+			},
+			statsErrs:       map[string]error{"bond0": unsupported},
+			probes:          2,
+			wantCalls:       map[string]int{"bond0": 1, "ens2": 2},
+			wantUnsupported: []string{"bond0"},
+		},
+		{
+			name: "canceled context stops at the first failing netdev",
+			devices: []rdma.Device{
+				{Name: "mlx5_0", Ports: []rdma.Port{ethernetPort(1, "ens1"), ethernetPort(2, "ens2")}},
+				{Name: "mlx5_1", Ports: []rdma.Port{ethernetPort(1, "ens3")}},
+			},
+			statsErrs: map[string]error{"ens2": unsupported, "ens3": unsupported},
+			canceled:  true,
+			wantErr:   context.Canceled,
+			wantCalls: map[string]int{"ens1": 1, "ens2": 1, "ens3": 0},
+		},
+	}
+
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+
+			netDevProvider := newStubNetDevStatsProvider()
+			for netDev, err := range tc.statsErrs {
+				netDevProvider.errs[netDev] = err
+			}
+			opts := []Option{WithNetDevStatsProvider(netDevProvider)}
+			if tc.noStatsProvider {
+				opts = []Option{WithEthtoolCollector()}
+			}
+			logger, logs := newCaptureLogger()
+			c := New(&stubProvider{devices: tc.devices, err: tc.devicesErr}, logger, opts...)
+			ctx, cancel := context.WithCancel(context.Background())
+			defer cancel()
+			if tc.canceled {
+				cancel()
+			}
+
+			probes := max(tc.probes, 1)
+			for i := 0; i < probes; i++ {
+				err := c.ProbeNetDevStats(ctx)
+				switch {
+				case tc.wantErr == nil && err != nil:
+					t.Fatalf("probe %d: %v", i, err)
+				case tc.wantErr != nil && (err == nil || err.Error() != tc.wantErr.Error()):
+					t.Fatalf("probe %d: err = %v, want %v", i, err, tc.wantErr)
+				}
+			}
+			for netDev, want := range tc.wantCalls {
+				if got := netDevProvider.CallCount(netDev); got != want {
+					t.Fatalf("Stats(%s) calls = %d, want %d", netDev, got, want)
+				}
+			}
+			if got := slices.Sorted(maps.Keys(c.unsupportedNetDevs)); !slices.Equal(got, tc.wantUnsupported) {
+				t.Fatalf("unsupported netdevs = %v, want %v", got, tc.wantUnsupported)
+			}
+			if got := strings.Count(logs.String(), unsupportedNetDevLogMsg); got != len(tc.wantUnsupported) {
+				t.Fatalf("unsupported logs = %d, want %d\n%s", got, len(tc.wantUnsupported), logs.String())
+			}
+			for _, want := range tc.wantLogs {
+				if !strings.Contains(logs.String(), want) {
+					t.Fatalf("missing log %q in\n%s", want, logs.String())
+				}
 			}
 		})
 	}
