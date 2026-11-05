@@ -23,6 +23,11 @@ type nlConn struct {
 	pid uint32
 	seq atomic.Uint32
 	mu  sync.Mutex
+
+	// recvTimeout caps each receive; zero means defaultRecvTimeout. Tests
+	// shorten it to reach the receive timeout without a context deadline,
+	// which could expire before Execute receives.
+	recvTimeout time.Duration
 }
 
 // New opens a NETLINK_RDMA socket for optional counter queries.
@@ -67,7 +72,7 @@ func (c *nlConn) Execute(ctx context.Context, typ uint16, flags uint16, payload 
 	c.mu.Lock()
 	defer c.mu.Unlock()
 
-	if err := setConnDeadline(c.fd, ctx); err != nil {
+	if err := setConnDeadline(c.fd, ctx, c.recvTimeout); err != nil {
 		return nil, err
 	}
 
@@ -287,8 +292,13 @@ func (c *nlConn) recv() ([]nlMsg, int, error) {
 	return msgs, n, nil
 }
 
-func setConnDeadline(fd int, ctx context.Context) error {
+// setConnDeadline sets the socket's receive timeout to limit (zero means
+// defaultRecvTimeout), or to the time left before ctx's deadline if shorter.
+func setConnDeadline(fd int, ctx context.Context, limit time.Duration) error {
 	timeout := defaultRecvTimeout
+	if limit > 0 {
+		timeout = limit
+	}
 	if deadline, ok := ctx.Deadline(); ok {
 		remaining := time.Until(deadline)
 		if remaining <= 0 {

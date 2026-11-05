@@ -560,7 +560,7 @@ func TestExecuteRouteLocalFailures(t *testing.T) {
 		smallSndbuf   bool   // netlink rejects messages larger than the send buffer
 		flags         uint16 // without NLM_F_REQUEST rtnetlink stays silent
 		payload       []byte
-		timeout       time.Duration
+		recvTimeout   time.Duration // instead of a context deadline, which can expire before the recv
 		wantErr       error
 		wantErrText   string
 		wantReconnect bool
@@ -583,14 +583,14 @@ func TestExecuteRouteLocalFailures(t *testing.T) {
 		{
 			name:        "doit recv timeout",
 			flags:       0,
-			timeout:     50 * time.Millisecond,
+			recvTimeout: 50 * time.Millisecond,
 			wantErr:     unix.EAGAIN,
 			wantErrText: "recv rdma netlink: resource temporarily unavailable",
 		},
 		{
 			name:          "dump recv timeout replaces the socket",
 			flags:         nlmFDump,
-			timeout:       50 * time.Millisecond,
+			recvTimeout:   50 * time.Millisecond,
 			wantErr:       unix.EAGAIN,
 			wantErrText:   "recv rdma netlink: resource temporarily unavailable",
 			wantReconnect: true,
@@ -613,10 +613,9 @@ func TestExecuteRouteLocalFailures(t *testing.T) {
 				}
 			}
 			ctx := executeTimeout(t)
-			if tc.timeout > 0 {
-				var cancel context.CancelFunc
-				ctx, cancel = context.WithTimeout(ctx, tc.timeout)
-				defer cancel()
+			if tc.recvTimeout > 0 {
+				c.recvTimeout = tc.recvTimeout
+				ctx = context.Background()
 			}
 			got, err := c.Execute(ctx, unix.RTM_GETLINK, tc.flags, tc.payload)
 			if !errors.Is(err, tc.wantErr) || err.Error() != tc.wantErrText {
