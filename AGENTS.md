@@ -1,6 +1,6 @@
 Prefix Go with `GOCACHE=$(pwd)/.gocache GOMODCACHE=$(pwd)/.gomodcache`.
 
-Commands: `make build`, `make test`, `make lint`, `make fmt`, `make complexity` (cccc; fails above `max-cognitive` in `cccc.toml`). CI also runs `go test -race ./...`.
+Commands: `make build`, `make test`, `make lint`, `make fmt`, `make complexity` (cccc; CI tracks the scores with octocov). CI also runs `go test -race ./...`.
 
 - slog keys: `device`, `port`, `duration`.
 - Tests: table-driven; `prometheus/testutil` for metric text; sysfs fixtures under `internal/rdma/testdata/sysfs/<scenario>/`.
