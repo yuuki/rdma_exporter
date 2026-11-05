@@ -20,8 +20,8 @@ lint:
 fmt:
 	gofmt -w $(shell find . -type f -name '*.go')
 
-# Rank the most complex functions with cccc (https://github.com/moznion/cccc);
-# what is analyzed is configured in cccc.toml.
+# Rank the most complex functions with cccc (https://github.com/moznion/cccc)
+# and, like CI, fail when one exceeds max-cognitive in cccc.toml.
 complexity:
 	cccc --table --top-cognitive 20 .
 
