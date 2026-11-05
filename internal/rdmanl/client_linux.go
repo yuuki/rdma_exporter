@@ -76,20 +76,48 @@ func (c *nlConn) Execute(ctx context.Context, typ uint16, flags uint16, payload 
 		return nil, err
 	}
 
-	dump := flags&nlmFDump != 0
-	wantAck := flags&nlmFAck != 0
-	budget, haveBudget := dumpBudgetFrom(ctx)
-	var out [][]byte
-	nBytes := 0
-	dumpDone := !dump
-	if dump {
+	replies := newReplyStream(ctx, seq, flags)
+	completed := false
+	if replies.dump {
+		// An unfinished multipart dump leaves replies queued on the socket;
+		// replace it so the next request cannot read them.
 		defer func() {
-			if !dumpDone {
+			if !completed {
 				_ = c.reconnectLocked()
 			}
 		}()
 	}
 
+	out, err := c.readReplies(ctx, replies)
+	completed = err == nil
+	return out, err
+}
+
+// replyStream collects the replies to one request sent on an nlConn.
+type replyStream struct {
+	seq        uint32
+	dump       bool
+	wantAck    bool
+	budget     DumpBudget
+	haveBudget bool
+	out        [][]byte
+	nBytes     int
+}
+
+func newReplyStream(ctx context.Context, seq uint32, flags uint16) *replyStream {
+	budget, haveBudget := dumpBudgetFrom(ctx)
+	return &replyStream{
+		seq:        seq,
+		dump:       flags&nlmFDump != 0,
+		wantAck:    flags&nlmFAck != 0,
+		budget:     budget,
+		haveBudget: haveBudget,
+	}
+}
+
+// readReplies receives datagrams until the request is answered and returns
+// its data messages.
+func (c *nlConn) readReplies(ctx context.Context, s *replyStream) ([][]byte, error) {
 	for {
 		if err := ctx.Err(); err != nil {
 			return nil, err
@@ -98,62 +126,109 @@ func (c *nlConn) Execute(ctx context.Context, typ uint16, flags uint16, payload 
 		if err != nil {
 			return nil, err
 		}
-		nBytes += n
-		pendingData := 0
-		for _, msg := range msgs {
-			if msg.seq == seq && msg.typ != unix.NLMSG_ERROR && msg.typ != unix.NLMSG_DONE && msg.typ != nlmsgOverrun {
-				pendingData++
-			}
+		if err := s.checkBudget(n, msgs); err != nil {
+			return nil, err
 		}
-		if dump && haveBudget {
-			if err := budget.check(nBytes, len(out)+pendingData); err != nil {
-				return nil, err
-			}
+		done, err := s.consume(msgs)
+		if err != nil {
+			return nil, err
 		}
-		for _, msg := range msgs {
-			if msg.seq != seq {
-				continue
-			}
-			if msg.typ == nlmsgOverrun {
-				return nil, ErrDumpInterrupted
-			}
-			if msg.flags&nlmFDumpIntr != 0 {
-				return nil, ErrDumpInterrupted
-			}
-			switch msg.typ {
-			case unix.NLMSG_ERROR:
-				code, err := nlErrorCode(msg.data)
-				if err != nil {
-					return nil, err
-				}
-				if code != 0 {
-					return nil, fmt.Errorf("rdma netlink: %w", unix.Errno(code))
-				}
-				if !dump {
-					dumpDone = true
-					return out, nil
-				}
-			case unix.NLMSG_DONE:
-				if len(msg.data) >= 4 {
-					code, err := nlErrorCode(msg.data)
-					if err != nil {
-						return nil, err
-					}
-					if code != 0 {
-						return nil, fmt.Errorf("rdma netlink dump: %w", unix.Errno(code))
-					}
-				}
-				dumpDone = true
-				return out, nil
-			default:
-				out = append(out, msg.data)
-				if !dump && !wantAck {
-					dumpDone = true
-					return out, nil
-				}
-			}
+		if done {
+			return s.out, nil
 		}
 	}
+}
+
+// checkBudget adds a datagram of n bytes to the dump's totals and fails once
+// they exceed the dump budget. The datagram's data messages count before they
+// are read.
+func (s *replyStream) checkBudget(n int, msgs []nlMsg) error {
+	s.nBytes += n
+	if !s.dump || !s.haveBudget {
+		return nil
+	}
+	return s.budget.check(s.nBytes, len(s.out)+s.countData(msgs))
+}
+
+// countData counts the data messages in msgs that answer this request.
+func (s *replyStream) countData(msgs []nlMsg) int {
+	n := 0
+	for _, msg := range msgs {
+		if msg.seq == s.seq && isDataMsg(msg.typ) {
+			n++
+		}
+	}
+	return n
+}
+
+func isDataMsg(typ uint16) bool {
+	return typ != unix.NLMSG_ERROR && typ != unix.NLMSG_DONE && typ != nlmsgOverrun
+}
+
+// consume handles one datagram's messages in order and reports whether the
+// request is complete. Messages of other requests are ignored.
+func (s *replyStream) consume(msgs []nlMsg) (bool, error) {
+	for _, msg := range msgs {
+		if msg.seq != s.seq {
+			continue
+		}
+		done, err := s.handle(msg)
+		if err != nil {
+			return false, err
+		}
+		if done {
+			return true, nil
+		}
+	}
+	return false, nil
+}
+
+// handle processes one message of this request and reports whether it
+// completes the request.
+func (s *replyStream) handle(msg nlMsg) (bool, error) {
+	if msg.typ == nlmsgOverrun || msg.flags&nlmFDumpIntr != 0 {
+		return false, ErrDumpInterrupted
+	}
+	switch msg.typ {
+	case unix.NLMSG_ERROR:
+		return s.handleAck(msg.data)
+	case unix.NLMSG_DONE:
+		if err := dumpDoneError(msg.data); err != nil {
+			return false, err
+		}
+		return true, nil
+	default:
+		s.out = append(s.out, msg.data)
+		return !s.dump && !s.wantAck, nil
+	}
+}
+
+// handleAck handles NLMSG_ERROR. A zero code is an ACK, which completes a
+// non-dump request; a dump only completes at NLMSG_DONE.
+func (s *replyStream) handleAck(data []byte) (bool, error) {
+	code, err := nlErrorCode(data)
+	if err != nil {
+		return false, err
+	}
+	if code != 0 {
+		return false, fmt.Errorf("rdma netlink: %w", unix.Errno(code))
+	}
+	return !s.dump, nil
+}
+
+// dumpDoneError returns the error NLMSG_DONE carries, if its payload has one.
+func dumpDoneError(data []byte) error {
+	if len(data) < 4 {
+		return nil
+	}
+	code, err := nlErrorCode(data)
+	if err != nil {
+		return err
+	}
+	if code != 0 {
+		return fmt.Errorf("rdma netlink dump: %w", unix.Errno(code))
+	}
+	return nil
 }
 
 func (c *nlConn) Close() error {

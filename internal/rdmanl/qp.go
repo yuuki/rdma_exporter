@@ -110,42 +110,52 @@ func parseQPSetEntry(data []byte) (QPSet, error) {
 		return QPSet{}, err
 	}
 	set := QPSet{Stats: make(map[string]uint64)}
-	var rawMode uint32
-	var haveMode bool
 	for _, a := range attrs {
-		switch a.Type {
-		case attrStatMode:
-			if len(a.Data) < 4 {
-				return QPSet{}, fmt.Errorf("short STAT_MODE on counter set")
-			}
-			rawMode = binary.LittleEndian.Uint32(a.Data[:4])
-			haveMode = true
-		case attrResType:
-			if len(a.Data) < 1 {
-				return QPSet{}, fmt.Errorf("short RES_TYPE")
-			}
-			set.QPType = qpTypeName(a.Data[0])
-		case attrResPID:
-			set.HasPID = true
-		case attrStatHWCounters:
-			hw, err := parseHWCounterTable(a.Data)
-			if err != nil {
-				return QPSet{}, err
-			}
-			for _, c := range hw {
-				if c.Name == "" || !c.HasValue {
-					continue
-				}
-				set.Stats[c.Name] = c.Value
-			}
-		case attrResQP:
-			// LQPN list is kernel dump cost; skip for metrics.
+		if err := applyQPSetAttr(&set, a); err != nil {
+			return QPSet{}, err
 		}
 	}
-	if haveMode {
-		set.Mode = counterModeName(rawMode)
-	}
 	return set, nil
+}
+
+// applyQPSetAttr records one attribute of a counter set entry on set.
+// Mode stays empty unless the entry carries STAT_MODE; the last one wins.
+func applyQPSetAttr(set *QPSet, a nlAttr) error {
+	switch a.Type {
+	case attrStatMode:
+		if len(a.Data) < 4 {
+			return fmt.Errorf("short STAT_MODE on counter set")
+		}
+		set.Mode = counterModeName(binary.LittleEndian.Uint32(a.Data[:4]))
+	case attrResType:
+		if len(a.Data) < 1 {
+			return fmt.Errorf("short RES_TYPE")
+		}
+		set.QPType = qpTypeName(a.Data[0])
+	case attrResPID:
+		set.HasPID = true
+	case attrStatHWCounters:
+		return addQPSetStats(set.Stats, a.Data)
+	case attrResQP:
+		// LQPN list is kernel dump cost; skip for metrics.
+	}
+	return nil
+}
+
+// addQPSetStats copies the named counters that carry a value from a
+// STAT_HWCOUNTERS table into stats.
+func addQPSetStats(stats map[string]uint64, table []byte) error {
+	hw, err := parseHWCounterTable(table)
+	if err != nil {
+		return err
+	}
+	for _, c := range hw {
+		if c.Name == "" || !c.HasValue {
+			continue
+		}
+		stats[c.Name] = c.Value
+	}
+	return nil
 }
 
 func counterModeName(mode uint32) string {
