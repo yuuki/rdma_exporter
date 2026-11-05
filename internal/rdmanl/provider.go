@@ -79,19 +79,51 @@ func (p *Provider) Counters(ctx context.Context, device string, port int) ([]Opt
 		return nil, fmt.Errorf("invalid rdma port %d", port)
 	}
 
-	p.mu.Lock()
-	if p.unsupported {
-		p.mu.Unlock()
-		return nil, nil
-	}
-	index, ok := p.devices[device]
-	p.mu.Unlock()
-	if !ok {
-		return nil, fmt.Errorf("rdma device %s not found", device)
+	index, unsupported, err := p.optionalDeviceIndex(device)
+	if unsupported || err != nil {
+		return nil, err
 	}
 
 	payload := encodePortQuery(index, uint32(port))
-	statusMsgs, err := p.client.Execute(ctx, nlType(cmdStatGetStatus), nlmFRequest|nlmFAck, payload)
+	status, err := p.optionalCounterStatus(ctx, device, port, payload)
+	if err != nil {
+		return nil, err
+	}
+	if !anyOptionalEnabled(status) {
+		return mergeOptionalCounters(status, nil), nil
+	}
+
+	valueMsgs, err := p.client.Execute(ctx, nlType(cmdStatGet), nlmFRequest|nlmFAck, payload)
+	if err != nil {
+		return nil, fmt.Errorf("get optional counter values for %s/%d: %w", device, port, err)
+	}
+	values, err := parseHWCounterMsgs(valueMsgs)
+	if err != nil {
+		return nil, err
+	}
+	return mergeOptionalCounters(status, values), nil
+}
+
+// optionalDeviceIndex resolves device to its netlink index. unsupported
+// reports that an earlier STAT_GET_STATUS failed as unsupported, in which
+// case Counters returns no counters for any device without querying.
+func (p *Provider) optionalDeviceIndex(device string) (index uint32, unsupported bool, err error) {
+	p.mu.Lock()
+	defer p.mu.Unlock()
+	if p.unsupported {
+		return 0, true, nil
+	}
+	index, ok := p.devices[device]
+	if !ok {
+		return 0, false, fmt.Errorf("rdma device %s not found", device)
+	}
+	return index, false, nil
+}
+
+// optionalCounterStatus queries STAT_GET_STATUS for the port in payload and
+// remembers a kernel that does not support it, which is older than Linux 5.16.
+func (p *Provider) optionalCounterStatus(ctx context.Context, device string, port int, payload []byte) ([]hwCounter, error) {
+	msgs, err := p.client.Execute(ctx, nlType(cmdStatGetStatus), nlmFRequest|nlmFAck, payload)
 	if err != nil {
 		if isUnsupportedNetlink(err) {
 			p.mu.Lock()
@@ -101,40 +133,31 @@ func (p *Provider) Counters(ctx context.Context, device string, port int) ([]Opt
 		}
 		return nil, fmt.Errorf("get optional counter status for %s/%d: %w", device, port, err)
 	}
+	return parseHWCounterMsgs(msgs)
+}
 
-	var status []hwCounter
-	for _, msg := range statusMsgs {
+// parseHWCounterMsgs concatenates the hardware counters of every message.
+func parseHWCounterMsgs(msgs [][]byte) ([]hwCounter, error) {
+	var counters []hwCounter
+	for _, msg := range msgs {
 		parsed, err := parseHWCounters(msg)
 		if err != nil {
 			return nil, err
 		}
-		status = append(status, parsed...)
+		counters = append(counters, parsed...)
 	}
+	return counters, nil
+}
 
-	anyEnabled := false
+// anyOptionalEnabled reports whether any optional counter is enabled, which
+// is what makes the STAT_GET value query worthwhile.
+func anyOptionalEnabled(status []hwCounter) bool {
 	for _, c := range status {
 		if c.Optional && c.Enabled {
-			anyEnabled = true
-			break
+			return true
 		}
 	}
-	if !anyEnabled {
-		return mergeOptionalCounters(status, nil), nil
-	}
-
-	valueMsgs, err := p.client.Execute(ctx, nlType(cmdStatGet), nlmFRequest|nlmFAck, payload)
-	if err != nil {
-		return nil, fmt.Errorf("get optional counter values for %s/%d: %w", device, port, err)
-	}
-	var values []hwCounter
-	for _, msg := range valueMsgs {
-		parsed, err := parseHWCounters(msg)
-		if err != nil {
-			return nil, err
-		}
-		values = append(values, parsed...)
-	}
-	return mergeOptionalCounters(status, values), nil
+	return false
 }
 
 // QPMode returns the port-level QP counter bind mode.

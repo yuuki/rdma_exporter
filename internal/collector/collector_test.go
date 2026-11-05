@@ -3303,3 +3303,405 @@ func TestProbeNetDevStats(t *testing.T) {
 		})
 	}
 }
+
+// describedNames runs Describe and returns the fully qualified name of every
+// descriptor it sends, in order. After the first skip descriptors it checks,
+// on every receive, that Describe does not hold collectMu while sending.
+func describedNames(t *testing.T, c *RdmaCollector, skip int) []string {
+	t.Helper()
+	ch := make(chan *prometheus.Desc)
+	go func() {
+		defer close(ch)
+		c.Describe(ch)
+	}()
+	var names []string
+	for desc := range ch {
+		if len(names) >= skip {
+			if !c.collectMu.TryLock() {
+				t.Errorf("Describe holds collectMu while sending %s", desc)
+			} else {
+				c.collectMu.Unlock()
+			}
+		}
+		names = append(names, descFQNamePattern.FindStringSubmatch(desc.String())[1])
+	}
+	return names
+}
+
+var (
+	describeBase    = []string{"rdma_port_info", "rdma_lifespan_milliseconds", "rdma_scrape_errors_total"}
+	describeSuccess = []string{"rdma_scrape_collector_success"}
+	describeEthtool = []string{
+		"rdma_roce_pfc_pause_frames_total",
+		"rdma_roce_pfc_pause_duration_total",
+		"rdma_roce_pfc_pause_transitions_total",
+		"rdma_netdev_prio_buf_discard_total",
+		"rdma_netdev_prio_cong_discard_total",
+		"rdma_netdev_prio_discards_total",
+		"rdma_netdev_prio_ecn_marked_total",
+		"rdma_netdev_dev_out_of_buffer_total",
+		"rdma_netdev_rx_out_of_buffer_total",
+		"rdma_netdev_rx_discards_phy_total",
+		"rdma_pcie_outbound_stalled_percent",
+		"rdma_pcie_outbound_stalled_seconds_total",
+		"rdma_pcie_outbound_buffer_overflow_total",
+		"rdma_pcie_signal_integrity_total",
+		"rdma_phy_rx_corrected_bits_total",
+		"rdma_phy_rx_pcs_symbol_err_total",
+		"rdma_phy_rx_bits_total",
+		"rdma_phy_rx_err_lane_total",
+		"rdma_phy_rx_crc_errors_total",
+		"rdma_phy_link_down_events_total",
+		"rdma_netdev_global_pause_frames_total",
+		"rdma_netdev_global_pause_duration_total",
+		"rdma_netdev_global_pause_transitions_total",
+		"rdma_netdev_pause_storm_events_total",
+		"rdma_netdev_vport_rdma_bytes_total",
+		"rdma_netdev_vport_rdma_packets_total",
+		"rdma_roce_pfc_scrape_errors_total",
+		"rdma_netdev_scrape_errors_total",
+	}
+	describeOptional = []string{
+		"rdma_optional_counter_enabled",
+		"rdma_optional_rx_bytes_total",
+		"rdma_optional_tx_bytes_total",
+		"rdma_optional_rx_packets_total",
+		"rdma_optional_tx_packets_total",
+		"rdma_optional_counter_scrape_errors_total",
+	}
+	describeQP = []string{
+		"rdma_qp_counter_mode",
+		"rdma_qp_auto_mask",
+		"rdma_qp_scrape_status",
+		"rdma_qp_scrape_errors_total",
+		"rdma_qp_duplicate_request_total",
+		"rdma_qp_implied_nak_seq_err_total",
+		"rdma_qp_local_ack_timeout_err_total",
+		"rdma_qp_packet_seq_err_total",
+		"rdma_qp_rnr_nak_retry_err_total",
+		"rdma_qp_out_of_buffer_total",
+		"rdma_qp_rx_write_requests_total",
+		"rdma_qp_rx_read_requests_total",
+		"rdma_qp_rx_atomic_requests_total",
+		"rdma_qp_rx_bytes_total",
+		"rdma_qp_tx_bytes_total",
+		"rdma_qp_rx_packets_total",
+		"rdma_qp_tx_packets_total",
+	}
+)
+
+func TestDescribeStaticDescriptors(t *testing.T) {
+	t.Parallel()
+
+	for mask := range 8 {
+		ethtool, optional, qp := mask&1 != 0, mask&2 != 0, mask&4 != 0
+		t.Run(fmt.Sprintf("ethtool=%t,optional=%t,qp=%t", ethtool, optional, qp), func(t *testing.T) {
+			t.Parallel()
+
+			var opts []Option
+			want := slices.Clone(describeBase)
+			if mask != 0 {
+				want = append(want, describeSuccess...)
+			}
+			if ethtool {
+				opts = append(opts, WithEthtoolCollector())
+				want = append(want, describeEthtool...)
+			}
+			if optional {
+				opts = append(opts, WithOptionalCollector())
+				want = append(want, describeOptional...)
+			}
+			if qp {
+				opts = append(opts, WithQPCollector())
+				want = append(want, describeQP...)
+			}
+			c := New(&stubProvider{}, newDiscardLogger(), opts...)
+
+			if got := describedNames(t, c, len(want)); !slices.Equal(got, want) {
+				t.Fatalf("Describe sent\n%s\nwant\n%s", strings.Join(got, "\n"), strings.Join(want, "\n"))
+			}
+		})
+	}
+}
+
+// After a scrape, Describe also sends the descriptors created for sysfs
+// counters, sysfs hw_counters and optional counters, in that group order and
+// in map order within each group.
+func TestDescribeDynamicDescriptors(t *testing.T) {
+	t.Parallel()
+
+	provider := &stubProvider{devices: []rdma.Device{{
+		Name: "mlx5_0",
+		Ports: []rdma.Port{{
+			ID:      1,
+			Stats:   map[string]uint64{"port_rcv_data": 1, "port_xmit_data": 2},
+			HwStats: map[string]uint64{"out_of_sequence": 3, "np_cnp_sent": 4, "lifespan": 10},
+		}},
+	}}}
+	opt := newStubOptionalCounterProvider()
+	opt.counters["mlx5_0/1"] = []rdmanl.OptionalCounter{
+		{Name: "cc_rx_ce_pkts", Enabled: true, Value: 1, HasValue: true},
+		{Name: "cc_tx_cnp_pkts", Enabled: true, Value: 2, HasValue: true},
+		{Name: "rdma_rx_bytes", Enabled: true, Value: 3, HasValue: true},
+	}
+	c := New(provider, newDiscardLogger(),
+		WithNetDevStatsProvider(newStubNetDevStatsProvider()),
+		WithOptionalCounterProvider(opt),
+		WithQPCounterProvider(newStubQPProvider()),
+	)
+	emitted(t, c.Collect)
+
+	static := slices.Concat(describeBase, describeSuccess, describeEthtool, describeOptional, describeQP)
+	got := describedNames(t, c, len(static))
+	if len(got) != len(static)+6 || !slices.Equal(got[:len(static)], static) {
+		t.Fatalf("Describe sent\n%s\nwant the static descriptors and 6 more", strings.Join(got, "\n"))
+	}
+	groups := [][]string{
+		{"rdma_port_rcv_data_total", "rdma_port_xmit_data_total"},
+		{"rdma_np_cnp_sent_total", "rdma_out_of_sequence_total"},
+		{"rdma_cc_rx_ce_pkts_total", "rdma_cc_tx_cnp_pkts_total"},
+	}
+	dynamic := got[len(static):]
+	for i, want := range groups {
+		if group := slices.Sorted(slices.Values(dynamic[2*i : 2*i+2])); !slices.Equal(group, want) {
+			t.Fatalf("dynamic group %d = %v, want %v (all: %v)", i, group, want, dynamic)
+		}
+	}
+}
+
+// Describe reads the descriptor maps under collectMu, so it may run while a
+// scrape adds descriptors. The race detector reports an unlocked read; each
+// round catches it on most runs, eight rounds on practically all.
+func TestDescribeConcurrentWithCollect(t *testing.T) {
+	t.Parallel()
+
+	stats := make(map[string]uint64)
+	for i := range 32 {
+		stats["stat_"+strconv.Itoa(i)] = uint64(i)
+	}
+	provider := &stubProvider{devices: []rdma.Device{{
+		Name:  "mlx5_0",
+		Ports: []rdma.Port{{ID: 1, Stats: stats, HwStats: stats}},
+	}}}
+
+	for range 8 {
+		c := New(provider, newDiscardLogger())
+		var wg sync.WaitGroup
+		wg.Add(2)
+		go func() {
+			defer wg.Done()
+			ch := make(chan prometheus.Metric, 128)
+			go func() {
+				defer close(ch)
+				c.Collect(ch)
+			}()
+			for range ch {
+			}
+		}()
+		go func() {
+			defer wg.Done()
+			ch := make(chan *prometheus.Desc, 128)
+			go func() {
+				defer close(ch)
+				c.Describe(ch)
+			}()
+			for range ch {
+			}
+		}()
+		wg.Wait()
+	}
+}
+
+func TestCollectOptionalCounters(t *testing.T) {
+	t.Parallel()
+
+	cases := []struct {
+		name           string
+		counters       []rdmanl.OptionalCounter
+		err            error
+		canceled       bool
+		hwStats        map[string]uint64
+		want           []string
+		wantErrors     float64
+		wantLog        string
+		wantRegistered []string
+	}{
+		{
+			name:       "provider failure",
+			err:        errors.New("boom"),
+			wantErrors: 1,
+			wantLog:    `level=WARN msg="optional rdma counter scrape failed" device=mlx5_0 port=1 err=boom`,
+		},
+		{
+			name:     "provider failure after cancel",
+			err:      errors.New("boom"),
+			canceled: true,
+			wantLog:  `level=WARN msg="optional rdma counter scrape aborted by context" device=mlx5_0 port=1 err="context canceled"`,
+		},
+		{
+			name: "no counters",
+		},
+		{
+			// The provider order is kept. Values are emitted only for enabled
+			// counters with a value that sysfs does not already export and
+			// that map to a traffic metric or a documented optional counter.
+			name: "every counter kind in provider order",
+			counters: []rdmanl.OptionalCounter{
+				{Name: "", Enabled: true, Value: 1, HasValue: true},
+				{Name: "rdma_tx_bytes"},
+				{Name: "cc_rx_cnp_pkts", Value: 3, HasValue: true},
+				{Name: "cc_tx_cnp_pkts", Enabled: true},
+				{Name: "rdma_rx_packets", Enabled: true, HasValue: true},
+				{Name: "cc_rx_ce_pkts", Enabled: true, Value: 4, HasValue: true},
+				{Name: "out_of_sequence", Enabled: true, Value: 9, HasValue: true},
+				{Name: "rdma_rx_bytes", Enabled: true, Value: 100, HasValue: true},
+				{Name: "np_cnp_sent", Enabled: true, Value: 5, HasValue: true},
+				{Name: "rdma_tx_packets", Enabled: true, Value: 6, HasValue: true},
+			},
+			hwStats: map[string]uint64{"out_of_sequence": 1, "rdma_rx_bytes": 2, "port_xmit_data": 3},
+			want: []string{
+				`rdma_optional_counter_enabled{counter="rdma_tx_bytes",device="mlx5_0",port="1"} gauge 0`,
+				`rdma_optional_counter_enabled{counter="cc_rx_cnp_pkts",device="mlx5_0",port="1"} gauge 0`,
+				`rdma_optional_counter_enabled{counter="cc_tx_cnp_pkts",device="mlx5_0",port="1"} gauge 1`,
+				`rdma_optional_counter_enabled{counter="rdma_rx_packets",device="mlx5_0",port="1"} gauge 1`,
+				`rdma_optional_rx_packets_total{device="mlx5_0",port="1"} counter 0`,
+				`rdma_optional_counter_enabled{counter="cc_rx_ce_pkts",device="mlx5_0",port="1"} gauge 1`,
+				`rdma_cc_rx_ce_pkts_total{device="mlx5_0",port="1"} counter 4`,
+				`rdma_optional_counter_enabled{counter="out_of_sequence",device="mlx5_0",port="1"} gauge 1`,
+				`rdma_optional_counter_enabled{counter="rdma_rx_bytes",device="mlx5_0",port="1"} gauge 1`,
+				`rdma_optional_counter_enabled{counter="np_cnp_sent",device="mlx5_0",port="1"} gauge 1`,
+				`rdma_optional_counter_enabled{counter="rdma_tx_packets",device="mlx5_0",port="1"} gauge 1`,
+				`rdma_optional_tx_packets_total{device="mlx5_0",port="1"} counter 6`,
+			},
+			wantErrors:     1,
+			wantRegistered: []string{"rdma_cc_rx_ce_pkts_total"},
+		},
+		{
+			// A missing value is counted before the sysfs and metric checks,
+			// but a counter without a name is skipped entirely.
+			name: "enabled counters without a value",
+			counters: []rdmanl.OptionalCounter{
+				{Name: "out_of_sequence", Enabled: true},
+				{Name: "np_cnp_sent", Enabled: true},
+				{Name: "", Enabled: true},
+				{Name: "rdma_rx_bytes", Enabled: true},
+			},
+			hwStats: map[string]uint64{"out_of_sequence": 1},
+			want: []string{
+				`rdma_optional_counter_enabled{counter="out_of_sequence",device="mlx5_0",port="1"} gauge 1`,
+				`rdma_optional_counter_enabled{counter="np_cnp_sent",device="mlx5_0",port="1"} gauge 1`,
+				`rdma_optional_counter_enabled{counter="rdma_rx_bytes",device="mlx5_0",port="1"} gauge 1`,
+			},
+			wantErrors: 3,
+		},
+	}
+
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+
+			opt := newStubOptionalCounterProvider()
+			opt.counters["mlx5_0/1"] = tc.counters
+			if tc.err != nil {
+				opt.errs["mlx5_0/1"] = tc.err
+			}
+			logger, logs := newCaptureLogger()
+			c := New(&stubProvider{}, logger, WithOptionalCounterProvider(opt))
+			ctx, cancel := context.WithCancel(context.Background())
+			defer cancel()
+			if tc.canceled {
+				cancel()
+			}
+
+			got := emitted(t, func(ch chan<- prometheus.Metric) {
+				c.collectOptionalCounters(ctx, ch, "mlx5_0", 1, "1", tc.hwStats)
+			})
+			assertEmitted(t, got, tc.want)
+			if got := testutil.ToFloat64(c.optionalCounterScrapeErrors); got != tc.wantErrors {
+				t.Fatalf("optional counter scrape errors = %g, want %g", got, tc.wantErrors)
+			}
+			if got := opt.CallCount("mlx5_0", 1); got != 1 {
+				t.Fatalf("Counters(mlx5_0, 1) calls = %d, want 1", got)
+			}
+			wantLogs := ""
+			if tc.wantLog != "" {
+				wantLogs = tc.wantLog + "\n"
+			}
+			if got := regexp.MustCompile(`time=\S+ `).ReplaceAllString(logs.String(), ""); got != wantLogs {
+				t.Fatalf("logs = %q, want %q", got, wantLogs)
+			}
+			if got := slices.Sorted(maps.Keys(c.portOptionalMetrics)); !slices.Equal(got, tc.wantRegistered) {
+				t.Fatalf("registered optional descriptors = %v, want %v", got, tc.wantRegistered)
+			}
+		})
+	}
+}
+
+func TestEmitQPTotals(t *testing.T) {
+	t.Parallel()
+
+	auto := func(qpType string, stats map[string]uint64) rdmanl.QPSet {
+		return rdmanl.QPSet{Mode: "auto", QPType: qpType, Stats: stats}
+	}
+
+	cases := []struct {
+		name string
+		sets []rdmanl.QPSet
+		want []string
+	}{
+		{
+			name: "no sets",
+		},
+		{
+			name: "sets that are not auto-type only",
+			sets: []rdmanl.QPSet{
+				{Mode: "manual", QPType: "RC", Stats: map[string]uint64{"out_of_buffer": 1}},
+				{Mode: "auto", QPType: "RC", HasPID: true, Stats: map[string]uint64{"out_of_buffer": 2}},
+				{Mode: "auto", Stats: map[string]uint64{"out_of_buffer": 3}},
+			},
+		},
+		{
+			// Types are sorted, names follow qpCounterValueNames, values of
+			// one type are summed as uint64 (wrapping), present zeros are
+			// emitted and unknown names are dropped.
+			name: "sums per type",
+			sets: []rdmanl.QPSet{
+				auto("UD", map[string]uint64{"rnr_nak_retry_err": 1, "out_of_buffer": 2, "lqpn": 5}),
+				auto("XRC_INI", map[string]uint64{"implied_nak_seq_err": 2}),
+				auto("RC", map[string]uint64{"out_of_buffer": 3, "rdma_tx_packets": 0}),
+				auto("UD", map[string]uint64{"out_of_buffer": 4, "duplicate_request": 1}),
+				{Mode: "manual", QPType: "UD", Stats: map[string]uint64{"out_of_buffer": 100}},
+				auto("UC", map[string]uint64{"lqpn": 7}),
+				auto("SMI", map[string]uint64{"packet_seq_err": 1}),
+				auto("DC", map[string]uint64{"rdma_rx_bytes": ^uint64(0)}),
+				auto("DC", map[string]uint64{"rdma_rx_bytes": 2}),
+			},
+			want: []string{
+				`rdma_qp_rx_bytes_total{device="mlx5_0",port="1",qp_type="DC"} counter 1`,
+				`rdma_qp_out_of_buffer_total{device="mlx5_0",port="1",qp_type="RC"} counter 3`,
+				`rdma_qp_tx_packets_total{device="mlx5_0",port="1",qp_type="RC"} counter 0`,
+				`rdma_qp_packet_seq_err_total{device="mlx5_0",port="1",qp_type="SMI"} counter 1`,
+				`rdma_qp_duplicate_request_total{device="mlx5_0",port="1",qp_type="UD"} counter 1`,
+				`rdma_qp_rnr_nak_retry_err_total{device="mlx5_0",port="1",qp_type="UD"} counter 1`,
+				`rdma_qp_out_of_buffer_total{device="mlx5_0",port="1",qp_type="UD"} counter 6`,
+				`rdma_qp_implied_nak_seq_err_total{device="mlx5_0",port="1",qp_type="XRC_INI"} counter 2`,
+			},
+		},
+	}
+
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+
+			// Each call sums into fresh maps, so emitting in map order instead
+			// of the pinned order could match once by chance, but not 32 times.
+			c := New(&stubProvider{}, newDiscardLogger(), WithQPCounterProvider(newStubQPProvider()))
+			for range 32 {
+				got := emitted(t, func(ch chan<- prometheus.Metric) {
+					c.emitQPTotals(ch, "mlx5_0", "1", tc.sets)
+				})
+				assertEmitted(t, got, tc.want)
+			}
+		})
+	}
+}

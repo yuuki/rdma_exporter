@@ -4,11 +4,14 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"reflect"
+	"sync"
 	"syscall"
 	"testing"
 )
 
 type stubQueryClient struct {
+	mu            sync.Mutex
 	dumpMsgs      [][]byte
 	statusMsgs    [][]byte
 	valueMsgs     [][]byte
@@ -27,12 +30,15 @@ type stubQueryClient struct {
 }
 
 type stubCall struct {
-	typ   uint16
-	flags uint16
+	typ     uint16
+	flags   uint16
+	payload []byte
 }
 
 func (s *stubQueryClient) Execute(_ context.Context, typ uint16, flags uint16, payload []byte) ([][]byte, error) {
-	s.calls = append(s.calls, stubCall{typ: typ, flags: flags})
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.calls = append(s.calls, stubCall{typ: typ, flags: flags, payload: payload})
 	switch typ {
 	case nlType(cmdGet):
 		return s.dumpMsgs, s.dumpErr
@@ -132,6 +138,298 @@ func TestProvider_CountersMergesStatusAndValues(t *testing.T) {
 	if client.calls[2].typ != nlType(cmdStatGet) || client.calls[2].flags != nlmFRequest|nlmFAck {
 		t.Fatalf("value call = %+v", client.calls[2])
 	}
+}
+
+func TestProviderCounters(t *testing.T) {
+	t.Parallel()
+
+	optional := func(name string, enabled bool) []byte {
+		var dynamic uint8
+		if enabled {
+			dynamic = 1
+		}
+		return nest(attrStatHWCounterEntry, concat(
+			putString(attrStatHWCounterEntryName, name),
+			putU8(attrStatHWCounterDynamic, dynamic),
+		))
+	}
+	static := func(name string) []byte {
+		return nest(attrStatHWCounterEntry, putString(attrStatHWCounterEntryName, name))
+	}
+	value := func(name string, v uint64) []byte {
+		return nest(attrStatHWCounterEntry, concat(
+			putString(attrStatHWCounterEntryName, name),
+			putU64(attrStatHWCounterEntryValue, v),
+		))
+	}
+	table := func(entries ...[]byte) []byte {
+		return nest(attrStatHWCounters, concat(entries...))
+	}
+	truncated := []byte{1, 0}
+	enabledStatus := [][]byte{table(optional("cc_rx_ce_pkts", true))}
+	// mlx5_1 has index 7, so the queries for mlx5_1 port 2 carry (7, 2).
+	// Expected errors take the errno text from the errno: it differs between
+	// platforms (EOPNOTSUPP reads "operation not supported on socket" on darwin).
+	statusCall := stubCall{typ: nlType(cmdStatGetStatus), flags: nlmFRequest | nlmFAck, payload: encodePortQuery(7, 2)}
+	valueCall := stubCall{typ: nlType(cmdStatGet), flags: nlmFRequest | nlmFAck, payload: encodePortQuery(7, 2)}
+
+	cases := []struct {
+		name            string
+		unprepared      bool
+		unsupported     bool
+		canceled        bool
+		device          string
+		port            int
+		statusMsgs      [][]byte
+		statusErr       error
+		valueMsgs       [][]byte
+		valueErr        error
+		want            []OptionalCounter
+		wantErr         string
+		wantIs          error
+		wantCalls       []stubCall
+		wantUnsupported bool
+	}{
+		{
+			name:     "canceled context is checked before the port",
+			canceled: true,
+			device:   "mlx5_1",
+			port:     0,
+			wantErr:  "context canceled",
+			wantIs:   context.Canceled,
+		},
+		{
+			name:    "port zero",
+			device:  "mlx5_1",
+			port:    0,
+			wantErr: "invalid rdma port 0",
+		},
+		{
+			name:            "negative port is rejected before the unsupported cache",
+			unsupported:     true,
+			device:          "mlx5_1",
+			port:            -1,
+			wantErr:         "invalid rdma port -1",
+			wantUnsupported: true,
+		},
+		{
+			name:            "unsupported cache answers before the device lookup",
+			unsupported:     true,
+			device:          "mlx5_9",
+			port:            1,
+			wantUnsupported: true,
+		},
+		{
+			name:    "unknown device",
+			device:  "mlx5_9",
+			port:    1,
+			wantErr: "rdma device mlx5_9 not found",
+		},
+		{
+			name:       "devices not prepared",
+			unprepared: true,
+			device:     "mlx5_1",
+			port:       2,
+			wantErr:    "rdma device mlx5_1 not found",
+		},
+		{
+			name:            "unsupported status is cached",
+			device:          "mlx5_1",
+			port:            2,
+			statusErr:       syscall.EOPNOTSUPP,
+			wantErr:         "optional counters require Linux 5.16+ STAT_GET_STATUS: " + syscall.EOPNOTSUPP.Error(),
+			wantIs:          syscall.EOPNOTSUPP,
+			wantCalls:       []stubCall{statusCall},
+			wantUnsupported: true,
+		},
+		{
+			name:            "wrapped ENOTSUP status is cached",
+			device:          "mlx5_1",
+			port:            2,
+			statusErr:       fmt.Errorf("netlink: %w", syscall.ENOTSUP),
+			wantErr:         "optional counters require Linux 5.16+ STAT_GET_STATUS: netlink: " + syscall.ENOTSUP.Error(),
+			wantIs:          syscall.ENOTSUP,
+			wantCalls:       []stubCall{statusCall},
+			wantUnsupported: true,
+		},
+		{
+			name:      "status failure",
+			device:    "mlx5_1",
+			port:      2,
+			statusErr: syscall.EIO,
+			wantErr:   "get optional counter status for mlx5_1/2: " + syscall.EIO.Error(),
+			wantIs:    syscall.EIO,
+			wantCalls: []stubCall{statusCall},
+		},
+		{
+			name:       "malformed status",
+			device:     "mlx5_1",
+			port:       2,
+			statusMsgs: [][]byte{truncated},
+			wantErr:    "truncated netlink attribute header at offset 0",
+			wantCalls:  []stubCall{statusCall},
+		},
+		{
+			name:       "malformed later status message",
+			device:     "mlx5_1",
+			port:       2,
+			statusMsgs: append(enabledStatus, truncated),
+			wantErr:    "truncated netlink attribute header at offset 0",
+			wantCalls:  []stubCall{statusCall},
+		},
+		{
+			name:      "no status messages",
+			device:    "mlx5_1",
+			port:      2,
+			want:      []OptionalCounter{},
+			wantCalls: []stubCall{statusCall},
+		},
+		{
+			name:       "only static counters",
+			device:     "mlx5_1",
+			port:       2,
+			statusMsgs: [][]byte{table(static("np_cnp_sent"))},
+			want:       []OptionalCounter{},
+			wantCalls:  []stubCall{statusCall},
+		},
+		{
+			name:       "optional counters all disabled",
+			device:     "mlx5_1",
+			port:       2,
+			statusMsgs: [][]byte{table(static("np_cnp_sent"), optional("cc_rx_ce_pkts", false))},
+			want:       []OptionalCounter{{Name: "cc_rx_ce_pkts"}},
+			wantCalls:  []stubCall{statusCall},
+		},
+		{
+			name:   "status and values split across messages",
+			device: "mlx5_1",
+			port:   2,
+			statusMsgs: [][]byte{
+				table(static("np_cnp_sent"), optional("cc_tx_cnp_pkts", false)),
+				table(optional("cc_rx_ce_pkts", true), optional("rdma_rx_bytes", true), optional("cc_rx_cnp_pkts", true)),
+			},
+			valueMsgs: [][]byte{
+				table(value("np_cnp_sent", 99), value("cc_rx_ce_pkts", 11)),
+				table(value("rdma_rx_bytes", 0), value("cc_tx_cnp_pkts", 5)),
+			},
+			want: []OptionalCounter{
+				{Name: "cc_tx_cnp_pkts"},
+				{Name: "cc_rx_ce_pkts", Enabled: true, Value: 11, HasValue: true},
+				{Name: "rdma_rx_bytes", Enabled: true, HasValue: true},
+				{Name: "cc_rx_cnp_pkts", Enabled: true},
+			},
+			wantCalls: []stubCall{statusCall, valueCall},
+		},
+		{
+			name:       "value failure",
+			device:     "mlx5_1",
+			port:       2,
+			statusMsgs: enabledStatus,
+			valueErr:   syscall.EIO,
+			wantErr:    "get optional counter values for mlx5_1/2: " + syscall.EIO.Error(),
+			wantIs:     syscall.EIO,
+			wantCalls:  []stubCall{statusCall, valueCall},
+		},
+		{
+			name:       "unsupported values are not cached",
+			device:     "mlx5_1",
+			port:       2,
+			statusMsgs: enabledStatus,
+			valueErr:   syscall.EOPNOTSUPP,
+			wantErr:    "get optional counter values for mlx5_1/2: " + syscall.EOPNOTSUPP.Error(),
+			wantIs:     syscall.EOPNOTSUPP,
+			wantCalls:  []stubCall{statusCall, valueCall},
+		},
+		{
+			name:       "malformed later value message",
+			device:     "mlx5_1",
+			port:       2,
+			statusMsgs: enabledStatus,
+			valueMsgs:  [][]byte{table(value("cc_rx_ce_pkts", 11)), truncated},
+			wantErr:    "truncated netlink attribute header at offset 0",
+			wantCalls:  []stubCall{statusCall, valueCall},
+		},
+	}
+
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+
+			client := &stubQueryClient{
+				dumpMsgs: [][]byte{
+					concat(putU32(attrDevIndex, 3), putString(attrDevName, "mlx5_0")),
+					concat(putU32(attrDevIndex, 7), putString(attrDevName, "mlx5_1")),
+				},
+				statusMsgs: tc.statusMsgs,
+				statusErr:  tc.statusErr,
+				valueMsgs:  tc.valueMsgs,
+				valueErr:   tc.valueErr,
+			}
+			p := newProvider(client)
+			if !tc.unprepared {
+				if err := p.Prepare(context.Background()); err != nil {
+					t.Fatalf("Prepare: %v", err)
+				}
+				client.calls = nil
+			}
+			p.unsupported = tc.unsupported
+			ctx, cancel := context.WithCancel(context.Background())
+			defer cancel()
+			if tc.canceled {
+				cancel()
+			}
+
+			got, err := p.Counters(ctx, tc.device, tc.port)
+			if tc.wantErr == "" && err != nil {
+				t.Fatalf("Counters: %v", err)
+			}
+			if tc.wantErr != "" && (err == nil || err.Error() != tc.wantErr) {
+				t.Fatalf("Counters error = %v, want %q", err, tc.wantErr)
+			}
+			if tc.wantIs != nil && !errors.Is(err, tc.wantIs) {
+				t.Fatalf("Counters error %v does not wrap %v", err, tc.wantIs)
+			}
+			if !reflect.DeepEqual(got, tc.want) {
+				t.Fatalf("Counters = %#v, want %#v", got, tc.want)
+			}
+			if !reflect.DeepEqual(client.calls, tc.wantCalls) {
+				t.Fatalf("netlink calls = %+v, want %+v", client.calls, tc.wantCalls)
+			}
+			if p.unsupported != tc.wantUnsupported {
+				t.Fatalf("unsupported = %v, want %v", p.unsupported, tc.wantUnsupported)
+			}
+		})
+	}
+}
+
+// Counters reads the device table and the unsupported flag under the
+// provider lock, so it may run concurrently with Prepare and with itself.
+// The race detector reports a read or write that skips the lock.
+func TestProviderCountersConcurrentWithPrepare(t *testing.T) {
+	t.Parallel()
+
+	client := &stubQueryClient{
+		dumpMsgs:  [][]byte{concat(putU32(attrDevIndex, 1), putString(attrDevName, "mlx5_0"))},
+		statusErr: syscall.EOPNOTSUPP,
+	}
+	p := newProvider(client)
+	start := make(chan struct{})
+	var wg sync.WaitGroup
+	for range 16 {
+		wg.Add(2)
+		go func() {
+			defer wg.Done()
+			<-start
+			_ = p.Prepare(context.Background())
+		}()
+		go func() {
+			defer wg.Done()
+			<-start
+			_, _ = p.Counters(context.Background(), "mlx5_0", 1)
+		}()
+	}
+	close(start)
+	wg.Wait()
 }
 
 func TestProvider_SkipsStatGetWhenNoOptionalEnabled(t *testing.T) {

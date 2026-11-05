@@ -234,10 +234,7 @@ func (p *SysfsProvider) devicesFromRoot(ctx context.Context, root string) ([]Dev
 	classDir := filepath.Join(root, classInfinibandPath)
 	entries, err := os.ReadDir(classDir)
 	if err != nil {
-		if errors.Is(err, fs.ErrNotExist) {
-			return nil, nil
-		}
-		return nil, err
+		return nil, ignoreNotExist(err)
 	}
 
 	devices := make([]Device, 0, len(entries))
@@ -245,23 +242,11 @@ func (p *SysfsProvider) devicesFromRoot(ctx context.Context, root string) ([]Dev
 		if ctx.Err() != nil {
 			return nil, ctx.Err()
 		}
-
-		if !entry.IsDir() {
-			if entry.Type()&fs.ModeSymlink == 0 {
-				continue
-			}
-			info, err := os.Stat(filepath.Join(classDir, entry.Name()))
-			if err != nil || !info.IsDir() {
-				continue
-			}
-		}
-
-		name := entry.Name()
-		if p.isExcluded(name) {
+		if !isDirOrDirSymlink(classDir, entry) || p.isExcluded(entry.Name()) {
 			continue
 		}
 
-		device, err := p.deviceFromRoot(ctx, root, name)
+		device, err := p.deviceFromRoot(ctx, root, entry.Name())
 		if err != nil {
 			return nil, err
 		}
@@ -270,14 +255,33 @@ func (p *SysfsProvider) devicesFromRoot(ctx context.Context, root string) ([]Dev
 	return devices, nil
 }
 
+// ignoreNotExist returns nil for an error that reports a missing file and
+// err otherwise: sysfs omits whole directories that a device does not support.
+func ignoreNotExist(err error) error {
+	if errors.Is(err, fs.ErrNotExist) {
+		return nil
+	}
+	return err
+}
+
+// isDirOrDirSymlink reports whether entry of dir is a directory or a symlink
+// that resolves to one, as class/infiniband entries are.
+func isDirOrDirSymlink(dir string, entry fs.DirEntry) bool {
+	if entry.IsDir() {
+		return true
+	}
+	if entry.Type()&fs.ModeSymlink == 0 {
+		return false
+	}
+	info, err := os.Stat(filepath.Join(dir, entry.Name()))
+	return err == nil && info.IsDir()
+}
+
 func (p *SysfsProvider) portsFromRoot(ctx context.Context, root, device string) ([]Port, error) {
 	dir := filepath.Join(root, classInfinibandPath, device, portsDirName)
 	entries, err := os.ReadDir(dir)
 	if err != nil {
-		if errors.Is(err, fs.ErrNotExist) {
-			return nil, nil
-		}
-		return nil, err
+		return nil, ignoreNotExist(err)
 	}
 
 	ports := make([]Port, 0, len(entries))
@@ -294,28 +298,39 @@ func (p *SysfsProvider) portsFromRoot(ctx context.Context, root, device string) 
 			continue
 		}
 
-		stats, err := p.readCounterDir(filepath.Join(dir, entry.Name(), countersDirName))
-		if err != nil && !errors.Is(err, fs.ErrNotExist) {
-			return nil, fmt.Errorf("read counters for %s port %d: %w", device, portID, err)
-		}
-		hwStats, err := p.readCounterDir(filepath.Join(dir, entry.Name(), hwCountersDirName))
-		if err != nil && !errors.Is(err, fs.ErrNotExist) {
-			return nil, fmt.Errorf("read hw counters for %s port %d: %w", device, portID, err)
-		}
-
-		attr, err := p.readPortAttributes(root, device, portID)
+		port, err := p.readPort(root, device, filepath.Join(dir, entry.Name()), portID)
 		if err != nil {
 			return nil, err
 		}
-
-		ports = append(ports, Port{
-			ID:         portID,
-			Stats:      stats,
-			HwStats:    hwStats,
-			Attributes: attr,
-		})
+		ports = append(ports, port)
 	}
 	return ports, nil
+}
+
+// readPort reads the counters and hw_counters under portDir, either of which
+// may be missing, and the attributes from the directory named after portID,
+// which is not portDir for a name such as "05".
+func (p *SysfsProvider) readPort(root, device, portDir string, portID int) (Port, error) {
+	stats, err := p.readCounterDir(filepath.Join(portDir, countersDirName))
+	if err = ignoreNotExist(err); err != nil {
+		return Port{}, fmt.Errorf("read counters for %s port %d: %w", device, portID, err)
+	}
+	hwStats, err := p.readCounterDir(filepath.Join(portDir, hwCountersDirName))
+	if err = ignoreNotExist(err); err != nil {
+		return Port{}, fmt.Errorf("read hw counters for %s port %d: %w", device, portID, err)
+	}
+
+	attr, err := p.readPortAttributes(root, device, portID)
+	if err != nil {
+		return Port{}, err
+	}
+
+	return Port{
+		ID:         portID,
+		Stats:      stats,
+		HwStats:    hwStats,
+		Attributes: attr,
+	}, nil
 }
 
 func (p *SysfsProvider) readPortAttributes(root, device string, port int) (PortAttributes, error) {
