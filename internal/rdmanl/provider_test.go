@@ -168,6 +168,8 @@ func TestProviderCounters(t *testing.T) {
 	truncated := []byte{1, 0}
 	enabledStatus := [][]byte{table(optional("cc_rx_ce_pkts", true))}
 	// mlx5_1 has index 7, so the queries for mlx5_1 port 2 carry (7, 2).
+	// Expected errors take the errno text from the errno: it differs between
+	// platforms (EOPNOTSUPP reads "operation not supported on socket" on darwin).
 	statusCall := stubCall{typ: nlType(cmdStatGetStatus), flags: nlmFRequest | nlmFAck, payload: encodePortQuery(7, 2)}
 	valueCall := stubCall{typ: nlType(cmdStatGet), flags: nlmFRequest | nlmFAck, payload: encodePortQuery(7, 2)}
 
@@ -235,7 +237,7 @@ func TestProviderCounters(t *testing.T) {
 			device:          "mlx5_1",
 			port:            2,
 			statusErr:       syscall.EOPNOTSUPP,
-			wantErr:         "optional counters require Linux 5.16+ STAT_GET_STATUS: operation not supported",
+			wantErr:         "optional counters require Linux 5.16+ STAT_GET_STATUS: " + syscall.EOPNOTSUPP.Error(),
 			wantIs:          syscall.EOPNOTSUPP,
 			wantCalls:       []stubCall{statusCall},
 			wantUnsupported: true,
@@ -245,7 +247,7 @@ func TestProviderCounters(t *testing.T) {
 			device:          "mlx5_1",
 			port:            2,
 			statusErr:       fmt.Errorf("netlink: %w", syscall.ENOTSUP),
-			wantErr:         "optional counters require Linux 5.16+ STAT_GET_STATUS: netlink: operation not supported",
+			wantErr:         "optional counters require Linux 5.16+ STAT_GET_STATUS: netlink: " + syscall.ENOTSUP.Error(),
 			wantIs:          syscall.ENOTSUP,
 			wantCalls:       []stubCall{statusCall},
 			wantUnsupported: true,
@@ -255,7 +257,7 @@ func TestProviderCounters(t *testing.T) {
 			device:    "mlx5_1",
 			port:      2,
 			statusErr: syscall.EIO,
-			wantErr:   "get optional counter status for mlx5_1/2: input/output error",
+			wantErr:   "get optional counter status for mlx5_1/2: " + syscall.EIO.Error(),
 			wantIs:    syscall.EIO,
 			wantCalls: []stubCall{statusCall},
 		},
@@ -324,7 +326,7 @@ func TestProviderCounters(t *testing.T) {
 			port:       2,
 			statusMsgs: enabledStatus,
 			valueErr:   syscall.EIO,
-			wantErr:    "get optional counter values for mlx5_1/2: input/output error",
+			wantErr:    "get optional counter values for mlx5_1/2: " + syscall.EIO.Error(),
 			wantIs:     syscall.EIO,
 			wantCalls:  []stubCall{statusCall, valueCall},
 		},
@@ -334,7 +336,7 @@ func TestProviderCounters(t *testing.T) {
 			port:       2,
 			statusMsgs: enabledStatus,
 			valueErr:   syscall.EOPNOTSUPP,
-			wantErr:    "get optional counter values for mlx5_1/2: operation not supported",
+			wantErr:    "get optional counter values for mlx5_1/2: " + syscall.EOPNOTSUPP.Error(),
 			wantIs:     syscall.EOPNOTSUPP,
 			wantCalls:  []stubCall{statusCall, valueCall},
 		},
