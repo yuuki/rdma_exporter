@@ -3693,11 +3693,15 @@ func TestEmitQPTotals(t *testing.T) {
 		t.Run(tc.name, func(t *testing.T) {
 			t.Parallel()
 
+			// Each call sums into fresh maps, so emitting in map order instead
+			// of the pinned order could match once by chance, but not 32 times.
 			c := New(&stubProvider{}, newDiscardLogger(), WithQPCounterProvider(newStubQPProvider()))
-			got := emitted(t, func(ch chan<- prometheus.Metric) {
-				c.emitQPTotals(ch, "mlx5_0", "1", tc.sets)
-			})
-			assertEmitted(t, got, tc.want)
+			for range 32 {
+				got := emitted(t, func(ch chan<- prometheus.Metric) {
+					c.emitQPTotals(ch, "mlx5_0", "1", tc.sets)
+				})
+				assertEmitted(t, got, tc.want)
+			}
 		})
 	}
 }
