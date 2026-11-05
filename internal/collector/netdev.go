@@ -32,111 +32,76 @@ func (c *RdmaCollector) emitNetDevHWMetrics(
 	stats map[string]uint64,
 	skipVPort bool,
 ) {
+	families := c.netDevHWFamilies()
 	for _, name := range sortedKeys(stats) {
-		value := float64(stats[name])
-		if matches := netdevPrioStatPattern.FindStringSubmatch(name); matches != nil {
-			desc := c.netdevPrioDesc(matches[2])
-			if desc == nil {
-				continue
-			}
-			ch <- prometheus.MustNewConstMetric(desc, prometheus.CounterValue, value, deviceName, portID, netDev, matches[1])
-			continue
-		}
-		if matches := pciStallPercentPattern.FindStringSubmatch(name); matches != nil {
-			ch <- prometheus.MustNewConstMetric(
-				c.pcieOutboundStalledPercentDesc,
-				prometheus.GaugeValue,
-				value,
-				deviceName, portID, netDev, matches[1],
-			)
-			continue
-		}
-		if matches := pciStallSecondsPattern.FindStringSubmatch(name); matches != nil {
-			ch <- prometheus.MustNewConstMetric(
-				c.pcieOutboundStalledSecondsDesc,
-				prometheus.CounterValue,
-				value,
-				deviceName, portID, netDev, matches[1],
-			)
-			continue
-		}
-		if matches := pciSignalPattern.FindStringSubmatch(name); matches != nil {
-			ch <- prometheus.MustNewConstMetric(
-				c.pcieSignalIntegrityDesc,
-				prometheus.CounterValue,
-				value,
-				deviceName, portID, netDev, matches[1],
-			)
-			continue
-		}
-		if matches := phyLanePattern.FindStringSubmatch(name); matches != nil {
-			ch <- prometheus.MustNewConstMetric(
-				c.phyRxErrLaneDesc,
-				prometheus.CounterValue,
-				value,
-				deviceName, portID, netDev, matches[1],
-			)
-			continue
-		}
-		if matches := globalPauseFramesPattern.FindStringSubmatch(name); matches != nil {
-			ch <- prometheus.MustNewConstMetric(
-				c.netdevGlobalPauseFramesDesc,
-				prometheus.CounterValue,
-				value,
-				deviceName, portID, netDev, matches[1],
-			)
-			continue
-		}
-		if matches := globalPauseDurationPattern.FindStringSubmatch(name); matches != nil {
-			ch <- prometheus.MustNewConstMetric(
-				c.netdevGlobalPauseDurationDesc,
-				prometheus.CounterValue,
-				value,
-				deviceName, portID, netDev, matches[1],
-			)
-			continue
-		}
-		if globalPauseTransitionPattern.MatchString(name) {
-			ch <- prometheus.MustNewConstMetric(
-				c.netdevGlobalPauseTransitionsDesc,
-				prometheus.CounterValue,
-				value,
-				deviceName, portID, netDev,
-			)
-			continue
-		}
-		if matches := pauseStormEventsPattern.FindStringSubmatch(name); matches != nil {
-			ch <- prometheus.MustNewConstMetric(
-				c.netdevPauseStormEventsDesc,
-				prometheus.CounterValue,
-				value,
-				deviceName, portID, netDev, matches[1],
-			)
-			continue
-		}
-		if matches := vportRDMAPattern.FindStringSubmatch(name); matches != nil {
-			if skipVPort {
-				continue
-			}
-			desc := c.netdevVPortRDMABytesDesc
-			if matches[3] == "packets" {
-				desc = c.netdevVPortRDMAPacketsDesc
-			}
-			ch <- prometheus.MustNewConstMetric(
-				desc,
-				prometheus.CounterValue,
-				value,
-				deviceName, portID, netDev, matches[1], matches[2],
-			)
-			continue
-		}
-
-		desc, ok := c.netDevPlainCounterDesc(name)
+		series, ok := c.netDevHWSeriesFor(name, families, skipVPort)
 		if !ok {
 			continue
 		}
-		ch <- prometheus.MustNewConstMetric(desc, prometheus.CounterValue, value, deviceName, portID, netDev)
+		labels := append([]string{deviceName, portID, netDev}, series.labels...)
+		ch <- prometheus.MustNewConstMetric(series.desc, series.valueType, float64(stats[name]), labels...)
 	}
+}
+
+// netDevHWSeries is the series an ethtool stat maps to. labels follow the
+// device, port and netdev labels.
+type netDevHWSeries struct {
+	desc      *prometheus.Desc
+	valueType prometheus.ValueType
+	labels    []string
+}
+
+// netDevHWFamily exports the ethtool stats matching pattern through one
+// descriptor; every submatch of pattern becomes a label, in order.
+type netDevHWFamily struct {
+	pattern   *regexp.Regexp
+	desc      *prometheus.Desc
+	valueType prometheus.ValueType
+}
+
+// netDevHWFamilies lists the single-descriptor families in match order.
+func (c *RdmaCollector) netDevHWFamilies() []netDevHWFamily {
+	return []netDevHWFamily{
+		{pattern: pciStallPercentPattern, desc: c.pcieOutboundStalledPercentDesc, valueType: prometheus.GaugeValue},
+		{pattern: pciStallSecondsPattern, desc: c.pcieOutboundStalledSecondsDesc, valueType: prometheus.CounterValue},
+		{pattern: pciSignalPattern, desc: c.pcieSignalIntegrityDesc, valueType: prometheus.CounterValue},
+		{pattern: phyLanePattern, desc: c.phyRxErrLaneDesc, valueType: prometheus.CounterValue},
+		{pattern: globalPauseFramesPattern, desc: c.netdevGlobalPauseFramesDesc, valueType: prometheus.CounterValue},
+		{pattern: globalPauseDurationPattern, desc: c.netdevGlobalPauseDurationDesc, valueType: prometheus.CounterValue},
+		{pattern: globalPauseTransitionPattern, desc: c.netdevGlobalPauseTransitionsDesc, valueType: prometheus.CounterValue},
+		{pattern: pauseStormEventsPattern, desc: c.netdevPauseStormEventsDesc, valueType: prometheus.CounterValue},
+	}
+}
+
+// netDevHWSeriesFor maps an ethtool stat name to its hardware series. Names
+// are tried against the per-priority family, the single-descriptor families,
+// the vPort RDMA family and the plain counters, in that order. The first
+// family that matches decides; false means the name exports nothing.
+func (c *RdmaCollector) netDevHWSeriesFor(name string, families []netDevHWFamily, skipVPort bool) (netDevHWSeries, bool) {
+	if matches := netdevPrioStatPattern.FindStringSubmatch(name); matches != nil {
+		desc := c.netdevPrioDesc(matches[2])
+		return netDevHWSeries{desc: desc, valueType: prometheus.CounterValue, labels: matches[1:2]}, desc != nil
+	}
+	for _, family := range families {
+		if matches := family.pattern.FindStringSubmatch(name); matches != nil {
+			return netDevHWSeries{desc: family.desc, valueType: family.valueType, labels: matches[1:]}, true
+		}
+	}
+	if matches := vportRDMAPattern.FindStringSubmatch(name); matches != nil {
+		return c.vportRDMASeries(matches), !skipVPort
+	}
+	desc, ok := c.netDevPlainCounterDesc(name)
+	return netDevHWSeries{desc: desc, valueType: prometheus.CounterValue}, ok
+}
+
+// vportRDMASeries maps a vportRDMAPattern match: the unit picks the
+// descriptor, direction and traffic become labels.
+func (c *RdmaCollector) vportRDMASeries(matches []string) netDevHWSeries {
+	desc := c.netdevVPortRDMABytesDesc
+	if matches[3] == "packets" {
+		desc = c.netdevVPortRDMAPacketsDesc
+	}
+	return netDevHWSeries{desc: desc, valueType: prometheus.CounterValue, labels: matches[1:3]}
 }
 
 func (c *RdmaCollector) netdevPrioDesc(kind string) *prometheus.Desc {
