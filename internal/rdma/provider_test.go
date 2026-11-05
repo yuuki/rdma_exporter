@@ -5,6 +5,8 @@ import (
 	"errors"
 	"os"
 	"path/filepath"
+	"reflect"
+	"syscall"
 	"testing"
 )
 
@@ -334,5 +336,172 @@ func TestSysfsProvider_PortWithoutCountersDir(t *testing.T) {
 	}
 	if got := port.HwStats["tx_bytes"]; got != 456 {
 		t.Fatalf("expected hw_counters tx_bytes=456, got %d", got)
+	}
+}
+
+func TestSysfsProviderDevicesScenarios(t *testing.T) {
+	t.Parallel()
+
+	cases := []struct {
+		name     string
+		scenario string
+		exclude  []string
+		want     []Device
+		wantErr  string
+		wantIs   error
+	}{
+		{
+			// A missing class directory yields nil, an empty one an empty slice.
+			name:     "missing class directory",
+			scenario: "does_not_exist",
+			want:     nil,
+		},
+		{
+			name:     "class directory without devices",
+			scenario: "empty",
+			want:     []Device{},
+		},
+		{
+			// Directories and symlinks to directories are devices; regular
+			// files, symlinks to files, dangling symlinks and excluded names
+			// are skipped. Ports keep directory order, skip regular files and
+			// non-numeric names, and read their attributes from the directory
+			// of the parsed number, so "05" gets the counters of ports/05 but
+			// the attributes of ports/5.
+			name:     "skips entries that are not devices or ports",
+			scenario: "entries",
+			exclude:  []string{"mlx5_6"},
+			want: []Device{
+				{
+					Name: "mlx5_0",
+					Ports: []Port{
+						{ID: 5, Stats: map[string]uint64{"port_rcv_data": 5}},
+						{
+							ID:      1,
+							Stats:   map[string]uint64{"port_xmit_data": 7},
+							HwStats: map[string]uint64{"out_of_sequence": 3},
+							Attributes: PortAttributes{
+								LinkLayer: "Ethernet",
+								State:     "ACTIVE",
+								PhysState: "LINK_UP",
+								LinkWidth: "4X",
+								LinkSpeed: "100 Gb/sec",
+							},
+						},
+						{ID: 2, Attributes: PortAttributes{LinkLayer: "InfiniBand"}},
+					},
+				},
+				{
+					Name:  "mlx5_1",
+					Ports: []Port{{ID: 1, Attributes: PortAttributes{LinkLayer: "Ethernet"}}},
+				},
+				{Name: "mlx5_5"},
+			},
+		},
+		{
+			name:     "class path is not a directory",
+			scenario: "class_not_dir",
+			wantErr:  "open testdata/sysfs/class_not_dir/class/infiniband: not a directory",
+			wantIs:   syscall.ENOTDIR,
+		},
+		{
+			name:     "ports path is not a directory",
+			scenario: "ports_not_dir",
+			wantErr:  "collect ports for mlx5_1: open testdata/sysfs/ports_not_dir/class/infiniband/mlx5_1/ports: not a directory",
+			wantIs:   syscall.ENOTDIR,
+		},
+		{
+			name:     "counters path is not a directory",
+			scenario: "counters_not_dir",
+			wantErr:  "collect ports for mlx5_0: read counters for mlx5_0 port 1: open testdata/sysfs/counters_not_dir/class/infiniband/mlx5_0/ports/1/counters: not a directory",
+			wantIs:   syscall.ENOTDIR,
+		},
+		{
+			name:     "hw_counters path is not a directory",
+			scenario: "hw_counters_not_dir",
+			wantErr:  "collect ports for mlx5_0: read hw counters for mlx5_0 port 1: open testdata/sysfs/hw_counters_not_dir/class/infiniband/mlx5_0/ports/1/hw_counters: not a directory",
+			wantIs:   syscall.ENOTDIR,
+		},
+	}
+
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+
+			provider := NewSysfsProvider()
+			provider.SetSysfsRoot(filepath.Join("testdata", "sysfs", tc.scenario))
+			provider.SetExcludeDevices(tc.exclude)
+
+			got, err := provider.Devices(context.Background())
+			if tc.wantErr == "" {
+				if err != nil {
+					t.Fatalf("Devices returned error: %v", err)
+				}
+			} else {
+				if err == nil || err.Error() != tc.wantErr || !errors.Is(err, tc.wantIs) {
+					t.Fatalf("Devices error = %v, want %q wrapping %v", err, tc.wantErr, tc.wantIs)
+				}
+			}
+			if !reflect.DeepEqual(got, tc.want) {
+				t.Fatalf("Devices = %#v, want %#v", got, tc.want)
+			}
+		})
+	}
+}
+
+// The scan checks the context before each class and port entry, so it stops
+// even when only skipped entries are left.
+func TestSysfsProviderScanStopsOnCanceledContext(t *testing.T) {
+	t.Parallel()
+
+	ctx, cancel := context.WithCancel(context.Background())
+	cancel()
+	provider := NewSysfsProvider()
+
+	cases := []struct {
+		name    string
+		scan    func() (any, error)
+		wantErr error
+	}{
+		{
+			name: "devices with only skipped entries",
+			scan: func() (any, error) {
+				return provider.devicesFromRoot(ctx, filepath.Join("testdata", "sysfs", "empty"))
+			},
+			wantErr: context.Canceled,
+		},
+		{
+			name: "devices with a missing class directory",
+			scan: func() (any, error) {
+				return provider.devicesFromRoot(ctx, filepath.Join("testdata", "sysfs", "does_not_exist"))
+			},
+		},
+		{
+			name: "ports",
+			scan: func() (any, error) {
+				return provider.portsFromRoot(ctx, filepath.Join("testdata", "sysfs", "entries"), "mlx5_0")
+			},
+			wantErr: context.Canceled,
+		},
+		{
+			name: "device without a ports directory",
+			scan: func() (any, error) {
+				return provider.portsFromRoot(ctx, filepath.Join("testdata", "sysfs", "entries"), "mlx5_5")
+			},
+		},
+	}
+
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+
+			got, err := tc.scan()
+			if !errors.Is(err, tc.wantErr) || (tc.wantErr == nil && err != nil) {
+				t.Fatalf("err = %v, want %v", err, tc.wantErr)
+			}
+			if !reflect.ValueOf(got).IsNil() {
+				t.Fatalf("got %#v, want nil", got)
+			}
+		})
 	}
 }
