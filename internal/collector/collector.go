@@ -989,76 +989,89 @@ func (c *RdmaCollector) Describe(ch chan<- *prometheus.Desc) {
 		ch <- c.scrapeCollectorSuccessDesc
 	}
 	if c.collectEthtool {
-		ch <- c.rocePFCPauseFramesDesc
-		ch <- c.rocePFCPauseDurationDesc
-		ch <- c.rocePFCPauseTransitionsDesc
-		ch <- c.netdevPrioBufDiscardDesc
-		ch <- c.netdevPrioCongDiscardDesc
-		ch <- c.netdevPrioDiscardsDesc
-		ch <- c.netdevPrioECNMarkedDesc
-		ch <- c.netdevDevOutOfBufferDesc
-		ch <- c.netdevRxOutOfBufferDesc
-		ch <- c.netdevRxDiscardsPhyDesc
-		ch <- c.pcieOutboundStalledPercentDesc
-		ch <- c.pcieOutboundStalledSecondsDesc
-		ch <- c.pcieOutboundOverflowDesc
-		ch <- c.pcieSignalIntegrityDesc
-		ch <- c.phyRxCorrectedBitsDesc
-		ch <- c.phyRxPCSSymbolErrDesc
-		ch <- c.phyRxBitsDesc
-		ch <- c.phyRxErrLaneDesc
-		ch <- c.phyRxCRCErrorsDesc
-		ch <- c.phyLinkDownEventsDesc
-		ch <- c.netdevGlobalPauseFramesDesc
-		ch <- c.netdevGlobalPauseDurationDesc
-		ch <- c.netdevGlobalPauseTransitionsDesc
-		ch <- c.netdevPauseStormEventsDesc
-		ch <- c.netdevVPortRDMABytesDesc
-		ch <- c.netdevVPortRDMAPacketsDesc
-		c.rocePFCScrapeErrors.Describe(ch)
-		c.netDevHWScrapeErrors.Describe(ch)
+		c.describeEthtool(ch)
 	}
 	if c.collectOptional {
-		ch <- c.optionalCounterEnabledDesc
-		for _, spec := range optionalTrafficSpecs {
-			ch <- c.optionalTrafficDescs[spec.Name]
-		}
-		c.optionalCounterScrapeErrors.Describe(ch)
+		c.describeOptional(ch)
 	}
 	if c.collectQP {
-		ch <- c.qpCounterModeDesc
-		ch <- c.qpAutoMaskDesc
-		ch <- c.qpScrapeStatusDesc
-		c.qpScrapeErrors.Describe(ch)
-		for _, name := range qpCounterValueNames {
-			ch <- c.qpValueDescs[name]
+		c.describeQP(ch)
+	}
+
+	// Sent after collectMu is released, so a slow reader does not block Collect.
+	for _, desc := range c.portCounterDescs() {
+		ch <- desc
+	}
+}
+
+// describeEthtool sends the descriptors of the ethtool collector.
+func (c *RdmaCollector) describeEthtool(ch chan<- *prometheus.Desc) {
+	ch <- c.rocePFCPauseFramesDesc
+	ch <- c.rocePFCPauseDurationDesc
+	ch <- c.rocePFCPauseTransitionsDesc
+	ch <- c.netdevPrioBufDiscardDesc
+	ch <- c.netdevPrioCongDiscardDesc
+	ch <- c.netdevPrioDiscardsDesc
+	ch <- c.netdevPrioECNMarkedDesc
+	ch <- c.netdevDevOutOfBufferDesc
+	ch <- c.netdevRxOutOfBufferDesc
+	ch <- c.netdevRxDiscardsPhyDesc
+	ch <- c.pcieOutboundStalledPercentDesc
+	ch <- c.pcieOutboundStalledSecondsDesc
+	ch <- c.pcieOutboundOverflowDesc
+	ch <- c.pcieSignalIntegrityDesc
+	ch <- c.phyRxCorrectedBitsDesc
+	ch <- c.phyRxPCSSymbolErrDesc
+	ch <- c.phyRxBitsDesc
+	ch <- c.phyRxErrLaneDesc
+	ch <- c.phyRxCRCErrorsDesc
+	ch <- c.phyLinkDownEventsDesc
+	ch <- c.netdevGlobalPauseFramesDesc
+	ch <- c.netdevGlobalPauseDurationDesc
+	ch <- c.netdevGlobalPauseTransitionsDesc
+	ch <- c.netdevPauseStormEventsDesc
+	ch <- c.netdevVPortRDMABytesDesc
+	ch <- c.netdevVPortRDMAPacketsDesc
+	c.rocePFCScrapeErrors.Describe(ch)
+	c.netDevHWScrapeErrors.Describe(ch)
+}
+
+// describeOptional sends the descriptors of the optional-counters collector
+// that exist before any scrape.
+func (c *RdmaCollector) describeOptional(ch chan<- *prometheus.Desc) {
+	ch <- c.optionalCounterEnabledDesc
+	for _, spec := range optionalTrafficSpecs {
+		ch <- c.optionalTrafficDescs[spec.Name]
+	}
+	c.optionalCounterScrapeErrors.Describe(ch)
+}
+
+// describeQP sends the descriptors of the qp-counters collector.
+func (c *RdmaCollector) describeQP(ch chan<- *prometheus.Desc) {
+	ch <- c.qpCounterModeDesc
+	ch <- c.qpAutoMaskDesc
+	ch <- c.qpScrapeStatusDesc
+	c.qpScrapeErrors.Describe(ch)
+	for _, name := range qpCounterValueNames {
+		ch <- c.qpValueDescs[name]
+	}
+}
+
+// portCounterDescs returns, read under collectMu, the descriptors that scrapes
+// created for sysfs counters, sysfs hw_counters and optional counters, in
+// that group order.
+func (c *RdmaCollector) portCounterDescs() []*prometheus.Desc {
+	c.collectMu.Lock()
+	defer c.collectMu.Unlock()
+
+	groups := []map[string]metricEntry{c.portStatMetrics, c.portHwMetrics, c.portOptionalMetrics}
+	descs := make([]*prometheus.Desc, 0, len(c.portStatMetrics)+len(c.portHwMetrics)+len(c.portOptionalMetrics))
+	for _, entries := range groups {
+		for _, entry := range entries {
+			descs = append(descs, entry.desc)
 		}
 	}
-
-	c.collectMu.Lock()
-	statDescs := make([]*prometheus.Desc, 0, len(c.portStatMetrics))
-	for _, entry := range c.portStatMetrics {
-		statDescs = append(statDescs, entry.desc)
-	}
-	hwDescs := make([]*prometheus.Desc, 0, len(c.portHwMetrics))
-	for _, entry := range c.portHwMetrics {
-		hwDescs = append(hwDescs, entry.desc)
-	}
-	optionalDescs := make([]*prometheus.Desc, 0, len(c.portOptionalMetrics))
-	for _, entry := range c.portOptionalMetrics {
-		optionalDescs = append(optionalDescs, entry.desc)
-	}
-	c.collectMu.Unlock()
-
-	for _, desc := range statDescs {
-		ch <- desc
-	}
-	for _, desc := range hwDescs {
-		ch <- desc
-	}
-	for _, desc := range optionalDescs {
-		ch <- desc
-	}
+	return descs
 }
 
 // Collect implements prometheus.Collector.
@@ -1283,12 +1296,7 @@ func (c *RdmaCollector) collectOptionalCounters(
 ) {
 	counters, err := c.optionalCounterProvider.Counters(ctx, deviceName, portID)
 	if err != nil {
-		if ctx.Err() != nil {
-			c.logger.Warn("optional rdma counter scrape aborted by context", "device", deviceName, "port", portLabel, "err", ctx.Err())
-			return
-		}
-		c.logger.Warn("optional rdma counter scrape failed", "device", deviceName, "port", portLabel, "err", err)
-		c.optionalCounterScrapeErrors.Inc()
+		c.recordOptionalCountersFailure(ctx, deviceName, portLabel, err)
 		return
 	}
 
@@ -1296,49 +1304,77 @@ func (c *RdmaCollector) collectOptionalCounters(
 		if counter.Name == "" {
 			continue
 		}
-		enabled := 0.0
-		if counter.Enabled {
-			enabled = 1
-		}
-		ch <- prometheus.MustNewConstMetric(
-			c.optionalCounterEnabledDesc,
-			prometheus.GaugeValue,
-			enabled,
-			deviceName,
-			portLabel,
-			counter.Name,
-		)
-		if counter.Enabled && !counter.HasValue {
-			c.optionalCounterScrapeErrors.Inc()
-			continue
-		}
-		if !counter.Enabled || !counter.HasValue {
-			continue
-		}
-		if _, exists := hwStats[counter.Name]; exists {
-			continue
-		}
-		if desc, ok := c.optionalTrafficDescs[counter.Name]; ok {
-			ch <- prometheus.MustNewConstMetric(
-				desc,
-				prometheus.CounterValue,
-				float64(counter.Value),
-				deviceName,
-				portLabel,
-			)
-			continue
-		}
-		if _, ok := optionalCounterValueNames[counter.Name]; !ok {
-			continue
-		}
-		ch <- prometheus.MustNewConstMetric(
-			c.optionalMetricDesc(counter.Name),
-			prometheus.CounterValue,
-			float64(counter.Value),
-			deviceName,
-			portLabel,
-		)
+		c.emitOptionalCounter(ch, deviceName, portLabel, counter, hwStats)
 	}
+}
+
+// recordOptionalCountersFailure logs a failed read of a port's optional
+// counters and counts it as a scrape error, unless the scrape context ended.
+func (c *RdmaCollector) recordOptionalCountersFailure(ctx context.Context, deviceName, portLabel string, err error) {
+	if ctx.Err() != nil {
+		c.logger.Warn("optional rdma counter scrape aborted by context", "device", deviceName, "port", portLabel, "err", ctx.Err())
+		return
+	}
+	c.logger.Warn("optional rdma counter scrape failed", "device", deviceName, "port", portLabel, "err", err)
+	c.optionalCounterScrapeErrors.Inc()
+}
+
+// emitOptionalCounter emits whether counter is enabled and, when it is enabled
+// and has a value, the value series that optionalValueDesc maps it to. An
+// enabled counter without a value counts as a scrape error.
+func (c *RdmaCollector) emitOptionalCounter(
+	ch chan<- prometheus.Metric,
+	deviceName, portLabel string,
+	counter rdmanl.OptionalCounter,
+	hwStats map[string]uint64,
+) {
+	enabled := 0.0
+	if counter.Enabled {
+		enabled = 1
+	}
+	ch <- prometheus.MustNewConstMetric(
+		c.optionalCounterEnabledDesc,
+		prometheus.GaugeValue,
+		enabled,
+		deviceName,
+		portLabel,
+		counter.Name,
+	)
+	if !counter.Enabled {
+		return
+	}
+	if !counter.HasValue {
+		c.optionalCounterScrapeErrors.Inc()
+		return
+	}
+	desc, ok := c.optionalValueDesc(counter.Name, hwStats)
+	if !ok {
+		return
+	}
+	ch <- prometheus.MustNewConstMetric(
+		desc,
+		prometheus.CounterValue,
+		float64(counter.Value),
+		deviceName,
+		portLabel,
+	)
+}
+
+// optionalValueDesc returns the descriptor for the value of optional counter
+// name: a traffic metric, or a documented counter whose descriptor it creates
+// on first use. It reports false when sysfs hw_counters already export name
+// or no metric maps it.
+func (c *RdmaCollector) optionalValueDesc(name string, hwStats map[string]uint64) (*prometheus.Desc, bool) {
+	if _, exists := hwStats[name]; exists {
+		return nil, false
+	}
+	if desc, ok := c.optionalTrafficDescs[name]; ok {
+		return desc, true
+	}
+	if _, ok := optionalCounterValueNames[name]; !ok {
+		return nil, false
+	}
+	return c.optionalMetricDesc(name), true
 }
 
 func (c *RdmaCollector) collectQPCounters(ctx context.Context, ch chan<- prometheus.Metric, devices []rdma.Device) bool {
@@ -1410,6 +1446,15 @@ func (c *RdmaCollector) collectQPPort(ctx context.Context, ch chan<- prometheus.
 }
 
 func (c *RdmaCollector) emitQPTotals(ch chan<- prometheus.Metric, deviceName, portLabel string, sets []rdmanl.QPSet) {
+	totals := sumAutoTypeQPSets(sets)
+	for _, qpType := range sortedKeys(totals) {
+		c.emitQPTypeTotals(ch, deviceName, portLabel, qpType, totals[qpType])
+	}
+}
+
+// sumAutoTypeQPSets sums the qpCounterValueNames counters of the auto-type
+// sets per QP type.
+func sumAutoTypeQPSets(sets []rdmanl.QPSet) map[string]map[string]uint64 {
 	totals := make(map[string]map[string]uint64)
 	for _, set := range sets {
 		if !set.AutoType() {
@@ -1420,29 +1465,37 @@ func (c *RdmaCollector) emitQPTotals(ch chan<- prometheus.Metric, deviceName, po
 			byName = make(map[string]uint64)
 			totals[set.QPType] = byName
 		}
-		for _, name := range qpCounterValueNames {
-			value, ok := set.Stats[name]
-			if !ok {
-				continue
-			}
-			byName[name] += value
-		}
+		addQPCounterValues(byName, set.Stats)
 	}
-	for _, qpType := range sortedKeys(totals) {
-		for _, name := range qpCounterValueNames {
-			value, ok := totals[qpType][name]
-			if !ok {
-				continue
-			}
-			ch <- prometheus.MustNewConstMetric(
-				c.qpValueDescs[name],
-				prometheus.CounterValue,
-				float64(value),
-				deviceName,
-				portLabel,
-				qpType,
-			)
+	return totals
+}
+
+// addQPCounterValues adds the qpCounterValueNames counters of stats to byName.
+func addQPCounterValues(byName, stats map[string]uint64) {
+	for _, name := range qpCounterValueNames {
+		value, ok := stats[name]
+		if !ok {
+			continue
 		}
+		byName[name] += value
+	}
+}
+
+// emitQPTypeTotals emits the totals of one QP type in qpCounterValueNames order.
+func (c *RdmaCollector) emitQPTypeTotals(ch chan<- prometheus.Metric, deviceName, portLabel, qpType string, byName map[string]uint64) {
+	for _, name := range qpCounterValueNames {
+		value, ok := byName[name]
+		if !ok {
+			continue
+		}
+		ch <- prometheus.MustNewConstMetric(
+			c.qpValueDescs[name],
+			prometheus.CounterValue,
+			float64(value),
+			deviceName,
+			portLabel,
+			qpType,
+		)
 	}
 }
 
