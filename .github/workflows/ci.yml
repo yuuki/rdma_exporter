@@ -32,3 +32,11 @@ jobs:
 
       - name: Test
         run: go test -race ./...
+
+      - name: Test injected netlink replies with CAP_NET_ADMIN
+        # The Execute cases that inject crafted netlink replies need
+        # CAP_NET_ADMIN and skip in the unprivileged step above. Run them as
+        # root, and fail rather than skip if injection is still refused.
+        env:
+          RDMANL_REQUIRE_INJECT: "1"
+        run: go test -race -exec "sudo -E" -run 'TestExecute|TestReconnect' ./internal/rdmanl/

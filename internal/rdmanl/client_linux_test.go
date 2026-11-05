@@ -7,6 +7,7 @@ import (
 	"encoding/binary"
 	"errors"
 	"net"
+	"os"
 	"testing"
 	"time"
 
@@ -278,6 +279,11 @@ func encodeInjected(seq uint32, msgs []injectedMsg) []byte {
 	return buf
 }
 
+// requireInjectEnv, set to 1, makes inject fail instead of skip without
+// CAP_NET_ADMIN. CI sets it in the step that runs these tests privileged, so
+// that step cannot pass by skipping them.
+const requireInjectEnv = "RDMANL_REQUIRE_INJECT"
+
 // inject queues each batch on c as one datagram, so each batch is one recv in
 // Execute. Unicast between user netlink sockets needs CAP_NET_ADMIN.
 func inject(t *testing.T, c *nlConn, seq uint32, batches [][]injectedMsg) {
@@ -293,6 +299,9 @@ func inject(t *testing.T, c *nlConn, seq uint32, batches [][]injectedMsg) {
 	for _, batch := range batches {
 		err := unix.Sendto(peer, encodeInjected(seq, batch), 0, &unix.SockaddrNetlink{Family: unix.AF_NETLINK, Pid: c.pid})
 		if errors.Is(err, unix.EPERM) {
+			if os.Getenv(requireInjectEnv) == "1" {
+				t.Fatalf("injecting netlink replies needs CAP_NET_ADMIN, and %s=1 requires it: %v", requireInjectEnv, err)
+			}
 			t.Skip("injecting netlink replies needs CAP_NET_ADMIN")
 		}
 		if err != nil {
