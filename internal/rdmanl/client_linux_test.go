@@ -557,6 +557,7 @@ func TestExecuteRouteLocalFailures(t *testing.T) {
 	cases := []struct {
 		name          string
 		closed        bool
+		smallSndbuf   bool   // netlink rejects messages larger than the send buffer
 		flags         uint16 // without NLM_F_REQUEST rtnetlink stays silent
 		payload       []byte
 		timeout       time.Duration
@@ -573,8 +574,9 @@ func TestExecuteRouteLocalFailures(t *testing.T) {
 		},
 		{
 			name:        "send failure does not replace the socket",
+			smallSndbuf: true,
 			flags:       nlmFRequest | nlmFDump,
-			payload:     make([]byte, 4<<20),
+			payload:     make([]byte, 64<<10),
 			wantErr:     unix.EMSGSIZE,
 			wantErrText: "send rdma netlink: message too long",
 		},
@@ -603,6 +605,11 @@ func TestExecuteRouteLocalFailures(t *testing.T) {
 			if tc.closed {
 				if err := c.Close(); err != nil {
 					t.Fatalf("Close: %v", err)
+				}
+			}
+			if tc.smallSndbuf {
+				if err := unix.SetsockoptInt(c.fd, unix.SOL_SOCKET, unix.SO_SNDBUF, 4096); err != nil {
+					t.Fatalf("SO_SNDBUF: %v", err)
 				}
 			}
 			ctx := executeTimeout(t)
