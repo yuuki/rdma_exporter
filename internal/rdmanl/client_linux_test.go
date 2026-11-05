@@ -304,8 +304,11 @@ func inject(t *testing.T, c *nlConn, seq uint32, batches [][]injectedMsg) {
 func TestExecuteInjectedReplies(t *testing.T) {
 	t.Parallel()
 
-	// No case sets NLM_F_REQUEST, so rtnetlink ignores the request itself
-	// and the injected messages are the only replies.
+	// No case sets NLM_F_REQUEST, so rtnetlink does not process the request.
+	// It still ACKs a request with NLM_F_ACK, behind the injected messages
+	// and with the request's sequence number, so a case that ends before
+	// that ACK must inject something after its end to catch a reader that
+	// does not stop.
 	cases := []struct {
 		name          string
 		flags         uint16
@@ -340,10 +343,13 @@ func TestExecuteInjectedReplies(t *testing.T) {
 			want:    nil,
 		},
 		{
-			name:    "doit ends at done",
-			flags:   nlmFAck,
-			batches: [][]injectedMsg{{injData(0, "a"), injDone(0, nil)}},
-			want:    []string{"a"},
+			name:  "doit ends at done",
+			flags: nlmFAck,
+			batches: [][]injectedMsg{
+				{injData(0, "a"), injDone(0, nil)},
+				{injData(0, "late")},
+			},
+			want: []string{"a"},
 		},
 		{
 			name:        "doit error ack",
