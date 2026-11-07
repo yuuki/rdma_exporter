@@ -47,8 +47,8 @@ make lint    # runs golangci-lint (.golangci.yml) and go mod tidy -diff
 make complexity  # ranks the most complex functions (needs cccc, see Testing)
 ```
 
-[AGENTS.md](AGENTS.md) lists every target (fuzzing, benchmarks, the root-only
-netlink tests, govulncheck) and what each needs.
+`make help` lists every target (fuzzing, benchmarks, the root-only netlink
+tests, govulncheck).
 
 ## Run
 

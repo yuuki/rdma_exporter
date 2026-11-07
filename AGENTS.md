@@ -1,115 +1,104 @@
 # AGENTS.md
 
-Guide for coding agents working on `rdma_exporter`. User-facing docs are in
-`README.md`; architecture and rationale in `docs/design.md`.
+This file holds only what the code does not show. The design and its
+rationale are in [docs/design.md](docs/design.md).
 
-Prefix Go commands with `GOCACHE=$(pwd)/.gocache GOMODCACHE=$(pwd)/.gomodcache`
-in shared or sandboxed environments (README "Testing"); both directories are in
-`.gitignore` and `.dockerignore`.
+## Rules the code does not show
 
-## 1. Overview
+- Read-only: never write sysfs, never issue `STAT_SET` / `rdma statistic set`,
+  never bind QPs or enable auto mode; enabling counters is the operator's job.
+- Pull-only: a scrape reads the kernel afresh. Add no background work and no
+  cache across scrapes (only "unsupported" verdicts are cached).
+- Providers must honour `ctx`: at the scrape timeout the server answers 504,
+  but the gathering goroutine runs until the providers return.
+- Emit series through `constMetric` (`internal/collector`), which makes label
+  values valid UTF-8; never pass external strings to
+  `prometheus.MustNewConstMetric` directly.
+- Cardinality: never export LQPN, PID, `counter_id`, GIDs or IPs as labels;
+  tool or kernel strings go to logs, never into new labels.
+- `//nolint` only as `//nolint:<linter> // <reason>`. English only.
 
-A Prometheus exporter for RDMA NICs (InfiniBand, RoCE, EFA) on Linux. It is
-pull-only: every `/metrics` scrape reads the kernel afresh, nothing runs in the
-background and nothing is cached across scrapes (except "unsupported" verdicts).
+## Compatibility contracts
 
-`main.go` (flags, slog, wiring) → `internal/server` (HTTP, scrape timeout) →
-`internal/collector` (`prometheus.Collector`) → providers:
+Call a change out in the PR and in `docs/releases/`.
 
-- `internal/rdma`: sysfs `class/infiniband/<dev>/ports/<n>/{counters,hw_counters}`, port attributes, SR-IOV PF/VF detection.
-- `internal/rdmanl`: NETLINK_RDMA GET/DUMP for optional counters (`cc_*`, traffic) and QP counter sets, on two separate sockets.
-- `internal/netdev`: ethtool stats (PFC, buffers, PCIe, PHY) of the port's netdev.
+- Metric names, types and label sets (adding a label changes series
+  identity): `internal/collector/collector.go`, `internal/collector/netdev.go`;
+  `dashboards/` queries them.
+- CLI flags and `RDMA_EXPORTER_*` variables: `internal/config`; removed flags
+  keep failing with their rename message.
+- HTTP endpoints: `internal/config/config.go`, `internal/server/server.go`.
+- NETLINK_RDMA command and attribute numbers (`internal/rdmanl/attr.go`) are
+  kernel ABI: never renumber.
+- Sysfs paths read: `internal/rdma/provider.go`.
+- Shipped units (`deploy/systemd/`); image name and archive layout
+  (`.goreleaser.yaml`).
 
-Collectors are flag-gated (`--collector.ethtool`, `--collector.optional-counters`, `--collector.qp-counters`).
+## Before opening a pull request
 
-## 2. Layout
+- `make check`.
+- `internal/rdmanl` client code: also `make test-integration` (root).
+- A parser (sysfs, netlink, ethtool names, label building): also
+  `make test-fuzz FUZZTIME=1m`.
+- Metrics: README "Metrics", `docs/design.md`, the dashboards
+  (`make grafana-com-export`), and a sample `/metrics` snippet in the PR.
 
-- `main.go`, `internal/{config,server,collector,rdma,rdmanl,netdev}` (tests alongside).
-- `internal/rdma/testdata/sysfs/<scenario>/`: sysfs fixture trees; extend them when modeling new hardware or kernel behaviour.
-- `**/testdata/fuzz/<FuzzTarget>/`: fuzz regression inputs (commit new crashers here).
-- `dashboards/`: bundled Grafana dashboard, its grafana.com export and the export tool.
-- `deploy/`: systemd units (asserted by `deploy/systemd/*_test.go`), counter-enablement script, udev rule.
-- `docs/`: `design.md`, `deployment.md`, `metrics-runbook.md`, `releases/`.
+## Git conventions
 
-## 3. Build
+Branches: `<type>/<issue>-<summary>`, or `<type>/<summary>` without an issue
+(`fix/166-connect-errors`, `feat/qp-counters`). `<type>` is a commit type
+below; `<summary>` is 2–5 lowercase ASCII words joined by `-`. Branches named
+by tools keep their names (`agent/*`, `claude/*`, `copilot/*`,
+`dependabot/*`). Never push to the default branch.
 
-- `make build` → `./rdma_exporter` (`CGO_ENABLED` not needed). Linux only; other platforms build stubs (`*_unsupported.go`).
-- Images: `Dockerfile` (multi-stage) and `Dockerfile.goreleaser`; releases are built by GoReleaser (`.goreleaser.yaml`, `.github/workflows/release.yml`).
+Commits follow [Conventional Commits 1.0.0](https://www.conventionalcommits.org/en/v1.0.0/):
 
-## 4. Test
+    <type>(<scope>)!: <subject>
 
-| Command | What | Needs |
-|---|---|---|
-| `make test` | unit tests | nothing (fixtures, stubs) |
-| `make test-race` | unit tests with `-race` | nothing |
-| `make test-integration` | `TestExecute*`/`TestReconnect*` in `internal/rdmanl` with injected netlink replies, `RDMANL_REQUIRE_INJECT=1` | root (uses `sudo -E` unless root); `TestReconnect…` skips without NETLINK_RDMA (`ib_core`) |
-| `make test-fuzz [FUZZTIME=30s] [FUZZ_PARALLEL=n]` | every `Fuzz*` target in turn | nothing |
-| `make bench [BENCH_COUNT=6]` | benchmarks → `bench.txt` (compare with `benchstat`) | nothing |
+    <body>
 
-- No test needs RDMA hardware. Tests are table-driven; assert metric text with `prometheus/testutil`; reference fixtures by relative path.
-- `internal/server` uses `goleak.VerifyTestMain`: tests must not leave goroutines behind.
-- Fuzz targets state properties (round trip, bounds, valid UTF-8 labels, reference model), not just "no panic".
+    <footer>
 
-## 5. Static analysis
+- `type`: `feat` (new user-visible behaviour), `fix` (bug fix), `perf`,
+  `refactor` (no behaviour change), `test`, `docs`, `build` (build system,
+  dependencies, packaging), `ci` (workflows), `chore` (anything else, e.g.
+  `chore(release): prepare v1.2.3`), `revert`.
+- `scope`: optional; the package or area changed: `collector`, `rdma`,
+  `rdmanl`, `netdev`, `config`, `server`, `dashboards`, `deploy`.
+- `!` and a `BREAKING CHANGE: <what changed and how to migrate>` footer for
+  any change to a compatibility contract above.
+- `subject`: imperative, lower case (except identifiers), no final period,
+  at most 72 characters including the prefix.
+- `body`: why the change is needed and what it affects, wrapped at 72
+  columns; required unless the subject says everything.
+- `footer`: `Fixes #N` / `Refs #N`, `BREAKING CHANGE:`, trailers such as
+  `Co-Authored-By:`.
+- One logical change per commit; regenerated files go in the commit that
+  changes their source. Pull request titles use the same format (they become
+  the squash commit).
 
-- `make lint`: golangci-lint (`.golangci.yml`, gofmt included) on the Linux build, plus `go mod tidy -diff`.
-- `make lint-actions`: actionlint and zizmor on `.github/` (offline unless `GH_TOKEN` is set).
-- `make vuln`: govulncheck. `make complexity`: cccc ranking (informational; CI tracks it with octocov).
-- CI also runs CodeQL (`security.yml`). Tool versions are pinned in the Makefile and the workflows; bump them together.
+## Forbidden
 
-## 6. Conventions
+- Disabling, skipping, weakening or deleting tests, fuzz properties or lint
+  rules to get green (no blanket excludes, `|| true`, `continue-on-error`).
+- Editing `dashboards/*.grafana.com.json` by hand (`make grafana-com-export`).
+- Adding dependencies, test-only ones included, without a justification.
+- Changing a compatibility contract without calling it out.
+- Loosening workflow permissions, unpinning actions, or adding build caches
+  to the release workflow.
+- Committing secrets, rewriting history, force-pushing, tagging or publishing
+  releases.
 
-- Logging: `log/slog` with keys `device`, `port`, `duration` (plus `netdev`, `err`). Tool or kernel strings go to logs, never into new labels.
-- Errors: wrap with `%w`; compare with `errors.Is` (the cached `ErrQPUnsupported` is intentionally the bare sentinel).
-- Emit series through `constMetric` in `internal/collector`, which makes sysfs/netlink label values valid UTF-8; never call `prometheus.MustNewConstMetric` with external strings directly.
-- `//nolint` only as `//nolint:<linter> // <reason>`.
-- Comments and docs in English; comments say why.
-- Commits: headline `type(scope): subject` (imperative); the body must state the motivation (why) in complete sentences. Types: `feat`, `fix`, `docs`, `style`, `refactor`, `test`, `chore`, `ci`, `init`, `rearrange`, `update`.
-- New metrics: include a sample `/metrics` snippet in the PR.
+## Needs human review
 
-## 7. Compatibility contracts
+Even with green CI: `.github/`, `.goreleaser.yaml`, Dockerfiles; permissions
+and secrets; netlink and sysfs parsing (untrusted input); anything near
+privileged operations or the read-only rule; the compatibility contracts;
+new dependencies; large refactors.
 
-Changing any of these is a breaking change: call it out in the PR and in `docs/releases/`.
+## Environment notes
 
-- Metric names, types and label sets: `internal/collector/collector.go` (`metricSpecs`, descriptors in `New`) and `netdev.go`; documented in README "Metrics" and `docs/design.md`. Adding a label changes series identity (as `netdev` on `rdma_port_info` did). The dashboards query them (`dashboards/dashboard_test.go`).
-- CLI flags and `RDMA_EXPORTER_*` env vars: `internal/config`; README "Configuration". Removed flags must keep failing with their rename message.
-- HTTP endpoints: `/metrics`, `/healthz` (defaults), content negotiation via `expfmt`.
-- NETLINK_RDMA command and attribute numbers (`internal/rdmanl/attr.go`) are kernel ABI: never renumber.
-- Sysfs paths read (`internal/rdma/provider.go`), shipped units (`deploy/systemd`), image name `ghcr.io/yuuki/rdma_exporter`, archive layout.
-- `dashboards/rdma_exporter_dashboard.grafana.com.json` is generated: `make grafana-com-export` (a test checks it matches the bundle).
-
-## 8. Concurrency and resources
-
-- `RdmaCollector.Collect` is serialized by `collectMu`; `Describe` reads dynamic descriptors under it.
-- The server stores the per-scrape context with `SetContext`/`ResetContext` (atomic pointer) and gathers on a goroutine; at the timeout it answers 504 and that goroutine finishes when the providers return. Providers must honour `ctx`.
-- `rdmanl.nlConn.Execute` holds a mutex per request; netlink receives are bounded by `SO_RCVTIMEO` (5 s or the context deadline); an unfinished dump replaces the socket so stale replies cannot be read.
-- Providers opened in `main.go` are closed on shutdown; the HTTP server shuts down gracefully on SIGINT/SIGTERM.
-- Read-only by design: never write sysfs, never issue `STAT_SET` / `rdma statistic set`, never bind QPs or enable auto mode.
-
-## 9. Performance
-
-- Scrape-time hot paths: sysfs walk (one read per counter file), metric construction, one ethtool `Stats()` per netdev per scrape (cached within the scrape), optional counters only for ports with an enabled counter.
-- QP dumps are budgeted (1 MiB or the scrape deadline, 256 messages); the QP collector is off by default.
-- Cardinality: labels are bounded by devices, ports, priorities, lanes and QP types. Never export LQPN, PID, `counter_id`, GIDs or IPs as labels.
-- Measure with `make bench` (`BenchmarkGather*`, `BenchmarkSysfsProviderDevices`, `BenchmarkParseQPDump`) before and after hot-path changes.
-
-## 10. Before opening a PR
-
-- `make check` (lint, lint-actions, test-race) must pass.
-- Touching `internal/rdmanl` client code: `make test-integration`.
-- Touching a parser (sysfs, netlink, ethtool names, label building): `make test-fuzz FUZZTIME=1m`.
-- Touching metrics: README "Metrics", `docs/design.md`, dashboards (`make grafana-com-export`), sample `/metrics` in the PR.
-
-## 11. Rules for AI agents
-
-Never:
-- disable, skip, weaken or delete tests, fuzz properties or lint rules to get green (no blanket excludes, `|| true`, `continue-on-error`);
-- edit generated files by hand (`dashboards/*.grafana.com.json`);
-- add dependencies without a stated justification (test-only ones included);
-- change a public contract (§7) without calling it out;
-- loosen workflow permissions, unpin actions or add build caches to the release workflow;
-- commit secrets, rewrite history, force-push, tag or publish releases.
-
-## 12. Needs human review even when CI is green
-
-Workflows and release files (`.github/`, `.goreleaser.yaml`, Dockerfiles), permissions and secrets, netlink and sysfs parsing (untrusted input), anything near privileged operations or the read-only rule, public contracts (§7), new dependencies, large refactors.
+- In shared or sandboxed environments, prefix Go commands with
+  `GOCACHE=$(pwd)/.gocache GOMODCACHE=$(pwd)/.gomodcache` (both gitignored).
+- With `GH_TOKEN` set but the GitHub API unreachable, run
+  `env -u GH_TOKEN make check`.

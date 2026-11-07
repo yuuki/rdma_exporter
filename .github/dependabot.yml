@@ -28,7 +28,7 @@ updates:
       go-modules:
         patterns: ["*"]
     commit-message:
-      prefix: chore
+      prefix: build
       include: scope
 
   # Base image of Dockerfile.goreleaser (alpine), which the published images
@@ -44,5 +44,5 @@ updates:
       docker:
         patterns: ["*"]
     commit-message:
-      prefix: chore
+      prefix: build
       include: scope
