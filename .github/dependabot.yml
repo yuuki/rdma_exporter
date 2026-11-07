@@ -1,0 +1,48 @@
+# Version updates arrive monthly, grouped into one PR per ecosystem, and only
+# after a release has been public for a week (compromised releases are usually
+# pulled within days). Security updates are not delayed by this schedule.
+version: 2
+updates:
+  # Also updates the commit SHAs the workflows pin actions to, and their
+  # version comments.
+  - package-ecosystem: github-actions
+    directory: /
+    schedule:
+      interval: monthly
+    cooldown:
+      default-days: 7
+    groups:
+      github-actions:
+        patterns: ["*"]
+    commit-message:
+      prefix: ci
+      include: scope
+
+  - package-ecosystem: gomod
+    directories: ["/"]
+    schedule:
+      interval: monthly
+    cooldown:
+      default-days: 7
+    groups:
+      go-modules:
+        patterns: ["*"]
+    commit-message:
+      prefix: chore
+      include: scope
+
+  # Base image of Dockerfile.goreleaser (alpine), which the published images
+  # are built from. Dependabot does not resolve the ARG-based tags of the
+  # multi-stage Dockerfile; bump GO_VERSION and ALPINE_VERSION there by hand.
+  - package-ecosystem: docker
+    directories: ["/"]
+    schedule:
+      interval: monthly
+    cooldown:
+      default-days: 7
+    groups:
+      docker:
+        patterns: ["*"]
+    commit-message:
+      prefix: chore
+      include: scope

@@ -118,10 +118,13 @@ The `cmd/rdma_exporter` package wires configuration, logging, and the HTTP serve
 - **Integration Tests**:
   - Run exporter against recorded sysfs trees under `testdata/sysfs/<scenario>`.
   - Validate HTTP responses and content type using the embedded test server.
-- **CI Tasks**:
-  - `go test ./...`
-  - `go vet ./...`
-  - `golangci-lint run` (optional but recommended).
+- **Fuzzing**: the sysfs attribute and counter parsers, the netlink message, attribute and reply decoders, and the label and metric-name building have Go fuzz targets with properties (round trip, bounds, valid UTF-8 label values).
+- **CI Tasks** (`.github/workflows/ci.yml`, `security.yml`):
+  - `go test -race ./...`, and the injected-netlink-reply tests as root.
+  - `golangci-lint run` and `go mod tidy -diff` (`make lint`).
+  - Short fuzz runs on every change, longer ones weekly (`make test-fuzz`).
+  - actionlint and zizmor on the workflows (`make lint-actions`).
+  - CodeQL and govulncheck (`make vuln`).
 
 ## 11. Deployment Guidance
 - Ship a systemd unit and container image reference in the `build/` directory.

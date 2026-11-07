@@ -31,9 +31,9 @@ func TestParseQPDump_TwoEntriesInOneMessageSkipsLQPN(t *testing.T) {
 		putString(attrDevName, "mlx5_0"),
 		nest(attrStatCounter, concat(
 			qpCounterEntry(4, counterModeAuto, uint8ptr(ibQPTCRC), nil, map[string]uint64{
-				"out_of_buffer":        9,
-				"rx_write_requests":    3,
-				"port_xmit_data":       100, // not in collector allowlist; parser still returns it
+				"out_of_buffer":     9,
+				"rx_write_requests": 3,
+				"port_xmit_data":    100, // not in collector allowlist; parser still returns it
 			}),
 			qpCounterEntry(5, counterModeManual, nil, nil, map[string]uint64{
 				"out_of_buffer": 7,

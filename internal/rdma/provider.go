@@ -210,7 +210,6 @@ func (p *SysfsProvider) readDevicePCIInfo(root, devicePath string) (pciAddr stri
 	}
 
 	// Step 3: resolve PF PCI address and find the corresponding IB device name.
-	isVF = true
 	pfPCIAddr := filepath.Base(physfnLink) // e.g. "0000:1a:00.0"
 
 	// /sys/bus/pci/devices/<pfPCIAddr>/infiniband/ lists the PF IB device.

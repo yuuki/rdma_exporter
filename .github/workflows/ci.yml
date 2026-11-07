@@ -8,21 +8,34 @@ on:
     branches:
       - main
   workflow_dispatch:
+  schedule:
+    # Weekly, Saturday 19:33 UTC. The fuzz job fuzzes longer on this trigger.
+    - cron: "33 19 * * 6"
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.event.pull_request.number || github.ref }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
 
 jobs:
   build-test:
     name: Build and Test
     runs-on: ubuntu-latest
+    timeout-minutes: 15
     permissions:
       contents: read
     env:
       GOFLAGS: -buildvcs=false
     steps:
       - name: Check out repository
-        uses: actions/checkout@v7
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
 
       - name: Set up Go
-        uses: actions/setup-go@v7
+        uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7.0.0
         with:
           go-version-file: go.mod
           cache: true
@@ -31,12 +44,87 @@ jobs:
         run: go build ./...
 
       - name: Test
-        run: go test -race ./...
+        run: make test-race
 
       - name: Test injected netlink replies with CAP_NET_ADMIN
         # The Execute cases that inject crafted netlink replies need
-        # CAP_NET_ADMIN and skip in the unprivileged step above. Run them as
-        # root, and fail rather than skip if injection is still refused.
+        # CAP_NET_ADMIN and skip in the unprivileged step above. The target
+        # runs them under sudo, and fails rather than skips if injection is
+        # still refused.
+        run: make test-integration
+
+  lint:
+    name: Lint
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+
+      - name: Set up Go
+        uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7.0.0
+        with:
+          go-version-file: go.mod
+
+      - name: golangci-lint
+        uses: golangci/golangci-lint-action@ba0d7d2ec06a0ea1cb5fa41b2e4a3ab91d21278a # v9.3.0
+        with:
+          version: v2.15.0 # GOLANGCI_LINT_VERSION in the Makefile
+
+      - name: Check go.mod tidiness
+        run: go mod tidy -diff
+
+  fuzz:
+    name: Fuzz
+    runs-on: ubuntu-latest
+    timeout-minutes: 45
+    env:
+      # Short on pull requests and pushes; longer on the weekly schedule.
+      FUZZTIME: ${{ github.event_name == 'schedule' && '3m' || '15s' }}
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+
+      - name: Set up Go
+        uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7.0.0
+        with:
+          go-version-file: go.mod
+
+      - name: Fuzz
+        run: make test-fuzz
+
+      # go test writes a failing input to testdata/fuzz/<FuzzTarget>/ of its
+      # package; keep it so that it can be added as a regression seed.
+      - name: Upload failing fuzz inputs
+        if: failure()
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: fuzz-failures
+          path: "**/testdata/fuzz/**"
+          if-no-files-found: ignore
+
+  workflows:
+    name: Workflows
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+
+      # actionlint runs through go run.
+      - name: Set up Go
+        uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7.0.0
+        with:
+          go-version-file: go.mod
+
+      - name: Lint and audit workflows (actionlint, zizmor)
         env:
-          RDMANL_REQUIRE_INJECT: "1"
-        run: go test -race -exec "sudo -E" -run 'TestExecute|TestReconnect' ./internal/rdmanl/
+          # Enables zizmor's online audits, which query the GitHub API.
+          GH_TOKEN: ${{ github.token }}
+        run: make lint-actions

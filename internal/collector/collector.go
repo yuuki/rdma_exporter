@@ -15,6 +15,7 @@ import (
 	"syscall"
 	"time"
 	"unicode"
+	"unicode/utf8"
 
 	"github.com/prometheus/client_golang/prometheus"
 
@@ -1187,7 +1188,7 @@ func (c *RdmaCollector) emitPortStats(ch chan<- prometheus.Metric, deviceName, p
 		return
 	}
 	for _, name := range sortedKeys(stats) {
-		ch <- prometheus.MustNewConstMetric(
+		ch <- constMetric(
 			c.statMetricDesc(name),
 			prometheus.CounterValue,
 			float64(stats[name]),
@@ -1206,7 +1207,7 @@ func (c *RdmaCollector) emitPortHwStats(ch chan<- prometheus.Metric, deviceName,
 	for _, name := range sortedKeys(hwStats) {
 		value := float64(hwStats[name])
 		if name == "lifespan" {
-			ch <- prometheus.MustNewConstMetric(
+			ch <- constMetric(
 				c.lifespanMillisecondsDesc,
 				prometheus.GaugeValue,
 				value,
@@ -1215,7 +1216,7 @@ func (c *RdmaCollector) emitPortHwStats(ch chan<- prometheus.Metric, deviceName,
 			)
 			continue
 		}
-		ch <- prometheus.MustNewConstMetric(
+		ch <- constMetric(
 			c.hwMetricDesc(name),
 			prometheus.CounterValue,
 			value,
@@ -1226,7 +1227,7 @@ func (c *RdmaCollector) emitPortHwStats(ch chan<- prometheus.Metric, deviceName,
 }
 
 func (c *RdmaCollector) emitPortInfo(ch chan<- prometheus.Metric, device rdma.Device, portID string, attr rdma.PortAttributes) {
-	ch <- prometheus.MustNewConstMetric(
+	ch <- constMetric(
 		c.portInfoDesc,
 		prometheus.GaugeValue,
 		1,
@@ -1272,6 +1273,26 @@ func (c *RdmaCollector) emitCollectorSuccess(ch chan<- prometheus.Metric, ethtoo
 	emit(c.collectEthtool, ethtoolOK, collectorLabelEthtool)
 	emit(c.collectOptional, optionalOK, collectorLabelOptionalCounters)
 	emit(c.collectQP, qpOK, collectorLabelQPCounters)
+}
+
+// constMetric is prometheus.MustNewConstMetric with invalid UTF-8 in label
+// values replaced by U+FFFD. Label values come from sysfs, ethtool and RDMA
+// netlink, which may report any bytes: a netdev name, for one, is chosen by
+// whoever holds CAP_NET_ADMIN in its namespace. client_golang rejects such a
+// value, and the rejection fails the whole scrape, not just one series.
+func constMetric(desc *prometheus.Desc, valueType prometheus.ValueType, value float64, labelValues ...string) prometheus.Metric {
+	if slices.ContainsFunc(labelValues, isInvalidUTF8) {
+		valid := make([]string, len(labelValues))
+		for i, v := range labelValues {
+			valid[i] = strings.ToValidUTF8(v, "\uFFFD")
+		}
+		labelValues = valid
+	}
+	return prometheus.MustNewConstMetric(desc, valueType, value, labelValues...)
+}
+
+func isInvalidUTF8(s string) bool {
+	return !utf8.ValidString(s)
 }
 
 func sortedKeys[V any](m map[string]V) []string {
@@ -1332,7 +1353,7 @@ func (c *RdmaCollector) emitOptionalCounter(
 	if counter.Enabled {
 		enabled = 1
 	}
-	ch <- prometheus.MustNewConstMetric(
+	ch <- constMetric(
 		c.optionalCounterEnabledDesc,
 		prometheus.GaugeValue,
 		enabled,
@@ -1351,7 +1372,7 @@ func (c *RdmaCollector) emitOptionalCounter(
 	if !ok {
 		return
 	}
-	ch <- prometheus.MustNewConstMetric(
+	ch <- constMetric(
 		desc,
 		prometheus.CounterValue,
 		float64(counter.Value),
@@ -1488,7 +1509,7 @@ func (c *RdmaCollector) emitQPTypeTotals(ch chan<- prometheus.Metric, deviceName
 		if !ok {
 			continue
 		}
-		ch <- prometheus.MustNewConstMetric(
+		ch <- constMetric(
 			c.qpValueDescs[name],
 			prometheus.CounterValue,
 			float64(value),
@@ -1509,7 +1530,7 @@ func (c *RdmaCollector) emitQPModeMetrics(ch chan<- prometheus.Metric, deviceNam
 		if name == current {
 			value = 1
 		}
-		ch <- prometheus.MustNewConstMetric(
+		ch <- constMetric(
 			c.qpCounterModeDesc,
 			prometheus.GaugeValue,
 			value,
@@ -1526,7 +1547,7 @@ func (c *RdmaCollector) emitQPModeMetrics(ch chan<- prometheus.Metric, deviceNam
 		if criteria == "pid" && mode.MaskPID {
 			value = 1
 		}
-		ch <- prometheus.MustNewConstMetric(
+		ch <- constMetric(
 			c.qpAutoMaskDesc,
 			prometheus.GaugeValue,
 			value,
@@ -1543,7 +1564,7 @@ func (c *RdmaCollector) emitQPScrapeStatus(ch chan<- prometheus.Metric, deviceNa
 		if name == result {
 			value = 1
 		}
-		ch <- prometheus.MustNewConstMetric(
+		ch <- constMetric(
 			c.qpScrapeStatusDesc,
 			prometheus.GaugeValue,
 			value,
@@ -1635,7 +1656,7 @@ func (c *RdmaCollector) emitRoCEPFCMetrics(
 			desc = c.rocePFCPauseTransitionsDesc
 		}
 
-		ch <- prometheus.MustNewConstMetric(
+		ch <- constMetric(
 			desc,
 			prometheus.CounterValue,
 			float64(stats[name]),

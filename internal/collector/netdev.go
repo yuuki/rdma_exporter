@@ -39,7 +39,7 @@ func (c *RdmaCollector) emitNetDevHWMetrics(
 			continue
 		}
 		labels := append([]string{deviceName, portID, netDev}, series.labels...)
-		ch <- prometheus.MustNewConstMetric(series.desc, series.valueType, float64(stats[name]), labels...)
+		ch <- constMetric(series.desc, series.valueType, float64(stats[name]), labels...)
 	}
 }
 

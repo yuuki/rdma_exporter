@@ -266,7 +266,7 @@ func (c *nlConn) reconnectLocked() error {
 func (c *nlConn) send(seq uint32, typ uint16, flags uint16, payload []byte) error {
 	total := nlmsgHdrLen + len(payload)
 	buf := make([]byte, nlaAlign(total))
-	binary.LittleEndian.PutUint32(buf[0:4], uint32(total))
+	binary.LittleEndian.PutUint32(buf[0:4], uint32(total)) //nolint:gosec // G115: requests are a few attributes long
 	binary.LittleEndian.PutUint16(buf[4:6], typ)
 	binary.LittleEndian.PutUint16(buf[6:8], flags)
 	binary.LittleEndian.PutUint32(buf[8:12], seq)

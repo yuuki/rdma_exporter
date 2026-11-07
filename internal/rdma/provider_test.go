@@ -73,7 +73,7 @@ func TestSysfsProviderDevicesFromCustomRoot(t *testing.T) {
 	if got := port2.Attributes.NetDev; got != "" {
 		t.Fatalf("expected empty netdev, got %q", got)
 	}
-	if port2.HwStats != nil && len(port2.HwStats) != 0 {
+	if len(port2.HwStats) != 0 {
 		t.Fatalf("expected empty hw counters, got %v", port2.HwStats)
 	}
 }

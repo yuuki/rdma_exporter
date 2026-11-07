@@ -42,9 +42,13 @@ Alternatively, use the provided `Makefile` helpers:
 ```bash
 make build   # compiles ./rdma_exporter
 make test    # runs go test ./...
-make lint    # runs go vet ./...
+make check   # lint, workflow lint and race tests: run before a pull request
+make lint    # runs golangci-lint (.golangci.yml) and go mod tidy -diff
 make complexity  # ranks the most complex functions (needs cccc, see Testing)
 ```
+
+[AGENTS.md](AGENTS.md) lists every target (fuzzing, benchmarks, the root-only
+netlink tests, govulncheck) and what each needs.
 
 ## Run
 
@@ -236,6 +240,12 @@ GOCACHE=$(pwd)/.gocache GOMODCACHE=$(pwd)/.gomodcache go test ./...
 ```
 
 `internal/rdma/testdata/sysfs` contains fixture trees used in unit tests to emulate sysfs layouts.
+
+Beyond the unit tests, `make test-race` runs them with the race detector,
+`make test-fuzz` runs the fuzz targets of the sysfs, netlink and label
+parsers (`FUZZTIME`, default 30s each), `make bench` writes benchmark results
+to `bench.txt`, and `make test-integration` runs the netlink tests that inject
+crafted replies, which need root (`sudo`). None of them need RDMA hardware.
 
 ### Code Complexity
 
