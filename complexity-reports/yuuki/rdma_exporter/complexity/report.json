@@ -1,9 +1,9 @@
 {
   "repository": "yuuki/rdma_exporter/complexity",
   "ref": "refs/heads/main",
-  "commit": "b1044fafcb0ed1f2af271fc7503faa9ef360ebdc",
+  "commit": "6ff86eb3be2ffc0763eb09756326e8591a5dc0e7",
   "base_ref": "refs/heads/main",
-  "timestamp": "2026-11-05T13:51:12.998805965Z",
+  "timestamp": "2026-11-07T11:48:43.049938401Z",
   "custom_metrics": [
     {
       "key": "code_complexity",
@@ -12,12 +12,12 @@
         {
           "key": "function_count",
           "name": "Function count",
-          "value": 214
+          "value": 216
         },
         {
           "key": "cognitive_sum",
           "name": "Cognitive: total",
-          "value": 635
+          "value": 638
         },
         {
           "key": "cognitive_max",
@@ -37,7 +37,7 @@
         {
           "key": "cyclomatic_sum",
           "name": "Cyclomatic: total",
-          "value": 737
+          "value": 741
         },
         {
           "key": "cyclomatic_max",
