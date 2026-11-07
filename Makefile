@@ -46,7 +46,7 @@ lint:
 vet:
 	$(GO) vet $(PKG)
 
-# Skip the module and build caches that AGENTS.md places under the repository.
+# Skip the module and build caches that README "Testing" places under the repository.
 fmt:
 	gofmt -w $(shell find . -type f -name '*.go' -not -path './.gocache/*' -not -path './.gomodcache/*')
 
