@@ -39,7 +39,7 @@ func nlErrorCode(data []byte) (int, error) {
 	if len(data) < 4 {
 		return 0, fmt.Errorf("truncated netlink error message")
 	}
-	code := int32(binary.LittleEndian.Uint32(data[:4]))
+	code := int32(binary.LittleEndian.Uint32(data[:4])) //nolint:gosec // G115: nlmsgerr.error is a signed __s32 on the wire
 	if code < 0 {
 		code = -code
 	}

@@ -46,7 +46,7 @@ func TestNlErrorCode_NegativeErrno(t *testing.T) {
 	t.Parallel()
 
 	var b [4]byte
-	binary.LittleEndian.PutUint32(b[:], uint32(^uint32(2)+1)) // -2 as int32 (ENOENT)
+	binary.LittleEndian.PutUint32(b[:], ^uint32(2)+1) // -2 as int32 (ENOENT)
 	code, err := nlErrorCode(b[:])
 	if err != nil {
 		t.Fatalf("nlErrorCode: %v", err)

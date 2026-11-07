@@ -333,6 +333,36 @@ rdma_port_info{device="mlx5_0",is_vf="false",link_layer="Ethernet",link_speed="1
 	}
 }
 
+// A netdev name is any bytes but '/', ':' and whitespace, so sysfs ndevs can
+// report one that is not UTF-8. client_golang rejects such a label value, and
+// the rejection used to fail the whole scrape (found by FuzzCollectLabelValues).
+func TestCollectorReplacesInvalidUTF8InLabelValues(t *testing.T) {
+	t.Parallel()
+
+	provider, netdevs := ethernetPFWithStats(map[string]uint64{"rx_prio3_pause": 7})
+	provider.devices[0].Ports[0].Attributes.NetDev = "ens\xff1"
+	netdevs.stats["ens\xff1"] = netdevs.stats["ens1f0np0"]
+
+	c := New(provider, newDiscardLogger(), WithNetDevStatsProvider(netdevs))
+	reg := prometheus.NewRegistry()
+	reg.MustRegister(c)
+
+	expected := fmt.Sprintf(`
+# HELP rdma_port_info RDMA port metadata exported as labels.
+# TYPE rdma_port_info gauge
+rdma_port_info{device="mlx5_0",is_vf="false",link_layer="Ethernet",link_speed="",link_width="",netdev=%[1]q,pci_addr="0000:1a:00.0",pf_device="",phys_state="",port="1",state=""} 1
+# HELP rdma_roce_pfc_pause_frames_total RoCEv2 PFC pause frames from ethtool stats. direction=rx: the peer XOFFed this NIC so this NIC cannot transmit on that priority. direction=tx: this NIC XOFFed the peer because it is not absorbing that priority.
+# TYPE rdma_roce_pfc_pause_frames_total counter
+rdma_roce_pfc_pause_frames_total{device="mlx5_0",direction="rx",netdev=%[1]q,port="1",priority="3"} 7
+`, "ens\uFFFD1")
+	if err := testutil.GatherAndCompare(reg, strings.NewReader(expected), "rdma_port_info", "rdma_roce_pfc_pause_frames_total"); err != nil {
+		t.Fatalf("unexpected metrics output: %v", err)
+	}
+	if got := netdevs.CallCount("ens\xff1"); got != 1 {
+		t.Fatalf("ethtool must be queried with the raw netdev name, got %d calls", got)
+	}
+}
+
 func TestCollectorExportsLifespanAsGauge(t *testing.T) {
 	t.Parallel()
 

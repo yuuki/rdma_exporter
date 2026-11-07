@@ -6,55 +6,49 @@ on:
       - "v*"
   workflow_dispatch:
 
-permissions:
-  contents: write
-  packages: write
+permissions: {}
 
 jobs:
   goreleaser:
     runs-on: ubuntu-latest
-    env:
-      GOCACHE: ${{ github.workspace }}/.gocache
-      GOMODCACHE: ${{ github.workspace }}/.gomodcache
+    timeout-minutes: 30
+    permissions:
+      contents: write # create the GitHub release and upload its assets
+      packages: write # push the container images to GHCR
     steps:
       - name: Checkout
-        uses: actions/checkout@v7
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           fetch-depth: 0
+          # GoReleaser publishes through the API with GITHUB_TOKEN, not git.
+          persist-credentials: false
 
+      # No build cache in a publishing job: a cache written by another
+      # workflow run could poison the released binaries.
       - name: Set up Go
-        uses: actions/setup-go@v7
+        uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7.0.0
         with:
           go-version-file: go.mod
-
-      - name: Cache Go modules
-        uses: actions/cache@v6
-        with:
-          path: |
-            ${{ env.GOCACHE }}
-            ${{ env.GOMODCACHE }}
-          key: ${{ runner.os }}-go-${{ hashFiles('**/go.sum') }}
-          restore-keys: |
-            ${{ runner.os }}-go-
+          cache: false
 
       - name: Run tests
         run: go test ./...
 
       - name: Set up Docker driver
-        uses: docker/setup-qemu-action@v4
+        uses: docker/setup-qemu-action@99012661954931238ded8c8b007157a8430204e1 # v4.4.0
 
       - name: Set up Docker Buildx
-        uses: docker/setup-buildx-action@v4
+        uses: docker/setup-buildx-action@f87e5991a6d7451dcb8d9637bfbc97413f497069 # v4.4.1
 
       - name: Login to GHCR
-        uses: docker/login-action@v4
+        uses: docker/login-action@8aa5831fb8d48d8f76594c7ddde61ae58019f550 # v4.8.0
         with:
           registry: ghcr.io
           username: ${{ github.actor }}
           password: ${{ secrets.GITHUB_TOKEN }}
 
       - name: Release
-        uses: goreleaser/goreleaser-action@v7
+        uses: goreleaser/goreleaser-action@a4f02ab5355a589de60d917a659ce617ed19b3de # v7.3.0
         with:
           distribution: goreleaser
           version: "~> v2"
