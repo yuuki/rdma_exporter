@@ -366,7 +366,8 @@ func TestSysfsProviderDevicesScenarios(t *testing.T) {
 			// files, symlinks to files, dangling symlinks and excluded names
 			// are skipped. Ports come in name order (os.ReadDir sorts), not
 			// port number order. They skip regular files, symlinks (even to a
-			// port directory) and non-numeric names, and read their attributes
+			// port directory), non-numeric names and numbers outside 32 bits
+			// (mlx5_7's "4294967297"), and read their attributes
 			// from the directory of the parsed number, so "05" gets the
 			// counters of ports/05 but the attributes of ports/5. A ports
 			// directory with only skipped entries yields an empty slice.

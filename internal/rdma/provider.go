@@ -292,12 +292,15 @@ func (p *SysfsProvider) portsFromRoot(ctx context.Context, root, device string) 
 		if !entry.IsDir() {
 			continue
 		}
-		portID, err := strconv.Atoi(entry.Name())
+		// Kernel port numbers are u32 (u8 in practice); the netlink queries
+		// carry them as u32. A name outside 32 bits is skipped like a
+		// non-numeric one rather than truncated into another port's number.
+		portID, err := strconv.ParseInt(entry.Name(), 10, 32)
 		if err != nil {
 			continue
 		}
 
-		port, err := p.readPort(root, device, filepath.Join(dir, entry.Name()), portID)
+		port, err := p.readPort(root, device, filepath.Join(dir, entry.Name()), int(portID))
 		if err != nil {
 			return nil, err
 		}
