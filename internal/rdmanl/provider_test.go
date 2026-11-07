@@ -667,10 +667,12 @@ func TestProvider_QPUnsupportedCacheReturnsError(t *testing.T) {
 	if _, err := p.QPMode(context.Background(), "mlx5_0", 1); !errors.Is(err, ErrQPUnsupported) {
 		t.Fatalf("first QPMode: %v", err)
 	}
-	if _, err := p.QPMode(context.Background(), "mlx5_0", 1); err != ErrQPUnsupported {
+	// The cached failure must be the bare sentinel, so compare identity
+	// rather than errors.Is, which would also accept the wrapped first error.
+	if _, err := p.QPMode(context.Background(), "mlx5_0", 1); err != ErrQPUnsupported { //nolint:errorlint // identity check, see above
 		t.Fatalf("cached QPMode: %v", err)
 	}
-	if _, err := p.QPSets(context.Background(), "mlx5_0", 1); err != ErrQPUnsupported {
+	if _, err := p.QPSets(context.Background(), "mlx5_0", 1); err != ErrQPUnsupported { //nolint:errorlint // identity check, see above
 		t.Fatalf("cached QPSets: %v", err)
 	}
 	if client.qpModeQueries != 1 {

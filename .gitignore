@@ -2,3 +2,4 @@
 bin/
 .gocache/
 .gomodcache/
+bench.txt

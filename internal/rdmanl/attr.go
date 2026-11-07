@@ -95,7 +95,9 @@ func putBytes(typ uint16, payload []byte) []byte {
 	total := nlaHeaderLen + len(payload)
 	aligned := nlaAlign(total)
 	buf := make([]byte, aligned)
-	binary.LittleEndian.PutUint16(buf[0:2], uint16(total))
+	// Attributes are built here from fixed request fields, far below the
+	// 64 KiB that the u16 nla_len of the netlink ABI can describe.
+	binary.LittleEndian.PutUint16(buf[0:2], uint16(total)) //nolint:gosec // G115: bounded, see above
 	binary.LittleEndian.PutUint16(buf[2:4], typ)
 	copy(buf[nlaHeaderLen:], payload)
 	return buf

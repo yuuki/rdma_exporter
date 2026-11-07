@@ -15,7 +15,7 @@ func main() {
 	}
 	bundlePath := filepath.Join(root, "dashboards", "rdma_exporter_dashboard.json")
 	outPath := filepath.Join(root, "dashboards", "rdma_exporter_dashboard.grafana.com.json")
-	bundle, err := os.ReadFile(bundlePath)
+	bundle, err := os.ReadFile(bundlePath) //nolint:gosec // G703: maintainer tool; the path comes from its own command line
 	if err != nil {
 		fmt.Fprintf(os.Stderr, "read bundle: %v\n", err)
 		os.Exit(1)
@@ -25,7 +25,7 @@ func main() {
 		fmt.Fprintf(os.Stderr, "export: %v\n", err)
 		os.Exit(1)
 	}
-	if err := os.WriteFile(outPath, out, 0o644); err != nil {
+	if err := os.WriteFile(outPath, out, 0o644); err != nil { //nolint:gosec // G306: the export is a committed, world-readable repository file
 		fmt.Fprintf(os.Stderr, "write export: %v\n", err)
 		os.Exit(1)
 	}

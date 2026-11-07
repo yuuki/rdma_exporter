@@ -116,7 +116,7 @@ func (s *Server) handleMetrics(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	contentType := expfmt.Negotiate(r.Header)
+	contentType := expfmt.NegotiateAccept(r.Header, expfmt.DefaultAcceptedFormats()...)
 	w.Header().Set("Content-Type", string(contentType))
 
 	encoder := expfmt.NewEncoder(w, contentType)

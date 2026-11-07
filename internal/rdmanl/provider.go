@@ -84,7 +84,7 @@ func (p *Provider) Counters(ctx context.Context, device string, port int) ([]Opt
 		return nil, err
 	}
 
-	payload := encodePortQuery(index, uint32(port))
+	payload := encodePortQuery(index, uint32(port)) //nolint:gosec // G115: port > 0 was checked above; kernel port numbers are u32
 	status, err := p.optionalCounterStatus(ctx, device, port, payload)
 	if err != nil {
 		return nil, err
@@ -176,7 +176,7 @@ func (p *Provider) QPMode(ctx context.Context, device string, port int) (QPMode,
 	}
 	p.mu.Unlock()
 
-	payload := encodeQPModeQuery(index, uint32(port))
+	payload := encodeQPModeQuery(index, uint32(port)) //nolint:gosec // G115: port > 0 was checked above; kernel port numbers are u32
 	msgs, err := p.client.Execute(ctx, nlType(cmdStatGet), nlmFRequest|nlmFAck, payload)
 	if err != nil {
 		if isUnsupportedNetlink(err) {
@@ -215,7 +215,7 @@ func (p *Provider) QPSets(ctx context.Context, device string, port int) ([]QPSet
 	}
 	p.mu.Unlock()
 
-	payload := encodeQPDumpQuery(index, uint32(port))
+	payload := encodeQPDumpQuery(index, uint32(port)) //nolint:gosec // G115: port > 0 was checked above; kernel port numbers are u32
 	dumpCtx := withDumpBudget(ctx, defaultQPDumpBudget())
 	msgs, err := p.client.Execute(dumpCtx, nlType(cmdStatGet), nlmFRequest|nlmFAck|nlmFDump, payload)
 	if err != nil {
