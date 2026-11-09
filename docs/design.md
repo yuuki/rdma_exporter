@@ -123,7 +123,8 @@ The `cmd/rdma_exporter` package wires configuration, logging, and the HTTP serve
   - `go test -race ./...`, and the injected-netlink-reply tests as root.
   - `golangci-lint run` and `go mod tidy -diff` (`make lint`).
   - Short fuzz runs on every change, longer ones weekly (`make test-fuzz`).
-  - actionlint and zizmor on the workflows (`make lint-actions`).
+  - actionlint and zizmor on the workflows, and `gh actions-lock --verify` on
+    `.github/workflows/actions.lock` (`make lint-actions`).
   - CodeQL and govulncheck (`make vuln`).
 
 ## 11. Deployment Guidance
