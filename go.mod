@@ -1,6 +1,6 @@
 module github.com/yuuki/rdma_exporter
 
-go 1.27.3
+go 1.27.4
 
 require (
 	github.com/prometheus/client_golang v1.25.0
@@ -8,7 +8,7 @@ require (
 	github.com/prometheus/common v0.73.1
 	github.com/safchain/ethtool v0.7.0
 	go.uber.org/goleak v1.3.0
-	golang.org/x/sys v0.49.0
+	golang.org/x/sys v0.50.0
 )
 
 require (
