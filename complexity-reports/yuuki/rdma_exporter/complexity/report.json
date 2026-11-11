@@ -1,9 +1,9 @@
 {
   "repository": "yuuki/rdma_exporter/complexity",
   "ref": "refs/heads/main",
-  "commit": "3d48d203bee55865a13ffc2519736a99cbe5b79c",
+  "commit": "da00c2117a4ca228ff54f23bf586406e1e84aa85",
   "base_ref": "refs/heads/main",
-  "timestamp": "2026-11-09T16:36:00.108658537Z",
+  "timestamp": "2026-11-11T11:00:23.439313947Z",
   "custom_metrics": [
     {
       "key": "code_complexity",
