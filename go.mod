@@ -8,7 +8,7 @@ require (
 	github.com/prometheus/common v0.73.1
 	github.com/safchain/ethtool v0.7.0
 	go.uber.org/goleak v1.3.0
-	golang.org/x/sys v0.49.0
+	golang.org/x/sys v0.50.0
 )
 
 require (
