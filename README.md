@@ -1,5 +1,6 @@
 # Prometheus RDMA Exporter
 
+[![AI Generated](https://img.shields.io/badge/AI%20Generated-Claude-orange?logo=anthropic)](https://claude.ai/claude-code)
 [![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](LICENSE)
 [![CI](https://github.com/yuuki/rdma_exporter/actions/workflows/ci.yml/badge.svg)](https://github.com/yuuki/rdma_exporter/actions/workflows/ci.yml)
 [![Security](https://github.com/yuuki/rdma_exporter/actions/workflows/security.yml/badge.svg)](https://github.com/yuuki/rdma_exporter/actions/workflows/security.yml)
